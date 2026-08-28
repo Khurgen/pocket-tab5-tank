@@ -27,6 +27,12 @@ static void *psram_alloc(size_t n) {
     return p;
 }
 
+/* hot activation buffers live in internal SRAM (~70 KB): the dot kernel then
+ * streams only flash weights + SRAM activations, off the contended PSRAM bus */
+static void *sram_alloc(size_t n) {
+    return heap_caps_malloc(n, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+
 static void worker(void *arg) {
     (void)arg;
     for (;;) {
@@ -35,12 +41,16 @@ static void worker(void *arg) {
         int fish = g_req_fish; char st[400]; strcpy(st, g_req_state); g_req_fish = -1; g_busy = true;
         xSemaphoreGive(g_mx);
         int ntok = 0; int64_t t0 = esp_timer_get_time();
+        memset(q4_prof_us, 0, sizeof q4_prof_us);
         goal_t g = advisor_core_infer(st, &ntok);
         int64_t dt = esp_timer_get_time() - t0;
         g_last_ms = (uint32_t)(dt / 1000); g_tok_s = ntok / (dt / 1e6f);
         ESP_LOGI(TAG, "%s -> %s urgency %.0f p=%.2f  [%lu ms, %.1f tok/s]", st,
                  g.id < GOAL_COUNT ? GOAL_NAMES[g.id] : "?", g.urgency, g.confidence,
                  (unsigned long)g_last_ms, g_tok_s);
+        ESP_LOGI(TAG, "prof ms: matmul %lld attn %lld norm/quant %lld rope %lld swiglu %lld decode %lld",
+                 q4_prof_us[0] / 1000, q4_prof_us[1] / 1000, q4_prof_us[2] / 1000,
+                 q4_prof_us[3] / 1000, q4_prof_us[4] / 1000, q4_prof_us[5] / 1000);
         xSemaphoreTake(g_mx, portMAX_DELAY);
         g_resp_goal = g; g_resp_fish = fish; g_busy = false; g_decisions++;
         xSemaphoreGive(g_mx);
@@ -48,10 +58,20 @@ static void worker(void *arg) {
 }
 
 bool advisor_llm_esp_init(const uint8_t *model_bin, size_t model_len, const uint8_t *tok_bin, size_t tok_len) {
+    q4_fast_alloc = sram_alloc;
     if (!advisor_core_init(model_bin, model_len, tok_bin, tok_len, psram_alloc,
                            (uint32_t)esp_timer_get_time() | 1u)) {
         ESP_LOGE(TAG, "bad model/tokenizer"); return false;
     }
+    q4_clock_us = esp_timer_get_time;        /* per-stage inference profiling */
+    /* one-time kernel/memory bench on boot (numbers for docs/bringup step 9) */
+    q4_model_t *bm = advisor_core_model();
+    ESP_LOGI(TAG, "bench: dot100k %lld us | batch44 flash %lld us ram %lld us | decode flash %lld us ram %lld us",
+             q4_model_bench(bm, 0, 44, esp_timer_get_time),
+             q4_model_bench(bm, 1, 44, esp_timer_get_time),
+             q4_model_bench(bm, 2, 44, esp_timer_get_time),
+             q4_model_bench(bm, 3, 44, esp_timer_get_time),
+             q4_model_bench(bm, 4, 44, esp_timer_get_time));
     g_mx = xSemaphoreCreateMutex(); g_req_sem = xSemaphoreCreateBinary();
     /* inference on core 1; render/tank own core 0 */
     xTaskCreatePinnedToCore(worker, "advisor", 16384, NULL, 5, NULL, 1);

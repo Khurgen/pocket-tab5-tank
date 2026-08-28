@@ -104,6 +104,7 @@ bool advisor_core_init(const uint8_t *model_bin, size_t model_len,
     return true;
 }
 int advisor_core_schema(void) { return g_model ? g_schema : 0; }
+q4_model_t *advisor_core_model(void) { return g_model; }
 const q4_config_t *advisor_core_config(void) { return g_model ? q4_model_config(g_model) : NULL; }
 const float *advisor_core_last_probs(void) { return g_last_p; }
 
@@ -115,8 +116,10 @@ goal_t advisor_core_infer(const char *state, int *tokens_out) {
     int toks[64]; int n = word_tok_encode(&g_tok, prompt, toks, 60);
     int out[8];
     float temp = advisor_core_sample ? advisor_core_temp : 0;
+    /* max_out 3 = goal + " urgency" + digit: everything the parser reads;
+       each extra token would cost a full weight pass */
     int nout = q4_model_decide(g_model, toks, n, g_goal_ids, GOAL_COUNT, temp, &g_rng,
-                               g_last_p, out, 6);
+                               g_last_p, out, 3);
     if (tokens_out) *tokens_out = n + nout;
     /* first token is the goal (one of the candidates); then "urgency <d>" */
     if (nout >= 1)

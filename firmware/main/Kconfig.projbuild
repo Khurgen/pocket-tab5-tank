@@ -7,4 +7,9 @@ menu "pocket-tank"
     config POCKET_TANK_TOUCH_FT3168
         bool "Read the FT3168 capacitive touch (taps / holds)"
         default n
+    config POCKET_TANK_NO_PIE
+        bool "Disable the PIE SIMD inference kernel (scalar dot products)"
+        default n
+        help
+            Enable for a QEMU build if the emulator lacks ESP32-S3 PIE support.
 endmenu

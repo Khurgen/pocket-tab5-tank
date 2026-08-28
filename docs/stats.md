@@ -1,6 +1,7 @@
-# Measured numbers
+# Measured numbers — single source of truth for the video
 
-Every figure below was measured in this repo's pipeline; dates are when. "Teacher" = gemma4:26b (Q4_K_M) via Ollama; "agreement" = the student
+Every figure below was measured in this repo's pipeline; dates are when. Use these
+verbatim. "Teacher" = gemma4:26b (Q4_K_M) via Ollama; "agreement" = the student
 picked the same goal as the teacher on fresh, never-trained-on situations
 (`model/eval.py --teacher`, n = 60 states, seed 777 unless noted).
 

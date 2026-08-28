@@ -38,7 +38,7 @@ def main():
     args = ap.parse_args()
 
     # The project dir is a network share; run the student from a local cache so
-    # timing reflects inference (the device reads flash, not a network share).
+    # timing reflects inference (the device reads flash, not AFP).
     import shutil
     cache = os.path.expanduser("~/.cache/pocket-tank")
     os.makedirs(cache, exist_ok=True)

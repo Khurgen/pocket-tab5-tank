@@ -95,7 +95,7 @@ cd ../sim && make && ./fishsim --selftest-llm           # prints "schema v3, sam
 cd ../firmware && idf.py build && ./run_qemu.sh          # log line "schema v3"
 ```
 Then update docs/stats.md (v3 table), schema.md (promote the v3 draft to
-FROZEN).
+FROZEN), and HANDOFF.md.
 
 ## If the night goes wrong
 

@@ -165,10 +165,47 @@ static void draw_veg(ctx_t *c, const tank_t *t, float bx0, int n, int max_seg, i
     }
 }
 
+/* optional per-stage frame profiling (render.h) */
+int64_t (*render_clock_us)(void) = NULL;
+int64_t render_prof_us[6];
+#define PROF_MARK() (render_clock_us ? render_clock_us() : 0)
+#define PROF_ADD(i, t0) do { if (render_clock_us) { int64_t _n = render_clock_us(); render_prof_us[i] += _n - (t0); (t0) = _n; } } while (0)
+
 /* ---- static scene: gradient, pebbles, reef rock (cacheable) ---- */
 static uint16_t *g_scene = NULL;
 static float     g_scene_dim = -1;
+static unsigned  g_scene_epoch = 0;
+static const uint16_t *g_primed_fb = NULL;
+static unsigned  g_primed_epoch = 0;
+static uint8_t  *g_vig = NULL;                  /* per-pixel vignette alpha (static) */
+static bool      g_vig_filled = false;
 void render_set_scene_cache(uint16_t *buf) { g_scene = buf; g_scene_dim = -1; }
+void render_set_vignette_cache(uint8_t *buf) { g_vig = buf; g_vig_filled = false; }
+
+const uint16_t *render_scene_buf(unsigned *epoch) {
+    if (epoch) *epoch = g_scene_epoch;
+    return g_scene_epoch ? g_scene : NULL;
+}
+void render_fb_primed(const uint16_t *fb, unsigned epoch) { g_primed_fb = fb; g_primed_epoch = epoch; }
+
+/* vignette alpha at (x,y); matches the classic per-pixel loop */
+static inline int vig_alpha(int x, int y) {
+    float dx = (x - TANK_W * 0.5f) / (TANK_W * 0.5f);
+    float dy = (y - TANK_H * 0.5f) / (TANK_H * 0.5f);
+    float d2 = dx * dx + dy * dy;
+    if (d2 <= 0.72f) return 0;
+    int a = (int)((d2 - 0.72f) * 220);
+    return a > 255 ? 255 : a;
+}
+
+/* pure darkening (blend toward black), independent of ctx dim */
+static inline void px_darken(uint16_t *p, int a) {
+    int inv = 256 - a;
+    *p = (uint16_t)(((((*p >> 11) * inv) >> 8) << 11) |
+                    ((((((*p) >> 5) & 63) * inv) >> 8) << 5) |
+                    (((*p & 31) * inv) >> 8));
+}
+
 
 static void draw_scene(const tank_t *t, uint16_t *fb, int stride, float dim) {
     ctx_t c = { fb, stride, dim };
@@ -201,11 +238,34 @@ static void draw_scene(const tank_t *t, uint16_t *fb, int stride, float dim) {
 void render_tank(const tank_t *t, uint16_t *fb, int stride) {
     float dim = t->night ? 0.45f : 1.0f;
     ctx_t c = { fb, stride, dim };
+    int64_t p0 = PROF_MARK();
+    bool cached = g_scene && stride == TANK_W;
+    struct { short x0, y0, x1, y1; } rects[4 + MAX_FOOD + MAX_BUBBLE + N_FISH_MAX];
+    int nr = 0;
+#define DYN_RECT(cx0, cy0, cx1, cy1) do { if (cached && nr < (int)(sizeof rects / sizeof rects[0])) { \
+        rects[nr].x0 = (short)(cx0); rects[nr].y0 = (short)(cy0); \
+        rects[nr].x1 = (short)(cx1); rects[nr].y1 = (short)(cy1); nr++; } } while (0)
 
-    if (g_scene && stride == TANK_W) {
-        if (g_scene_dim != dim) { draw_scene(t, g_scene, TANK_W, dim); g_scene_dim = dim; }
-        memcpy(fb, g_scene, TANK_W * TANK_H * sizeof(uint16_t));
+    if (cached) {
+        if (g_scene_dim != dim) {
+            /* rebuild the static scene and bake the vignette into it (the
+               per-frame pass then only re-darkens dynamic patches) */
+            draw_scene(t, g_scene, TANK_W, dim);
+            ctx_t sc = { g_scene, TANK_W, dim };
+            for (int y = 0; y < TANK_H; y++)
+                for (int x = 0; x < TANK_W; x++) {
+                    int a = (g_vig && g_vig_filled) ? g_vig[y * TANK_W + x] : vig_alpha(x, y);
+                    if (g_vig && !g_vig_filled) g_vig[y * TANK_W + x] = (uint8_t)a;
+                    if (a) px_darken(&sc.fb[y * TANK_W + x], a);
+                }
+            if (g_vig) g_vig_filled = true;
+            g_scene_dim = dim; g_scene_epoch++;
+        }
+        if (!(g_primed_fb == fb && g_primed_epoch == g_scene_epoch))
+            memcpy(fb, g_scene, TANK_W * TANK_H * sizeof(uint16_t));
+        g_primed_fb = NULL;
     } else draw_scene(t, fb, stride, dim);
+    PROF_ADD(0, p0);
 
     /* light shafts (subtle, day only) */
     if (!t->night)
@@ -215,18 +275,25 @@ void render_tank(const tank_t *t, uint16_t *fb, int stride) {
                 for (int x = -8; x <= 8; x++)
                     px_blend(&c, (int)(sx + x + y * 0.22f), y, 0x2a6a72, 14 - (x < 0 ? -x : x));
         }
+    PROF_ADD(1, p0);
     /* vegetation: the reef proper (left - grows lusher as the tank earns
        milestones, never withers) and balancing decorative beds on the right
        (scenery only, not in the schema) */
     int lush = popcount32(t->tank_ms_bits); if (lush > 4) lush = 4;
-    draw_veg(&c, t, t->reef_x - 24 - lush * 6, 5 + lush, 14 + lush, 0);
+    float vx0 = t->reef_x - 24 - lush * 6; int vn0 = 5 + lush, vs0 = 14 + lush;
+    draw_veg(&c, t, vx0, vn0, vs0, 0);
     draw_veg(&c, t, TANK_W * 0.84f, 4, 18, 7);
     draw_veg(&c, t, TANK_W * 0.62f, 2, 8, 3);
+    DYN_RECT((int)vx0 - 8, TANK_H - 16 - (int)(vs0 * 3.2f) - 4, (int)vx0 + vn0 * 12 + 8, TANK_H - 1);
+    DYN_RECT((int)(TANK_W * 0.84f) - 8, TANK_H - 16 - (int)(18 * 3.2f) - 4, (int)(TANK_W * 0.84f) + 4 * 12 + 8, TANK_H - 1);
+    DYN_RECT((int)(TANK_W * 0.62f) - 8, TANK_H - 16 - (int)(8 * 3.2f) - 4, (int)(TANK_W * 0.62f) + 2 * 12 + 8, TANK_H - 1);
+    PROF_ADD(2, p0);
     /* food pellets */
     for (int i = 0; i < MAX_FOOD; i++)
         if (t->food[i].alive) {
             fill_ellipse(&c, t->food[i].x, t->food[i].y, 2.6f, 2.6f, 0xffbd59, 255);
             fill_ellipse(&c, t->food[i].x - 0.8f, t->food[i].y - 0.8f, 1.0f, 1.0f, 0xffe9bd, 255);
+            DYN_RECT((int)t->food[i].x - 5, (int)t->food[i].y - 5, (int)t->food[i].x + 5, (int)t->food[i].y + 5);
         }
     /* bubbles */
     for (int i = 0; i < MAX_BUBBLE; i++) {
@@ -234,33 +301,104 @@ void render_tank(const tank_t *t, uint16_t *fb, int stride) {
         float r = b->column ? 2.6f : 1.8f;
         fill_ellipse(&c, b->x, b->y, r, r, 0x9fd8e2, 60);
         px_blend(&c, (int)(b->x - r * 0.4f), (int)(b->y - r * 0.4f), 0xffffff, 120);
+        DYN_RECT((int)b->x - 5, (int)b->y - 5, (int)b->x + 5, (int)b->y + 5);
     }
+    PROF_ADD(3, p0);
     /* fish */
-    for (int i = 0; i < t->n_fish; i++) draw_fish(&c, t, &t->fish[i], i);
+    for (int i = 0; i < t->n_fish; i++) {
+        draw_fish(&c, t, &t->fish[i], i);
+        int h = (int)(40 * t->fish[i].size) + 4;
+        DYN_RECT((int)t->fish[i].x - h, (int)t->fish[i].y - h, (int)t->fish[i].x + h, (int)t->fish[i].y + h);
+    }
     /* shadow overlay */
     if (t->shadow.active) {
         float fade = t->shadow.ttl < 2.2f ? t->shadow.ttl / 2.2f : 1.0f;
         fill_ellipse(&c, t->shadow.x, t->shadow.y,
                      t->shadow.size, t->shadow.size * 0.34f, 0x00070a,
                      (int)(120 * fade));
+        DYN_RECT((int)(t->shadow.x - t->shadow.size) - 2, (int)(t->shadow.y - t->shadow.size * 0.34f) - 2,
+                 (int)(t->shadow.x + t->shadow.size) + 2, (int)(t->shadow.y + t->shadow.size * 0.34f) + 2);
     }
-    /* porthole vignette: darken corners toward AMOLED black. Only the outer
-       ring (d2 > 0.72) is touched; each row's inner bound is solved directly. */
-    for (int y = 0; y < TANK_H; y++) {
-        float dy = (y - TANK_H * 0.5f) / (TANK_H * 0.5f);
-        float rem = 0.72f - dy * dy;
-        int x_in = rem > 0 ? (int)(TANK_W * 0.5f * (1 - sqrtf(rem))) : TANK_W / 2;
-        for (int side = 0; side < 2; side++)
-            for (int k = 0; k < x_in; k++) {
-                int x = side ? TANK_W - 1 - k : k;
-                float dx = (x - TANK_W * 0.5f) / (TANK_W * 0.5f);
-                float d2 = dx * dx + dy * dy;
-                if (d2 > 0.72f) {
-                    int a = (int)((d2 - 0.72f) * 220);
-                    if (a > 0) px_blend(&c, x, y, 0x000000, a > 255 ? 255 : a);
+    PROF_ADD(4, p0);
+    /* porthole vignette: darken corners toward AMOLED black. With a scene
+       cache the full-frame pass is baked into the scene and only the dynamic
+       patches are re-darkened; without one, the classic per-pixel pass runs. */
+    if (cached) {
+        /* one row sweep over the union of the dynamic rects: pixels that
+           differ from the baked scene were drawn this frame and get the
+           vignette re-applied exactly once. */
+        for (int y = 0; y < TANK_H; y++) {
+            float dyf = (y - TANK_H * 0.5f) / (TANK_H * 0.5f);
+            float rem = 0.72f - dyf * dyf;
+            int x_in = rem > 0 ? (int)(TANK_W * 0.5f * (1 - sqrtf(rem))) : TANK_W / 2;
+            if (x_in <= 0) continue;
+            short iv[sizeof rects / sizeof rects[0]][2]; int ni = 0;
+            for (int i = 0; i < nr; i++)
+                if (y >= rects[i].y0 && y <= rects[i].y1) {
+                    int a0 = rects[i].x0 < 0 ? 0 : rects[i].x0;
+                    int a1 = rects[i].x1 >= TANK_W ? TANK_W - 1 : rects[i].x1;
+                    if (a0 > a1) continue;
+                    int j = ni++;                       /* insertion sort by x0 */
+                    while (j > 0 && iv[j - 1][0] > a0) { iv[j][0] = iv[j - 1][0]; iv[j][1] = iv[j - 1][1]; j--; }
+                    iv[j][0] = (short)a0; iv[j][1] = (short)a1;
+                }
+            int end = -1;                               /* merged sweep */
+            for (int i = 0; i < ni; i++) {
+                int a0 = iv[i][0] > end + 1 ? iv[i][0] : end + 1;
+                int a1 = iv[i][1];
+                if (a1 > end) end = a1;
+                for (int s = 0; s < 2; s++) {           /* clip to the two ring spans */
+                    int r0 = s ? (TANK_W - x_in > a0 ? TANK_W - x_in : a0) : a0;
+                    int r1 = s ? a1 : (x_in - 1 < a1 ? x_in - 1 : a1);
+                    for (int x = r0; x <= r1; x++) {
+                        uint16_t *p = &c.fb[y * c.stride + x];
+                        if (*p == g_scene[y * TANK_W + x]) continue;
+                        int a = (g_vig && g_vig_filled) ? g_vig[y * TANK_W + x] : vig_alpha(x, y);
+                        if (a) px_darken(p, a);
+                    }
                 }
             }
+        }
+    } else {
+        for (int y = 0; y < TANK_H; y++) {
+            float dy = (y - TANK_H * 0.5f) / (TANK_H * 0.5f);
+            float rem = 0.72f - dy * dy;
+            int x_in = rem > 0 ? (int)(TANK_W * 0.5f * (1 - sqrtf(rem))) : TANK_W / 2;
+            for (int side = 0; side < 2; side++)
+                for (int k = 0; k < x_in; k++) {
+                    int x = side ? TANK_W - 1 - k : k;
+                    float dx = (x - TANK_W * 0.5f) / (TANK_W * 0.5f);
+                    float d2 = dx * dx + dy * dy;
+                    if (d2 > 0.72f) {
+                        int a = (int)((d2 - 0.72f) * 220);
+                        if (a > 0) px_blend(&c, x, y, 0x000000, a > 255 ? 255 : a);
+                    }
+                }
+        }
     }
+    PROF_ADD(5, p0);
+#undef DYN_RECT
+}
+
+/* device battery pill, top-right: outline + nub, fill fraction colored by
+ * level (charging = teal). Same visual language as the stats card - no text. */
+void render_battery(uint16_t *fb, int stride, float frac, bool charging) {
+    ctx_t c = { fb, stride, 1.0f };
+    if (frac < 0) frac = 0;
+    if (frac > 1) frac = 1;
+    const int W = 26, H = 11, X = TANK_W - W - 28, Y = 9;   /* clear of the curved bezel */
+    uint32_t col = charging ? 0x38dcc7 : frac < 0.2f ? 0xf25b65
+                 : frac < 0.45f ? 0xffbd59 : 0x78d67d;
+    for (int y = Y; y < Y + H; y++)
+        for (int x = X; x < X + W; x++)
+            px_blend(&c, x, y, 0x04141a, 215);
+    for (int x = X; x < X + W; x++) { px(&c, x, Y, rgb565(0x9fb4b8, 1)); px(&c, x, Y + H - 1, rgb565(0x9fb4b8, 1)); }
+    for (int y = Y; y < Y + H; y++) { px(&c, X, y, rgb565(0x9fb4b8, 1)); px(&c, X + W - 1, y, rgb565(0x9fb4b8, 1)); }
+    for (int y = Y + 3; y < Y + H - 3; y++)                    /* nub */
+        for (int x = X + W; x < X + W + 3; x++) px(&c, x, y, rgb565(0x9fb4b8, 1));
+    int fw = (int)((W - 4) * frac + 0.5f);
+    for (int y = Y + 2; y < Y + H - 2; y++)
+        for (int x = X + 2; x < X + 2 + fw; x++) px(&c, x, y, rgb565(col, 1));
 }
 
 /* ---- stats overlay (selection ring + visual card) ---- */
@@ -292,7 +430,7 @@ void render_stats_card(const tank_t *t, int fish_idx, uint16_t *fb, int stride) 
     ring(&c, f->x, f->y, 17 * f->size, f->color);
 
     /* card: top-left, bordered in the fish's own color (that's its "name") */
-    const int X = 8, Y = 8, W = 92, H = 84;
+    const int X = 14, Y = 8, W = 92, H = 84;   /* x clear of the curved bezel */
     for (int y = Y; y < Y + H; y++)
         for (int x = X; x < X + W; x++)
             px_blend(&c, x, y, 0x04141a, 215);

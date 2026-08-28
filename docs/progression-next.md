@@ -1,6 +1,6 @@
 # Progression II — proposal (2026-08-21, unbuilt)
 
-Supersedes nothing in progression.md
+Answers the open problem in HANDOFF.md. Supersedes nothing in progression.md
 (the contract still holds); this is the plan for what the progression layer
 *is*, now that breeding-as-population is out. Every number here is reproducible
 with `model/probe_dist.py` (CPU, shipped `ckpt_v2w.pt`, ~1 min).
@@ -232,7 +232,7 @@ Performance: all of (1) is free (logits exist); (2) only ever lowers load.
 ## Status 2026-08-21 (evening): foundation BUILT
 
 Everything in "What to build, in order" 1–4 landed this session (see
-the README for the file-level map); 5 (the v3 data cycle) is prepared in
+docs/HANDOFF.md for the file-level map); 5 (the v3 data cycle) is prepared in
 docs/retrain-v3.md and waits for Strato's go. Measured after the build:
 `./fishsim --selftest-llm` (4 fish, 60 sim-s, real model, sampled): 54 goal
 changes, 19 of them "torn" (p < 0.6 → visible hesitation), 113 need-based

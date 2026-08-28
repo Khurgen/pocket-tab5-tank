@@ -19,6 +19,7 @@ bool advisor_core_init(const uint8_t *model_bin, size_t model_len,
                        void *(*alloc)(size_t), uint32_t seed);
 int  advisor_core_schema(void);                 /* 2 or 3; 0 if not loaded */
 const q4_config_t *advisor_core_config(void);
+q4_model_t *advisor_core_model(void);           /* for q4_model_bench */
 
 /* encode fish idx's state line per schema (no trailing " ->") */
 void advisor_core_encode(const tank_t *t, int idx, char *out, size_t n);
