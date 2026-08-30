@@ -113,6 +113,18 @@ void display_port_sleep(void) {
     }
 }
 
+/* drowse wake: rail back up (expander re-sequenced), then the full panel init
+ * over the still-open QSPI/I2C buses - no reboot needed. init_cmds is file-
+ * static, so the driver's retained pointer stays valid for this re-init. */
+void display_port_wake(void) {
+    if (!s_panel) return;
+    expander_power_up();
+    esp_lcd_panel_reset(s_panel);
+    esp_lcd_panel_init(s_panel);
+    esp_lcd_panel_set_gap(s_panel, s_v2 ? V2_PANEL_X_GAP : 0, 0);
+    esp_lcd_panel_disp_on_off(s_panel, true);
+}
+
 /* landscape fb[y][x] (TANK_W x TANK_H) -> portrait panel: px = y, py = TANK_W-1-x.
  * Colors are byte-swapped for the panel (big-endian RGB565 over SPI).
  * The transpose walks the PSRAM framebuffer row-sequentially (16 contiguous

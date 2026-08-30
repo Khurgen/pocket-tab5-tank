@@ -14,6 +14,8 @@
  *   ./fishsim --selftest   headless reflex-layer check, no window
  *   ./fishsim --selftest-llm [min]   headless LLM path (real-time if min > 0)
  *   ./fishsim --selftest-pop         headless population/arrival/save check
+ *   ./fishsim --selftest-sleep       headless sleep metabolism + ravenous begging
+ *   (key Z in the window: jump the tank through 7 h of device-style sleep)
  */
 #include <stdio.h>
 #include <string.h>
@@ -131,6 +133,55 @@ static int selftest_pop(void) {
         }
     printf("  save/restore ok (%d fish, tank ms 0x%03x)\n", tank.n_fish, tank.tank_ms_bits);
     (void)system(cmd);                            /* leave no test save behind */
+    return 0;
+}
+
+/* sleep metabolism + ravenous begging, headless (the device drowse path):
+ * a long dark gap starves everyone -> they beg at the surface, the trickle
+ * holds off, and the keeper's first pellets end the wait. */
+static int selftest_sleep(void) {
+    setenv("POCKET_TANK_SAVE", "/tmp/pocket-tank-selftest.sav", 1);
+    char cmd[600]; snprintf(cmd, sizeof cmd, "rm -f /tmp/pocket-tank-selftest.sav"); (void)system(cmd);
+    tank_init(&tank, 4242);
+    progression_boot(&tank);
+    for (int i = 0; i < 600; i++) { tank_tick(&tank, 1.0f / 60.0f, advisor_rules); progression_tick(&tank, 1.0f / 60.0f); }
+    tank_tick_sleep(&tank, 12 * 3600);            /* a long night away */
+    for (int i = 0; i < tank.n_fish; i++) {
+        const fish_t *f = &tank.fish[i];
+        if (f->hunger < 8.5f || f->energy < 9.9f) {
+            printf("FAIL: after 12h sleep %s hunger %.1f energy %.1f\n", f->name, f->hunger, f->energy);
+            return 1;
+        }
+    }
+    for (int i = 0; i < MAX_FOOD; i++)
+        if (tank.food[i].alive) { printf("FAIL: pellet survived the night\n"); return 1; }
+    /* wake: begging engages, everyone rises to the surface, no self-serve */
+    float avg_y0 = 0;
+    for (int i = 0; i < tank.n_fish; i++) avg_y0 += tank.fish[i].y / tank.n_fish;
+    for (int step = 1; step <= 600; step++) {      /* 10 s awake */
+        tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
+        progression_tick(&tank, 1.0f / 60.0f);
+        tank.shadow.active = false; tank.shadow.cool = 999;   /* deterministic test */
+        if (step == 120 && !tank.ravenous) { printf("FAIL: not ravenous after starving sleep\n"); return 1; }
+    }
+    float avg_y = 0; int food_n = 0;
+    for (int i = 0; i < tank.n_fish; i++) avg_y += tank.fish[i].y / tank.n_fish;
+    for (int i = 0; i < MAX_FOOD; i++) food_n += tank.food[i].alive;
+    printf("selftest-sleep: begging avg y %.0f (was %.0f), trickle held (%d pellets)\n", avg_y, avg_y0, food_n);
+    if (avg_y > 100) { printf("FAIL: fish not waiting at the surface\n"); return 1; }
+    if (food_n) { printf("FAIL: trickle fed a begging tank\n"); return 1; }
+    /* the keeper arrives: pellets end the wait */
+    tank_feed(&tank, TANK_W * 0.5f, 4);
+    int fed_at = -1;
+    for (int step = 1; step <= 1200 && fed_at < 0; step++) {
+        tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
+        progression_tick(&tank, 1.0f / 60.0f);
+        tank.shadow.active = false; tank.shadow.cool = 999;
+        if (!tank.ravenous) fed_at = step;
+    }
+    if (fed_at < 0) { printf("FAIL: feeding did not end the begging\n"); return 1; }
+    printf("selftest-sleep: fed and calmed %.1f s after pellets dropped\n", fed_at / 60.0f);
+    (void)system(cmd);
     return 0;
 }
 
@@ -273,6 +324,7 @@ int main(int argc, char **argv) {
             return snapshot(argv[a + 1], a + 2 < argc ? atoi(argv[a + 2]) : 20);
         if (strcmp(argv[a], "--selftest") == 0) return selftest();
         if (strcmp(argv[a], "--selftest-pop") == 0) return selftest_pop();
+        if (strcmp(argv[a], "--selftest-sleep") == 0) return selftest_sleep();
         if (strcmp(argv[a], "--selftest-llm") == 0)
             return selftest_llm(a + 1 < argc ? atoi(argv[a + 1]) : 0);
     }
@@ -315,7 +367,7 @@ int main(int argc, char **argv) {
     lv_timer_create(frame_cb, 16, NULL);
 
     bool fdown = false, sdown = false, ndown = false, ldown = false;
-    bool udown = false, mdown = false, mkdown = false, rdown = false;
+    bool udown = false, mdown = false, mkdown = false, rdown = false, zdown = false;
     uint32_t press_ms = 0; int press_x = 0, press_y = 0;
     while (1) {
         uint32_t wait = lv_timer_handler();
@@ -350,6 +402,13 @@ int main(int argc, char **argv) {
         mkdown = k[SDL_SCANCODE_M];
         if (k[SDL_SCANCODE_R] && !rdown) { progression_force_arrival(&tank); print_roster(&tank); }
         rdown = k[SDL_SCANCODE_R];
+        if (k[SDL_SCANCODE_Z] && !zdown) {         /* jump through a night of device sleep */
+            tank_tick_sleep(&tank, 7 * 3600);
+            printf("slept 7 h: hunger now");
+            for (int i = 0; i < tank.n_fish; i++) printf(" %.1f", tank.fish[i].hunger);
+            printf("\n");
+        }
+        zdown = k[SDL_SCANCODE_Z];
         if (k[SDL_SCANCODE_Q] || k[SDL_SCANCODE_ESCAPE]) { progression_save(&tank); break; }
         if (k[SDL_SCANCODE_F] && !fdown) tank_feed(&tank, (float)mx, 3);
         if (k[SDL_SCANCODE_S] && !sdown && !tank.shadow.active) tank_start_shadow(&tank);

@@ -78,18 +78,48 @@ static void assert_plan(void) {
         ESP_LOGI(TAG, "PSRAM plan OK (need %u KB)", (unsigned)need / 1024);
 }
 
+static void enter_poweroff(void);
+static bool s_btn_armed; static int64_t s_btn_low_since;   /* sleep_button_poll state */
+
+/* Sleep = drowse (docs/HANDOFF.md): the tank keeps living, slowly. Screen and
+ * touch rails cut, then duty-cycled LIGHT sleep - wake ~0.1 s every 30 s to
+ * advance the fish's slow physiology (tank_tick_sleep: hunger up, energy back,
+ * nothing eats), RAM alive throughout, so a BOOT press RESUMES in place
+ * instead of rebooting. Waking a tank slept past starving lands in the
+ * ravenous begging state until the keeper feeds. The wake press must be a
+ * fresh one (never listen while the entry press is still held), and a wake
+ * press held >= the long-press threshold goes straight to power-off. */
+#define DROWSE_TICK_US (30LL * 1000000)
+#define DROWSE_SAVE_US (30LL * 60 * 1000000)
 static void enter_sleep(void) {
-    ESP_LOGI(TAG, "sleep: saving tank, panel off, deep sleep (BOOT wakes)");
+    ESP_LOGI(TAG, "sleep: save, panel off, drowse (slow metabolism; BOOT wakes)");
     progression_save(&tank);
     display_port_sleep();
-    vTaskDelay(pdMS_TO_TICKS(50));
-    /* ext0 wake is LEVEL-triggered: arming it while the finger still holds
-     * GPIO0 low wakes the chip the instant it sleeps (the old "screen pops
-     * back on" lottery — it depended on press length). Never sleep held. */
     while (!gpio_get_level(BTN_SLEEP)) vTaskDelay(pdMS_TO_TICKS(10));
-    vTaskDelay(pdMS_TO_TICKS(20));
-    esp_sleep_enable_ext0_wakeup(BTN_SLEEP, 0);
-    esp_deep_sleep_start();
+    vTaskDelay(pdMS_TO_TICKS(30));
+    gpio_wakeup_enable(BTN_SLEEP, GPIO_INTR_LOW_LEVEL);
+    esp_sleep_enable_gpio_wakeup();
+    int64_t t0 = esp_timer_get_time(), last = t0, last_save = t0;
+    for (;;) {
+        esp_sleep_enable_timer_wakeup(DROWSE_TICK_US);
+        esp_light_sleep_start();
+        int64_t now = esp_timer_get_time();
+        tank_tick_sleep(&tank, (now - last) / 1e6f);
+        last = now;
+        if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_GPIO) break;
+        if (now - last_save > DROWSE_SAVE_US) { progression_save(&tank); last_save = now; }
+    }
+    gpio_wakeup_disable(BTN_SLEEP);
+    int64_t held0 = esp_timer_get_time();
+    while (!gpio_get_level(BTN_SLEEP)) {                    /* wake press still down */
+        if (esp_timer_get_time() - held0 >= 1500000) { enter_poweroff(); break; }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    ESP_LOGI(TAG, "wake: slept %.0f s, hunger[0] %.1f", (esp_timer_get_time() - t0) / 1e6,
+             tank.n_fish ? tank.fish[0].hunger : 0.0f);
+    display_port_wake();
+    progression_save(&tank);
+    s_btn_armed = false; s_btn_low_since = 0;               /* require a fresh press */
 }
 
 /* full power-down: save, then the AXP2101 cuts every rail (~ its own quiescent
@@ -104,19 +134,20 @@ static void enter_poweroff(void) {
     enter_sleep();   /* no PMIC (QEMU / bring-up) or write failed: deep sleep */
 }
 
-/* armed only after the button has been seen released, so the press that woke
- * the chip doesn't put it straight back to sleep. Short press = sleep, acted
- * on at RELEASE (see enter_sleep); held >= 1.5 s = full power-off. */
+/* armed only after the button has been seen released, so the press that ended
+ * a drowse doesn't immediately start the next one. Short press = drowse, acted
+ * on at RELEASE (enter_sleep returns after the eventual wake); held >= 1.5 s =
+ * full power-off. */
 #define BTN_DEBOUNCE_US 50000
 #define BTN_LONG_US     1500000
 static void sleep_button_poll(int64_t now) {
-    static bool armed; static int64_t low_since;
     if (gpio_get_level(BTN_SLEEP)) {
-        if (armed && low_since && now - low_since >= BTN_DEBOUNCE_US) enter_sleep();
-        armed = true; low_since = 0;
-    } else if (armed) {
-        if (!low_since) low_since = now;
-        else if (now - low_since >= BTN_LONG_US) enter_poweroff();
+        if (s_btn_armed && s_btn_low_since && now - s_btn_low_since >= BTN_DEBOUNCE_US)
+            enter_sleep();
+        s_btn_armed = true; s_btn_low_since = 0;
+    } else if (s_btn_armed) {
+        if (!s_btn_low_since) s_btn_low_since = now;
+        else if (now - s_btn_low_since >= BTN_LONG_US) enter_poweroff();
     }
 }
 

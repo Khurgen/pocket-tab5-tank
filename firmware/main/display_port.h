@@ -10,8 +10,11 @@
 bool display_port_init(void);
 /* push a full TANK_W x TANK_H RGB565 frame; may return before DMA completes */
 void display_port_flush(const uint16_t *fb);
-/* power the panel down for device sleep; a later boot re-inits it */
+/* power the panel down for device sleep; display_port_wake (or a boot's
+ * display_port_init) re-sequences it */
 void display_port_sleep(void);
+/* re-power and re-init the panel after display_port_sleep, without reboot */
+void display_port_wake(void);
 /* true = present the frame rotated 180 degrees (device held upside down) */
 void display_port_set_inverted(bool inverted);
 #endif

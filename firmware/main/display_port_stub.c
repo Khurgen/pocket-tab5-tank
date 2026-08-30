@@ -10,6 +10,7 @@ static int64_t last_report = 0;
 
 bool display_port_init(void) { ESP_LOGI(TAG, "stub display port (no panel)"); return true; }
 void display_port_sleep(void) {}
+void display_port_wake(void) {}
 void display_port_set_inverted(bool inverted) { (void)inverted; }
 
 void display_port_flush(const uint16_t *fb) {

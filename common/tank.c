@@ -169,6 +169,7 @@ void tank_init(tank_t *t, uint32_t seed) {
     t->tap_count = 0; t->tap_burst_t = 99; t->startled = false;
     t->startle_cooldown = 0;
     t->feed_spot_x = -1; t->player_feedings = 0; t->hold_approaches = 0; t->greet_timer = 0;
+    t->ravenous = false;
     t->tank_ms_bits = 0; t->ask_rr = 0; t->advisor_asks = 0;
     tank_scatter_food(t, 2);
 }
@@ -259,6 +260,26 @@ void tank_scatter_food(tank_t *t, int n) {
         t->food[i].age = 0;
         n--;
     }
+}
+
+/* see tank.h: dark-screen physiology only, rates per real hour of sleep */
+#define SLEEP_HUNGER_PER_H 0.8f    /* fed -> ravenous over ~7 h of sleep */
+#define SLEEP_ENERGY_PER_H 2.0f
+#define SLEEP_STRESS_PER_H 2.0f
+void tank_tick_sleep(tank_t *t, float seconds) {
+    if (seconds <= 0) return;
+    float h = seconds / 3600.0f;
+    t->clock += seconds;
+    for (int i = 0; i < t->n_fish; i++) {
+        fish_t *f = &t->fish[i];
+        f->hunger = clampf(f->hunger + SLEEP_HUNGER_PER_H * h, 0, 10);
+        f->energy = clampf(f->energy + SLEEP_ENERGY_PER_H * h, 0, 10);
+        f->stress = clampf(f->stress - SLEEP_STRESS_PER_H * h, 0, 10);
+        f->speed = 0; f->target_speed = 0;
+        f->goal_age += seconds; f->ask_age += seconds;  /* wake re-asks the advisor at once */
+    }
+    for (int i = 0; i < MAX_FOOD; i++)                  /* overnight pellets go stale */
+        if (t->food[i].alive && (t->food[i].age += seconds) > 45) t->food[i].alive = false;
 }
 
 void tank_start_shadow(tank_t *t) {
@@ -454,6 +475,19 @@ static void update_fish(tank_t *t, int idx, float dt) {
             desired = norm_ang(desired + norm_ang(to - desired) * 0.7f);
             touch_speed = 26;
         } else touch_speed = 5;
+    } else if (t->ravenous && f->goal.id != GOAL_FLEE_SHADOW) {
+        /* starving tank, empty water: beg where meals come from - quick darts
+         * back and forth under the feed spot, unmistakably "feed me". Reflex
+         * presentation of the wait, like the greet/hold overrides above: the
+         * advisor still owns the goal, there is just no food to seek yet, and
+         * the first pellets sink straight onto them. */
+        float spot = t->feed_spot_x >= 0 ? t->feed_spot_x : TANK_W * 0.5f;
+        float wx = spot + sinf(t->clock * (1.6f + f->bold * 0.9f) + idx * 2.1f) * (34 + idx * 6);
+        float wy = 30 + idx * 4 + sinf(t->clock * 3.1f + f->wander) * 6;
+        float to = atan2f(wy - f->y, wx - f->x);
+        desired = norm_ang(desired + norm_ang(to - desired) * 0.85f);
+        touch_speed = tank_dist(f->x, f->y, wx, wy) > 18
+                    ? lerpf(40, 68, clampf(f->hunger / 10.0f, 0, 1)) : 22;
     }
 
     /* separation */
@@ -525,8 +559,11 @@ void tank_tick(tank_t *t, float dt, advisor_fn advise) {
         if (p->age > 45) p->alive = false;
     }
     /* the tank's own trickle keeps fish alive when nobody is home (never
-     * ruined by absence); the keeper's pellets are what progression counts */
-    if (live_food < 2 && tank_randf(t, 0, 1) < 0.001f * t->n_fish) tank_scatter_food(t, 1);
+     * ruined by absence); the keeper's pellets are what progression counts.
+     * While the tank is ravenous-begging it holds off, so the keeper's first
+     * pellets are the event that ends the wait (progression re-arms it). */
+    if (!t->ravenous && live_food < 2 && tank_randf(t, 0, 1) < 0.001f * t->n_fish)
+        tank_scatter_food(t, 1);
 
     /* bubbles rise */
     for (int i = 0; i < MAX_BUBBLE; i++) {

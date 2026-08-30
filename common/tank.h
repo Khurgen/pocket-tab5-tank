@@ -141,6 +141,9 @@ typedef struct tank {
     int      player_feedings;      /* feed gestures so far */
     int      hold_approaches;      /* calm holds that drew a fish all the way in */
     float    greet_timer;          /* light-on greeting: trusting fish come up front */
+    bool     ravenous;             /* starving tank, empty water: fish beg at the
+                                    * surface, trickle holds off (progression.c
+                                    * owns entry/exit; tank.c renders the wait) */
     uint32_t tank_ms_bits;         /* TMS_* milestones reached */
     /* advisor scheduling (need-based, see tank_tick) */
     int      ask_rr;               /* rotating start index for fairness */
@@ -172,6 +175,12 @@ int   tank_add_fish(tank_t *t, int parent_a, int parent_b);
 /* (re)build slot from a roster preset: used by persistence to restore a fish */
 void  tank_make_fish(tank_t *t, int slot, int preset, float sociable, float bold, stage_t stage);
 void  tank_tick(tank_t *t, float dt, advisor_fn advise);
+/* Sleep metabolism (device drowse mode: screen dark, fish asleep). Advances
+ * ONLY slow physiology - hunger up, energy recovered, stress gone - at
+ * real-hours scale; no movement, no goals, no eating, no trickle. Sleeping
+ * fish make no decisions, so the advisor contract is untouched. Safe to call
+ * with hours at a time. */
+void  tank_tick_sleep(tank_t *t, float seconds);
 /* Tank light: overrides the day/night cycle (the device maps a touch gesture
  * to this). tank_light_auto returns to the automatic cycle. */
 void  tank_toggle_light(tank_t *t);

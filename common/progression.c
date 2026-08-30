@@ -4,6 +4,7 @@
 
 #define SAVE_MAGIC 0x50544b32u   /* "PTK2" (PTK1 saves are 4-fish, pre-population: start fresh) */
 #define RAVENOUS_AFTER_S (60 * 60)
+#define RAVENOUS_GIVE_UP_S 150.0f  /* begging window before the fish give up */
 #define SAVE_HEARTBEAT_S 600.0f
 #define SAVE_MIN_GAP_S   30.0f
 
@@ -44,7 +45,8 @@ static float s_shrug_t[N_FISH_MAX];  /* seconds holding a non-flee goal with a s
 static bool  s_threatened[N_FISH_MAX];
 static float s_since_save, s_dirty_since;
 static bool  s_dirty;
-static bool  s_ravenous;             /* boot rule active until first feeding */
+static bool  s_ravenous;             /* begging active until first feeding / give-up */
+static float s_ravenous_t;           /* seconds spent begging */
 static bool  s_arrival_pending;
 static bool  s_prev_night;
 static bool  s_booted;
@@ -145,7 +147,7 @@ void progression_boot(tank_t *t) {
     s_prev_night = t->night;
     int64_t now = clock_port_now_unix();
     if (now > 0 && sv.saved_unix > 0 && now - sv.saved_unix >= RAVENOUS_AFTER_S) {
-        s_ravenous = true;                                   /* the one offline rule */
+        s_ravenous = true; s_ravenous_t = 0;                 /* the one offline rule */
         for (int i = 0; i < t->n_fish; i++) t->fish[i].hunger = 9.6f;
     }
     if (s_arrival_pending && !t->night) do_arrival(t);       /* earned while you were away: here it is */
@@ -192,17 +194,27 @@ void progression_tick(tank_t *t, float dt) {
     if (changed_someone) set_tms(t, TMS_CHANGED_SOMEONE);
     if (t->player_feedings > 0) set_tms(t, TMS_FIRST_FEEDING);
 
-    /* ravenous boot: waiting at the surface where you usually feed */
+    /* ravenous: a starving tank with empty water begs at the surface (tank.c
+     * renders the wait; the trickle holds off so the keeper's pellets are the
+     * event). Entered at boot after a long absence, or live whenever everyone
+     * is starving - waking from device sleep lands here naturally. If nobody
+     * comes, after a while the fish give up and the tank feeds itself. */
+    int any_food = 0; for (int i = 0; i < MAX_FOOD; i++) any_food |= t->food[i].alive;
+    if (!s_ravenous && !any_food && t->n_fish > 0) {
+        float mn = 10;
+        for (int i = 0; i < t->n_fish; i++) if (t->fish[i].hunger < mn) mn = t->fish[i].hunger;
+        if (mn >= 8.5f) { s_ravenous = true; s_ravenous_t = 0; }
+    }
     if (s_ravenous) {
-        int any_food = 0; for (int i = 0; i < MAX_FOOD; i++) any_food |= t->food[i].alive;
-        if (!any_food) for (int i = 0; i < t->n_fish; i++) {
-            fish_t *f = &t->fish[i];
-            if (f->y > 60) f->y -= 8 * dt;
-            if (t->feed_spot_x >= 0) f->x += (t->feed_spot_x - f->x) * dt * 0.15f;
-        }
+        s_ravenous_t += dt;
         int ate = 0; for (int i = 0; i < t->n_fish; i++) ate |= (t->fish[i].hunger < 6);
         if (ate) s_ravenous = false;                          /* first feeding ends it */
+        else if (s_ravenous_t > RAVENOUS_GIVE_UP_S) {         /* nobody came: back to life */
+            s_ravenous = false;
+            tank_scatter_food(t, 2);                          /* so it doesn't re-trigger at once */
+        }
     }
+    t->ravenous = s_ravenous && !any_food;
 
     /* light-on: greet, and show a staged arrival */
     bool light_on_edge = s_prev_night && !t->night;
