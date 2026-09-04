@@ -3,12 +3,47 @@
  * that grow with the tank's milestones, roaming shadow. Everything is drawn
  * into a bare RGB565 buffer; night dims the palette. */
 #include "render.h"
+#include "icons.h"
+#include "progression.h"
 #include <math.h>
 #include <string.h>
 
 #define TAU 6.2831853f
 
-typedef struct { uint16_t *fb; int stride; float dim; } ctx_t;
+/* a draw target: fb + stride + night dim, plus the window it covers in tank
+ * coordinates (ox,oy,w,h) - the frame is (0,0,TANK_W,TANK_H); the stats card
+ * cache is a small sprite that still gets drawn in tank coordinates */
+typedef struct { uint16_t *fb; int stride; float dim; int ox, oy, w, h; } ctx_t;
+static ctx_t ctx_full(uint16_t *fb, int stride, float dim) {
+    ctx_t c = { fb, stride, dim, 0, 0, TANK_W, TANK_H }; return c;
+}
+#define CTX_IN(c, x, y) ((unsigned)((x) - (c)->ox) < (unsigned)(c)->w && (unsigned)((y) - (c)->oy) < (unsigned)(c)->h)
+#define CTX_PX(c, x, y) ((c)->fb[((y) - (c)->oy) * (c)->stride + ((x) - (c)->ox)])
+
+/* Dirty mask (2026-09-01): one bit per pixel, set by everything drawn over
+ * the baked scene (px, span, blends), cleared every frame. The porthole
+ * vignette re-apply walks the mask instead of comparing each pixel with the
+ * scene cache (32 pixels per word, no scene reads), and a pixel that already
+ * had its vignette applied inline (frond spans, span_final) is simply not
+ * marked, so no later rect darkens it twice. (A first version tagged the
+ * green LSB instead and cleared it across the scene - that halved the color
+ * steps of the dark vignette falloff into visible contour rings. Colors are
+ * untouched now.) */
+#define DIRTY_WORDS_PER_ROW (TANK_W / 32)          /* 14 */
+static uint32_t *g_dirty = NULL;
+void render_set_dirty_mask(uint32_t *buf) { g_dirty = buf; }
+static inline void dirty_px(int x, int y) {
+    if (g_dirty) g_dirty[y * DIRTY_WORDS_PER_ROW + (x >> 5)] |= 1u << (x & 31);
+}
+static inline void dirty_span(int x0, int x1, int y) {
+    if (!g_dirty) return;
+    uint32_t *row = g_dirty + y * DIRTY_WORDS_PER_ROW;
+    int w0 = x0 >> 5, w1 = x1 >> 5;
+    if (w0 == w1) { row[w0] |= (0xFFFFFFFFu >> (31 - (x1 & 31))) & (0xFFFFFFFFu << (x0 & 31)); return; }
+    row[w0] |= 0xFFFFFFFFu << (x0 & 31);
+    for (int w = w0 + 1; w < w1; w++) row[w] = 0xFFFFFFFFu;
+    row[w1] |= 0xFFFFFFFFu >> (31 - (x1 & 31));
+}
 
 static uint16_t rgb565(uint32_t rgb, float dim) {
     uint32_t r = (uint32_t)(((rgb >> 16) & 255) * dim);
@@ -17,43 +52,99 @@ static uint16_t rgb565(uint32_t rgb, float dim) {
     return (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
 }
 
+/* bounding box of everything drawn while g_bb_on (render_tank wraps each
+ * fish in it, so its vignette rect is exactly the pixels it touched instead
+ * of a fixed 88 px box - fewer PSRAM reads in the re-apply sweep) */
+static bool g_bb_on; static int g_bb_x0, g_bb_y0, g_bb_x1, g_bb_y1;
+static inline void bb_add(int x0, int x1, int y) {
+    if (!g_bb_on) return;
+    if (x0 < g_bb_x0) g_bb_x0 = x0;
+    if (x1 > g_bb_x1) g_bb_x1 = x1;
+    if (y < g_bb_y0) g_bb_y0 = y;
+    if (y > g_bb_y1) g_bb_y1 = y;
+}
 static void px(ctx_t *c, int x, int y, uint16_t col) {
-    if ((unsigned)x < TANK_W && (unsigned)y < TANK_H)
-        c->fb[y * c->stride + x] = col;
+    if (CTX_IN(c, x, y)) {
+        CTX_PX(c, x, y) = col;
+        bb_add(x, x, y);
+        dirty_px(x, y);
+    }
 }
 
-/* alpha 0..255 blend onto existing pixel */
-static void px_blend(ctx_t *c, int x, int y, uint32_t rgb, int a) {
-    if ((unsigned)x >= TANK_W || (unsigned)y >= TANK_H) return;
-    uint16_t *p = &c->fb[y * c->stride + x];
+/* A source color dimmed ONCE per shape (night palette), never per pixel:
+ * the float multiply + conversions were the bulk of every blended pixel's
+ * cost (vegetation, algae film, light shafts, the stats card backdrop). */
+typedef struct { int r, g, b; uint16_t v; } src_t;
+static inline src_t src_color(uint32_t rgb, float dim) {
+    src_t s;
+    s.r = (int)(((rgb >> 16) & 255) * dim);
+    s.g = (int)(((rgb >> 8) & 255) * dim);
+    s.b = (int)((rgb & 255) * dim);
+    s.v = (uint16_t)(((s.r >> 3) << 11) | ((s.g >> 2) << 5) | (s.b >> 3));
+    return s;
+}
+/* alpha 0..255 blend of a pre-dimmed source onto one framebuffer pixel */
+static inline void blend565(uint16_t *p, const src_t *s, int a) {
     int dr = (*p >> 11) << 3, dg = ((*p >> 5) & 63) << 2, db = (*p & 31) << 3;
-    int sr = (int)(((rgb >> 16) & 255) * c->dim);
-    int sg = (int)(((rgb >> 8) & 255) * c->dim);
-    int sb = (int)((rgb & 255) * c->dim);
-    int r = dr + ((sr - dr) * a >> 8), g = dg + ((sg - dg) * a >> 8), b = db + ((sb - db) * a >> 8);
+    int r = dr + ((s->r - dr) * a >> 8), g = dg + ((s->g - dg) * a >> 8), b = db + ((s->b - db) * a >> 8);
     *p = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
 }
+static inline void px_blend_s(ctx_t *c, int x, int y, const src_t *s, int a) {
+    if (CTX_IN(c, x, y)) { blend565(&CTX_PX(c, x, y), s, a); dirty_px(x, y); }
+}
+/* alpha 0..255 blend onto existing pixel (one-off pixels; shapes hoist) */
+static void px_blend(ctx_t *c, int x, int y, uint32_t rgb, int a) {
+    src_t s = src_color(rgb, c->dim);
+    px_blend_s(c, x, y, &s, a);
+}
+/* horizontal span [x0,x1] on row y, clipped to the frame, pre-dimmed source */
+static inline void span(ctx_t *c, int x0, int x1, int y, const src_t *s, int alpha) {
+    if ((unsigned)(y - c->oy) >= (unsigned)c->h) return;
+    if (x0 < c->ox) x0 = c->ox;
+    if (x1 > c->ox + c->w - 1) x1 = c->ox + c->w - 1;
+    if (x0 > x1) return;
+    bb_add(x0, x1, y);
+    dirty_span(x0, x1, y);
+    uint16_t *p = &CTX_PX(c, x0, y);
+    if (alpha >= 255) for (int x = x0; x <= x1; x++) *p++ = s->v;
+    else              for (int x = x0; x <= x1; x++) blend565(p++, s, alpha);
+}
 
+/* row half-width of a unit circle at |t| = k/64: sqrt(1 - t^2), tabled -
+ * the ESP32-S3 computes sqrtf in software and a fouled glass alone asks for
+ * ~7000 of them per frame (algae blobs); the quantisation is sub-pixel */
+static float ell_half(float t) {
+    static float lut[66]; static bool filled;
+    if (!filled) { for (int k = 0; k <= 65; k++) { float u = k / 64.0f; lut[k] = u < 1 ? sqrtf(1 - u * u) : 0; } filled = true; }
+    if (t < 0) t = -t;
+    return t >= 1 ? 0 : lut[(int)(t * 64 + 0.5f)];
+}
 static void fill_ellipse(ctx_t *c, float cx, float cy, float rx, float ry,
                          uint32_t rgb, int alpha) {
+    src_t s = src_color(rgb, c->dim);
     int y0 = (int)(cy - ry), y1 = (int)(cy + ry);
     for (int y = y0; y <= y1; y++) {
-        float t = (y - cy) / ry;
-        float w = 1 - t * t;
+        float w = ell_half((y - cy) / ry);
         if (w <= 0) continue;
-        float half = rx * sqrtf(w);
-        int x0 = (int)(cx - half), x1 = (int)(cx + half);
-        for (int x = x0; x <= x1; x++)
-            if (alpha >= 255) px(c, x, y, rgb565(rgb, c->dim));
-            else px_blend(c, x, y, rgb, alpha);
+        float half = rx * w;
+        span(c, (int)(cx - half), (int)(cx + half), y, &s, alpha);
     }
+}
+
+/* sine from a 256-entry table: the frond sway only has to look continuous,
+ * and the ESP32-S3 computes sinf in software (~1000 per frame at full
+ * canopy). Phases here are non-negative; & 255 keeps any sign honest. */
+static float fast_sin(float x) {
+    static float lut[256]; static bool filled;
+    if (!filled) { for (int i = 0; i < 256; i++) lut[i] = sinf(i * (TAU / 256)); filled = true; }
+    return lut[(int)(x * (256.0f / TAU)) & 255];
 }
 
 /* filled convex polygon, points in world space */
 static void fill_poly(ctx_t *c, const float *xs, const float *ys, int n, uint32_t rgb) {
     float miny = 1e9f, maxy = -1e9f;
     for (int i = 0; i < n; i++) { if (ys[i] < miny) miny = ys[i]; if (ys[i] > maxy) maxy = ys[i]; }
-    uint16_t col = rgb565(rgb, c->dim);
+    src_t s = src_color(rgb, c->dim);
     for (int y = (int)miny; y <= (int)maxy; y++) {
         float x0 = 1e9f, x1 = -1e9f;
         for (int i = 0; i < n; i++) {
@@ -65,7 +156,7 @@ static void fill_poly(ctx_t *c, const float *xs, const float *ys, int n, uint32_
                 if (x > x1) x1 = x;
             }
         }
-        for (int x = (int)x0; x <= (int)x1; x++) px(c, x, y, col);
+        span(c, (int)x0, (int)x1, y, &s, 255);
     }
 }
 
@@ -148,26 +239,37 @@ static void draw_fish(ctx_t *c, const tank_t *t, const fish_t *f, int idx) {
 #undef TY
 }
 
-/* a bed of swaying seaweed fronds; seed varies phase/heights between beds */
-static void draw_veg(ctx_t *c, const tank_t *t, float bx0, int n, int max_seg, int seed) {
-    for (int i = 0; i < n; i++) {
-        float bx = bx0 + i * 12;
-        uint32_t h = (uint32_t)((i + seed) * 2654435761u);
-        int segs = max_seg - (int)(h % 5);
-        float sway = sinf(t->clock * 0.9f + (i + seed) * 1.7f) * 4;
-        for (int seg = 0; seg < segs; seg++) {
-            float yy = TANK_H - 16 - seg * 3.2f;
-            float xx = bx + sway * seg / (float)segs *
-                       sinf(seg * 0.4f + t->clock * 0.6f + i + seed);
-            fill_ellipse(c, xx, yy, 2.4f - seg * 0.07f, 2.2f,
-                         (i + seed) & 1 ? 0x2e7d4f : 0x3f8b55, 220);
+/* a bed of swaying seaweed fronds; seed varies phase/heights between beds.
+ * n and max_seg come from tank_veg_bed (growth-driven: the beds keep growing
+ * up and out until the keeper trims them; at VEG_NUB they are green stubble).
+ * layer: 0 = the fronds drawn BEHIND the fish, 1 = the fronds drawn in FRONT
+ * (alternating), so a fish that dips into a canopy swims woven through it
+ * instead of floating on top. */
+
+/* algae film on the glass, drawn over everything: dappled blobs per covered
+ * grid cell, thicker film = bigger and greener. The keeper wipes it off. */
+static void draw_algae(ctx_t *c, const tank_t *t) {
+    for (int cy = 0; cy < ALGAE_ROWS; cy++)
+        for (int cx = 0; cx < ALGAE_COLS; cx++) {
+            int cov = t->algae[cy * ALGAE_COLS + cx];
+            if (!cov) continue;
+            uint32_t h = (uint32_t)((cx * 73856093u) ^ (cy * 19349663u));
+            float bx = cx * ALGAE_CELL, by = cy * ALGAE_CELL;
+            for (int b = 0; b < 3; b++) {
+                uint32_t hb = h ^ (b * 2654435761u);
+                float ox = (float)(hb % ALGAE_CELL);
+                float oy = (float)((hb >> 5) % ALGAE_CELL);
+                float r = (1.5f + (float)((hb >> 10) % 3)) * (0.55f + 0.45f * cov / 255.0f)
+                        + 2.2f * cov / 255.0f;
+                fill_ellipse(c, bx + ox, by + oy, r, r * 0.85f,
+                             (hb & 4) ? 0x3f7a45 : 0x35663d, 34 + cov * 96 / 255);
+            }
         }
-    }
 }
 
 /* optional per-stage frame profiling (render.h) */
 int64_t (*render_clock_us)(void) = NULL;
-int64_t render_prof_us[6];
+int64_t render_prof_us[7];
 #define PROF_MARK() (render_clock_us ? render_clock_us() : 0)
 #define PROF_ADD(i, t0) do { if (render_clock_us) { int64_t _n = render_clock_us(); render_prof_us[i] += _n - (t0); (t0) = _n; } } while (0)
 
@@ -206,9 +308,108 @@ static inline void px_darken(uint16_t *p, int a) {
                     (((*p & 31) * inv) >> 8));
 }
 
+/* a span that is FINAL: blended, then vignetted right here, and NOT marked
+ * dirty, so the re-apply sweep never touches it (scene cache mode only) */
+static inline void span_final(ctx_t *c, int x0, int x1, int y, const src_t *s, int alpha) {
+    if ((unsigned)(y - c->oy) >= (unsigned)c->h) return;
+    if (x0 < c->ox) x0 = c->ox;
+    if (x1 > c->ox + c->w - 1) x1 = c->ox + c->w - 1;
+    if (x0 > x1) return;
+    uint16_t *p = &CTX_PX(c, x0, y);
+    /* ONE vignette alpha per span, computed (a 5 px frond span changes it by
+       < 4%, invisible) rather than read: the PSRAM LUT costs a cache line
+       per span and fronds are vertical, which was most of the frond cost */
+    int a = vig_alpha((x0 + x1) >> 1, y);
+    if (alpha >= 255) {                         /* opaque: a store, no PSRAM read */
+        for (int x = x0; x <= x1; x++, p++) { *p = s->v; if (a) px_darken(p, a); }
+        return;
+    }
+    for (int x = x0; x <= x1; x++, p++) {
+        blend565(p, s, alpha);
+        if (a) px_darken(p, a);
+    }
+}
+
+/* water gradient colour of row y (shared by the scene bake and the frond
+ * pre-tint below) */
+static inline uint32_t water_rgb(int y) {
+    float p = (float)y / TANK_H;
+    return p < 0.45f ? mix(0x0a3c46, 0x08272f, p / 0.45f)
+                     : mix(0x08272f, 0x031015, (p - 0.45f) / 0.55f);
+}
+
+/* Fronds are drawn OPAQUE from a per-row pre-tinted palette (2026-09-04):
+ * the 220/255 blend against the water that gave them their depth tint is
+ * folded in here, once per row per colour, when the day/night dim changes -
+ * so each frond pixel is a store instead of a PSRAM read-modify-write
+ * (a ceiling-high jungle was ~16 of 19.5 ms on the device). Only what a
+ * frond covers OTHER than water changes: a fish behind a front-layer frond
+ * no longer shows through at 14%. */
+#define VEG_ALPHA 220
+static uint16_t g_veg_row[2][TANK_H];
+static float    g_veg_row_dim = -1;
+static void veg_tint_fill(float dim) {
+    static const uint32_t frond[2] = { 0x3f8b55, 0x2e7d4f };
+    if (g_veg_row_dim == dim) return;
+    for (int y = 0; y < TANK_H; y++) {
+        uint32_t w = water_rgb(y);
+        for (int k = 0; k < 2; k++)
+            g_veg_row[k][y] = rgb565(mix(w, frond[k], VEG_ALPHA / 255.0f), dim);
+    }
+    g_veg_row_dim = dim;
+}
+
+#define VEG_SEG_DY   3.2f                 /* segment pitch, px of height */
+#define VEG_SEG_RY   2.2f                 /* the old segment ellipse's half-height */
+#define VEG_MAX_SEGS (VEG_SEGS_FULL + 5)  /* tank_veg_bed tops out at VEG_SEGS_FULL */
+/* final: the scene cache is live, so each frond span applies its own vignette
+ * (see span_final) and needs no re-apply rect - a full canopy used to hand
+ * the sweep three bed-sized boxes, the largest PSRAM traffic in the frame. */
+static void draw_veg(ctx_t *c, const tank_t *t, int b, int seed, int layer, bool final) {
+    veg_tint_fill(c->dim);
+    int n; tank_veg_bed(t, b, NULL, NULL, NULL, &n);
+    for (int i = 0; i < n; i++) {
+        if ((i & 1) != layer) continue;
+        float bx;
+        /* each frond's own height (tank_t.veg_h): what the keeper cut is
+           exactly what shows - no render-side variation on top */
+        int segs = tank_veg_frond(t, b, i, &bx);
+        if (segs < 1) segs = 1;                    /* nubs: always a bit of green */
+        if (segs > VEG_MAX_SEGS) segs = VEG_MAX_SEGS;
+        float sway = fast_sin(t->clock * 0.9f + (i + seed) * 1.7f) * 4;
+        /* the swaying chain of segment centres (the frond's spine) */
+        float xs[VEG_MAX_SEGS + 1];
+        for (int seg = 0; seg <= segs; seg++)
+            xs[seg] = bx + sway * seg / (float)segs * fast_sin(seg * 0.4f + t->clock * 0.6f + i + seed);
+        /* one span per pixel row, centred on the spine, half-width tapering
+         * toward the tip: the same silhouette the old chain of overlapping
+         * ellipses drew (their union was a 5 px ribbon), at ~a quarter fewer
+         * pixels and without a sqrt per row. Full canopy = ~1000 segments. */
+        const uint16_t *pal = g_veg_row[(i + seed) & 1];
+        int y_bot = (int)(TANK_H - 16 + VEG_SEG_RY);
+        int y_top = (int)(TANK_H - 16 - (segs - 1) * VEG_SEG_DY - VEG_SEG_RY);
+        for (int y = y_bot; y >= y_top; y--) {
+            float sp = (TANK_H - 16 - y) / VEG_SEG_DY;          /* fractional segment */
+            if (sp < 0) sp = 0;
+            if (sp > segs - 1) sp = (float)(segs - 1);
+            /* taper relative to the frond's own length (2.4 px at the root,
+             * 0.4 at the tip): the old fixed 0.07/segment thinned every frond
+             * to nothing at 29 segments, a hidden height cap now that fronds
+             * grow to the ceiling (VEG_SEGS_FULL) */
+            float half = 2.4f - 2.0f * sp / (segs > 1 ? segs - 1 : 1);
+            if (half < 0.4f) half = 0.4f;
+            int k = (int)sp; float fr = sp - k;
+            float cx = xs[k] + (xs[k + 1] - xs[k]) * fr;
+            src_t s; s.v = pal[y];                              /* opaque: only .v is read */
+            if (final) span_final(c, (int)(cx - half), (int)(cx + half), y, &s, 255);
+            else       span(c, (int)(cx - half), (int)(cx + half), y, &s, 255);
+        }
+    }
+}
+
 
 static void draw_scene(const tank_t *t, uint16_t *fb, int stride, float dim) {
-    ctx_t c = { fb, stride, dim };
+    ctx_t c = ctx_full(fb, stride, dim);
     /* water gradient #0a3c46 → #08272f → #031015 */
     for (int y = 0; y < TANK_H; y++) {
         float p = (float)y / TANK_H;
@@ -235,12 +436,67 @@ static void draw_scene(const tank_t *t, uint16_t *fb, int stride, float dim) {
     fill_ellipse(&c, t->reef_x, TANK_H - 16, 34 * grow, 10 + 2 * (grow - 1) * 10, 0x123028, 255);
 }
 
+
+/* The baked scene (scene cache mode). Water gradient x porthole vignette
+ * computed in 8-bit and ORDERED-DITHERED to RGB565 (4x4 Bayer: at 322 ppi
+ * the pattern is invisible, the 5/6-bit banding of a dark gradient and of
+ * the vignette falloff is not - Strato saw it at the edges), then the floor
+ * and the reef on top, vignetted per pixel. Fills the vignette LUT on the
+ * way. Bake-only: fidelity here costs nothing per frame. The light shafts
+ * are gone (2026-09-01, Strato: they never looked good on this screen). */
+static void bake_scene(const tank_t *t, uint16_t *sc, float dim) {
+    static const uint8_t bayer[4][4] = { {0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5} };
+    for (int y = 0; y < TANK_H; y++) {
+        uint32_t col = water_rgb(y);
+        int r = (int)(((col >> 16) & 255) * dim), g = (int)(((col >> 8) & 255) * dim), b = (int)((col & 255) * dim);
+        for (int x = 0; x < TANK_W; x++) {
+            int a = vig_alpha(x, y);
+            if (g_vig) g_vig[y * TANK_W + x] = (uint8_t)a;
+            int inv = 256 - a, d = bayer[y & 3][x & 3];
+            int rr = (r * inv) >> 8, gg = (g * inv) >> 8, bb = (b * inv) >> 8;
+            int r5 = (rr + (d >> 1)) >> 3, g6 = (gg + (d >> 2)) >> 2, b5 = (bb + (d >> 1)) >> 3;
+            if (r5 > 31) r5 = 31;
+            if (g6 > 63) g6 = 63;
+            if (b5 > 31) b5 = 31;
+            sc[y * TANK_W + x] = (uint16_t)((r5 << 11) | (g6 << 5) | b5);
+        }
+    }
+    /* pebbled bottom: irregular top edge, speckled stones in three tones,
+       stable position hash; vignetted in 8-bit before quantising */
+    for (int x = 0; x < TANK_W; x++) {
+        uint32_t h = (uint32_t)(x * 2654435761u);
+        int top = TANK_H - 14 - (int)((h >> 8) % 5);
+        for (int y = top; y < TANK_H; y++) {
+            uint32_t h2 = (uint32_t)((x * 73856093u) ^ (y * 19349663u));
+            uint32_t tone = (h2 >> 4) % 16;
+            uint32_t col = tone < 2 ? 0x2e3b2c : tone < 5 ? 0x22301f
+                         : tone < 8 ? 0x1a2418 : 0x101a12;
+            int inv = 256 - (g_vig ? g_vig[y * TANK_W + x] : vig_alpha(x, y));
+            int r = (int)(((col >> 16) & 255) * dim) * inv >> 8;
+            int g = (int)(((col >> 8) & 255) * dim) * inv >> 8;
+            int b = (int)((col & 255) * dim) * inv >> 8;
+            sc[y * TANK_W + x] = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+        }
+    }
+    /* reef rock (the entity fish know); widens as the tank earns milestones */
+    ctx_t c = ctx_full(sc, TANK_W, dim);
+    src_t s = src_color(0x123028, dim);
+    float grow = 1.0f + 0.06f * popcount32(t->tank_ms_bits);
+    float rx = 34 * grow, ry = 10 + 2 * (grow - 1) * 10, cy = TANK_H - 16;
+    for (int y = (int)(cy - ry); y <= (int)(cy + ry); y++) {
+        float w = ell_half((y - cy) / ry);
+        if (w <= 0) continue;
+        span_final(&c, (int)(t->reef_x - rx * w), (int)(t->reef_x + rx * w), y, &s, 255);
+    }
+}
+
 void render_tank(const tank_t *t, uint16_t *fb, int stride) {
     float dim = t->night ? 0.45f : 1.0f;
-    ctx_t c = { fb, stride, dim };
+    ctx_t c = ctx_full(fb, stride, dim);
     int64_t p0 = PROF_MARK();
-    bool cached = g_scene && stride == TANK_W;
-    struct { short x0, y0, x1, y1; } rects[4 + MAX_FOOD + MAX_BUBBLE + N_FISH_MAX];
+    bool cached = g_scene && g_dirty && stride == TANK_W;
+    if (cached) memset(g_dirty, 0, TANK_H * DIRTY_WORDS_PER_ROW * sizeof(uint32_t));
+    struct { short x0, y0, x1, y1; } rects[4 + MAX_FOOD + MAX_BUBBLE + N_FISH_MAX + VEG_BEDS];
     int nr = 0;
 #define DYN_RECT(cx0, cy0, cx1, cy1) do { if (cached && nr < (int)(sizeof rects / sizeof rects[0])) { \
         rects[nr].x0 = (short)(cx0); rects[nr].y0 = (short)(cy0); \
@@ -248,16 +504,9 @@ void render_tank(const tank_t *t, uint16_t *fb, int stride) {
 
     if (cached) {
         if (g_scene_dim != dim) {
-            /* rebuild the static scene and bake the vignette into it (the
+            /* rebuild the static scene with the vignette baked in (the
                per-frame pass then only re-darkens dynamic patches) */
-            draw_scene(t, g_scene, TANK_W, dim);
-            ctx_t sc = { g_scene, TANK_W, dim };
-            for (int y = 0; y < TANK_H; y++)
-                for (int x = 0; x < TANK_W; x++) {
-                    int a = (g_vig && g_vig_filled) ? g_vig[y * TANK_W + x] : vig_alpha(x, y);
-                    if (g_vig && !g_vig_filled) g_vig[y * TANK_W + x] = (uint8_t)a;
-                    if (a) px_darken(&sc.fb[y * TANK_W + x], a);
-                }
+            bake_scene(t, g_scene, dim);
             if (g_vig) g_vig_filled = true;
             g_scene_dim = dim; g_scene_epoch++;
         }
@@ -267,26 +516,16 @@ void render_tank(const tank_t *t, uint16_t *fb, int stride) {
     } else draw_scene(t, fb, stride, dim);
     PROF_ADD(0, p0);
 
-    /* light shafts (subtle, day only) */
-    if (!t->night)
-        for (int i = 0; i < 3; i++) {
-            float sx = 60 + i * 150 + sinf(t->clock * 0.3f + i) * 18;
-            for (int y = 0; y < TANK_H * 2 / 3; y++)
-                for (int x = -8; x <= 8; x++)
-                    px_blend(&c, (int)(sx + x + y * 0.22f), y, 0x2a6a72, 14 - (x < 0 ? -x : x));
-        }
-    PROF_ADD(1, p0);
-    /* vegetation: the reef proper (left - grows lusher as the tank earns
-       milestones, never withers) and balancing decorative beds on the right
-       (scenery only, not in the schema) */
-    int lush = popcount32(t->tank_ms_bits); if (lush > 4) lush = 4;
-    float vx0 = t->reef_x - 24 - lush * 6; int vn0 = 5 + lush, vs0 = 14 + lush;
-    draw_veg(&c, t, vx0, vn0, vs0, 0);
-    draw_veg(&c, t, TANK_W * 0.84f, 4, 18, 7);
-    draw_veg(&c, t, TANK_W * 0.62f, 2, 8, 3);
-    DYN_RECT((int)vx0 - 8, TANK_H - 16 - (int)(vs0 * 3.2f) - 4, (int)vx0 + vn0 * 12 + 8, TANK_H - 1);
-    DYN_RECT((int)(TANK_W * 0.84f) - 8, TANK_H - 16 - (int)(18 * 3.2f) - 4, (int)(TANK_W * 0.84f) + 4 * 12 + 8, TANK_H - 1);
-    DYN_RECT((int)(TANK_W * 0.62f) - 8, TANK_H - 16 - (int)(8 * 3.2f) - 4, (int)(TANK_W * 0.62f) + 2 * 12 + 8, TANK_H - 1);
+    PROF_ADD(1, p0);   /* stage 1 (light shafts) retired 2026-09-01 */
+    /* vegetation, BACK layer: the reef bed (left - milestone lushness widens
+       its base, never withers) and two decor beds; all three keep growing up
+       and out with tank_t.veg_growth until the keeper trims them (slash the
+       canopy). Geometry comes from tank_veg_bed so physics and pixels agree.
+       The alternating FRONT fronds draw after the fish, below. */
+    static const int veg_seed[VEG_BEDS] = { 0, 7, 3 };
+    for (int b = 0; b < VEG_BEDS; b++)
+        draw_veg(&c, t, b, veg_seed[b], 0, cached);
+        /* no DYN_RECT: with the scene cache each frond span vignettes itself */
     PROF_ADD(2, p0);
     /* food pellets */
     for (int i = 0; i < MAX_FOOD; i++)
@@ -306,10 +545,16 @@ void render_tank(const tank_t *t, uint16_t *fb, int stride) {
     PROF_ADD(3, p0);
     /* fish */
     for (int i = 0; i < t->n_fish; i++) {
+        g_bb_on = true; g_bb_x0 = g_bb_y0 = 1 << 20; g_bb_x1 = g_bb_y1 = -1;
         draw_fish(&c, t, &t->fish[i], i);
-        int h = (int)(40 * t->fish[i].size) + 4;
-        DYN_RECT((int)t->fish[i].x - h, (int)t->fish[i].y - h, (int)t->fish[i].x + h, (int)t->fish[i].y + h);
+        g_bb_on = false;
+        if (g_bb_x1 >= g_bb_x0) DYN_RECT(g_bb_x0, g_bb_y0, g_bb_x1, g_bb_y1);
     }
+    /* vegetation, FRONT layer: the alternating fronds drawn over the fish,
+       so a fish inside a canopy is woven through it (each span applies its
+       own vignette and untags itself, so the fish rects below skip it) */
+    for (int b = 0; b < VEG_BEDS; b++)
+        draw_veg(&c, t, b, veg_seed[b], 1, cached);
     /* shadow overlay */
     if (t->shadow.active) {
         float fade = t->shadow.ttl < 2.2f ? t->shadow.ttl / 2.2f : 1.0f;
@@ -324,9 +569,9 @@ void render_tank(const tank_t *t, uint16_t *fb, int stride) {
        cache the full-frame pass is baked into the scene and only the dynamic
        patches are re-darkened; without one, the classic per-pixel pass runs. */
     if (cached) {
-        /* one row sweep over the union of the dynamic rects: pixels that
-           differ from the baked scene were drawn this frame and get the
-           vignette re-applied exactly once. */
+        /* one row sweep over the union of the dynamic rects: pixels marked
+           in the dirty mask were drawn this frame (and not already vignetted
+           inline) and get the vignette re-applied exactly once. */
         for (int y = 0; y < TANK_H; y++) {
             float dyf = (y - TANK_H * 0.5f) / (TANK_H * 0.5f);
             float rem = 0.72f - dyf * dyf;
@@ -350,9 +595,12 @@ void render_tank(const tank_t *t, uint16_t *fb, int stride) {
                 for (int s = 0; s < 2; s++) {           /* clip to the two ring spans */
                     int r0 = s ? (TANK_W - x_in > a0 ? TANK_W - x_in : a0) : a0;
                     int r1 = s ? a1 : (x_in - 1 < a1 ? x_in - 1 : a1);
+                    const uint32_t *drow = g_dirty + y * DIRTY_WORDS_PER_ROW;
                     for (int x = r0; x <= r1; x++) {
+                        uint32_t w = drow[x >> 5] >> (x & 31);
+                        if (!w) { x |= 31; continue; }         /* nothing else in this word */
+                        if (!(w & 1)) continue;
                         uint16_t *p = &c.fb[y * c.stride + x];
-                        if (*p == g_scene[y * TANK_W + x]) continue;
                         int a = (g_vig && g_vig_filled) ? g_vig[y * TANK_W + x] : vig_alpha(x, y);
                         if (a) px_darken(p, a);
                     }
@@ -376,14 +624,20 @@ void render_tank(const tank_t *t, uint16_t *fb, int stride) {
                 }
         }
     }
+    /* algae film sits ON the glass - over the water, the fish, even the
+     * vignette (which is why it draws after the re-darken pass: nothing
+     * behind it needs repair, and next frame's scene restore erases wiped
+     * cells for free) */
     PROF_ADD(5, p0);
+    draw_algae(&c, t);
+    PROF_ADD(6, p0);
 #undef DYN_RECT
 }
 
 /* device battery pill, top-right: outline + nub, fill fraction colored by
  * level (charging = teal). Same visual language as the stats card - no text. */
 void render_battery(uint16_t *fb, int stride, float frac, bool charging) {
-    ctx_t c = { fb, stride, 1.0f };
+    ctx_t c = ctx_full(fb, stride, 1.0f);
     if (frac < 0) frac = 0;
     if (frac > 1) frac = 1;
     const int W = 26, H = 11, X = TANK_W - W - 28, Y = 9;   /* clear of the curved bezel */
@@ -410,57 +664,171 @@ static void ring(ctx_t *c, float cx, float cy, float r, uint32_t rgb) {
     }
 }
 
-static void bar(ctx_t *c, int x, int y, float frac, uint32_t rgb, bool revealed) {
-    fill_ellipse(c, x + 2, y + 2, 2.4f, 2.4f, rgb, revealed ? 255 : 90);   /* legend dot */
-    for (int yy = 0; yy < 5; yy++)                             /* track */
-        for (int xx = 0; xx < 70; xx++)
-            if (revealed || (xx & 4)) px_blend(c, x + 8 + xx, y + yy, 0x2a3f45, revealed ? 160 : 90);
-    if (!revealed) return;                                     /* not yet discovered */
-    int w = (int)(70 * (frac < 0 ? 0 : frac > 1 ? 1 : frac));
-    for (int yy = 0; yy < 5; yy++)                             /* fill */
-        for (int xx = 0; xx < w; xx++)
-            px_blend(c, x + 8 + xx, y + yy, rgb, 235);
+/* blend one native RGB565 pixel (icon art is pre-colored; no dim - the card
+ * ignores night, matching px_blend's use with c->dim = 1) */
+static void px565_blend(ctx_t *c, int x, int y, uint16_t v, int a) {
+    if (!CTX_IN(c, x, y)) return;
+    uint16_t *p = &CTX_PX(c, x, y);
+    int r = (*p >> 11)       + (((v >> 11)       - (*p >> 11))       * a >> 8);
+    int g = ((*p >> 5) & 63) + ((((v >> 5) & 63) - ((*p >> 5) & 63)) * a >> 8);
+    int b = (*p & 31)        + (((v & 31)        - (*p & 31))        * a >> 8);
+    *p = (uint16_t)((r << 11) | (g << 5) | b);
 }
 
-void render_stats_card(const tank_t *t, int fish_idx, uint16_t *fb, int stride) {
-    if (fish_idx < 0 || fish_idx >= t->n_fish) return;
-    ctx_t c = { fb, stride, 1.0f };            /* card ignores night dimming */
+/* draw a baked icon (icons.h, generated from Strato's pixel art) at x,y.
+ * alpha scales the icon's own alpha plane: 255 = as drawn, lower = dimmed
+ * (unrevealed traits, torn thought bubbles). */
+static void blit_icon(ctx_t *c, int x, int y, const icon_t *ic, int alpha) {
+    for (int j = 0; j < ic->h; j++)
+        for (int i = 0; i < ic->w; i++) {
+            int a = ic->a[j * ic->w + i];
+            if (!a) continue;
+            px565_blend(c, x + i, y + j, ic->rgb[j * ic->w + i], a * alpha >> 8);
+        }
+}
+
+/* a segmented meter: value 0..1 over `segs` segments of `sw` x 10 px. The
+ * last partial segment fills proportionally, so it still reads analog up
+ * close but "3 of 5" at a glance. */
+static void meter(ctx_t *c, int x, int y, int segs, int sw, float frac, uint32_t rgb) {
+    if (frac < 0) frac = 0;
+    if (frac > 1) frac = 1;
+    float per = 1.0f / segs;
+    src_t on = src_color(rgb, c->dim), off = src_color(0x2a3f45, c->dim);
+    for (int s = 0; s < segs; s++) {
+        int sx = x + s * (sw + 2);
+        float have = (frac - s * per) / per;                   /* 0..1 of this segment */
+        int fw = have >= 1 ? sw : have <= 0 ? 0 : (int)(have * sw + 0.5f);
+        for (int yy = 0; yy < 10; yy++) {
+            if (fw > 0)  span(c, sx, sx + fw - 1, y + yy, &on, 235);
+            if (fw < sw) span(c, sx + fw, sx + sw - 1, y + yy, &off, 150);
+        }
+    }
+}
+
+/* a trait spectrum: pole icons at both ends, the fish sits at `frac` between
+ * them. Unrevealed = dimmed poles, dashed line, a "?" instead of the dot -
+ * you learn who a fish is by watching it, not by reading it. */
+static void slider(ctx_t *c, int x, int y, int w, float frac, uint32_t rgb,
+                   const icon_t *lo, const icon_t *hi, bool revealed) {
+    blit_icon(c, x, y, lo, revealed ? 255 : 70);
+    blit_icon(c, x + w - 16, y, hi, revealed ? 255 : 70);
+    int lx = x + 20, lw = w - 40, ly = y + 8;                  /* the line between poles */
+    for (int xx = 0; xx < lw; xx++)
+        if (revealed || (xx & 4))
+            for (int yy = -1; yy <= 0; yy++) px_blend(c, lx + xx, ly + yy, 0x2a3f45, revealed ? 200 : 110);
+    if (revealed) {
+        if (frac < 0) frac = 0;
+        if (frac > 1) frac = 1;
+        fill_ellipse(c, lx + lw * frac, ly - 0.5f, 3.4f, 3.4f, rgb, 255);
+        fill_ellipse(c, lx + lw * frac - 1, ly - 1.5f, 1.0f, 1.0f, 0xffffff, 200);
+    } else
+        blit_icon(c, lx + lw / 2 - 8, y, &icon_unknown_16, 220);
+}
+
+static void card_draw(ctx_t c, const tank_t *t, int fish_idx) {
     const fish_t *f = &t->fish[fish_idx];
-
-    ring(&c, f->x, f->y, 17 * f->size, f->color);
-
-    /* card: top-left, bordered in the fish's own color (that's its "name") */
-    const int X = 14, Y = 8, W = 92, H = 84;   /* x clear of the curved bezel */
-    for (int y = Y; y < Y + H; y++)
-        for (int x = X; x < X + W; x++)
-            px_blend(&c, x, y, 0x04141a, 215);
+    /* card: top-left, bordered in the fish's own color (that's its "name").
+     * Two zones: NEEDS (things you can act on now - icon + segmented meter)
+     * above the divider, WHO THEY ARE (slow traits - pole-to-pole spectrum
+     * sliders) below it. Iconified 2026-08-30 with Strato's pixel art. */
+    const int X = RENDER_CARD_X, Y = RENDER_CARD_Y, W = RENDER_CARD_W, H = RENDER_CARD_H; /* x clear of the curved bezel */
+    /* backdrop: 28k blended pixels - hoisted (this alone was most of the
+     * card's ~12 ms/frame on the device through per-pixel px_blend) */
+    src_t bg = src_color(0x04141a, 1.0f);
+    for (int y = Y; y < Y + H; y++) span(&c, X, X + W - 1, y, &bg, 215);
     for (int x = X; x < X + W; x++) { px(&c, x, Y, rgb565(f->color, 1)); px(&c, x, Y + H - 1, rgb565(f->color, 1)); }
     for (int y = Y; y < Y + H; y++) { px(&c, X, y, rgb565(f->color, 1)); px(&c, X + W - 1, y, rgb565(f->color, 1)); }
 
-    /* drives (0..10) then personality (0..1); personality is revealed by
-       behaviour you have seen this fish do */
+    /* identity row: swatch, stage pips (earned ones lit), certainty dot -
+     * bright = the model was sure of its last decision, dim = torn */
+    fill_ellipse(&c, X + 14, Y + 14, 6, 6, f->color, 255);
+    fill_ellipse(&c, X + 11, Y + 11, 1.6f, 1.6f, 0xffffff, 150);
+    for (int i = 0; i < 4; i++) {
+        if (i <= (int)f->stage) fill_ellipse(&c, X + 30 + i * 10, Y + 14, 2.8f, 2.8f, f->accent, 255);
+        else ring(&c, X + 30 + i * 10, Y + 14, 2.8f, 0x2a3f45);
+    }
+    fill_ellipse(&c, X + W - 14, Y + 14, 3.2f, 3.2f, 0xffffff, (int)(40 + 200 * f->goal.confidence));
+    /* growth: a thin bar under the pips filling toward the next stage (tended
+     * time only - fish grow while the tank is lit and lived-in). Elders are
+     * done growing, so no bar. */
+    if (f->stage < STAGE_ELDER) {
+        static const float edge[5] = { 0, STAGE_JUV_AGE, STAGE_ADULT_AGE, STAGE_ELDER_AGE, STAGE_ELDER_AGE };
+        float a0 = edge[f->stage], a1 = edge[f->stage + 1];
+        float frac = (progression_age_s(t, fish_idx) - a0) / (a1 - a0);
+        if (frac < 0) frac = 0;
+        if (frac > 1) frac = 1;
+        const int gx = X + 27, gw = 37;                        /* spans the pip row */
+        for (int xx = 0; xx < gw; xx++)
+            for (int yy = 0; yy < 2; yy++)
+                px_blend(&c, gx + xx, Y + 21 + yy, xx < (int)(gw * frac + 0.5f) ? f->accent : 0x2a3f45,
+                         xx < (int)(gw * frac + 0.5f) ? 235 : 150);
+    }
+
+    /* needs: 5 segments each. Hunger is shown as FULLNESS - a full belly is
+     * a full meter, and it drains as the fish gets hungry (a food icon next
+     * to a growing bar read backwards) */
+    struct { const icon_t *ic; float v; uint32_t rgb; } needs[4] = {
+        { &icon_hunger, 10.0f - f->hunger, 0xffbd59 },
+        { &icon_energy, f->energy,         0x78d67d },
+        { &icon_stress, f->stress,         0xf25b65 },
+        { &icon_trust,  f->trust,          0xffd166 },
+    };
+    for (int i = 0; i < 4; i++) {
+        int ry = Y + 30 + i * 27;
+        blit_icon(&c, X + 8, ry, needs[i].ic, 255);
+        meter(&c, X + 38, ry + 7, 5, 14, needs[i].v / 10.0f, needs[i].rgb);
+    }
+
+    /* divider between the zones */
+    for (int x = X + 8; x < X + W - 8; x++) px_blend(&c, x, Y + 142, 0x2a3f45, 200);
+
+    /* who they are: spectrum sliders, revealed by behaviour you have seen
+       this fish do (docs/progression.md habits) */
     bool saw_bold = f->ms_bits & (MS_FIRST_DART | MS_FIRST_SHRUG);
     bool saw_social = f->ms_bits & MS_FIRST_FOLLOW;
     bool saw_curious = f->ms_bits & (MS_FIRST_REEF | MS_FIRST_BUBBLES);
-    bar(&c, X + 5, Y + 6,  f->hunger / 10.0f,    0xffbd59, true);        /* hunger: pellet-amber */
-    bar(&c, X + 5, Y + 15, f->energy / 10.0f,    0x78d67d, true);        /* energy: green */
-    bar(&c, X + 5, Y + 24, f->stress / 10.0f,    0xf25b65, true);        /* stress: red */
-    bar(&c, X + 5, Y + 33, f->curiosity / 10.0f, 0x6db9ff, saw_curious); /* curiosity: blue */
-    bar(&c, X + 5, Y + 44, f->bold,              0xffffff, saw_bold);    /* bold: white */
-    bar(&c, X + 5, Y + 53, f->sociable,          0x38dcc7, saw_social);  /* social: teal */
-    bar(&c, X + 5, Y + 62, f->trust / 10.0f,     0xffd166, true);        /* trust: gold */
+    slider(&c, X + 8, Y + 152, W - 16, f->bold,             0xffffff, &icon_shy,      &icon_bold,    saw_bold);
+    slider(&c, X + 8, Y + 178, W - 16, f->sociable,         0x38dcc7, &icon_solo,     &icon_social,  saw_social);
+    slider(&c, X + 8, Y + 204, W - 16, f->curiosity / 10.0f, 0x6db9ff, &icon_cautious, &icon_curious, saw_curious);
+}
 
-    /* stage pips: fry=1 .. elder=4 */
-    for (int i = 0; i <= (int)f->stage; i++)
-        fill_ellipse(&c, X + 10 + i * 9, Y + 76, 2.6f, 2.6f, f->accent, 255);
-    /* on its mind: a faint dot for how sure the last decision was (bright =
-       certain, dim = torn) - the distribution layer made visible */
-    fill_ellipse(&c, X + W - 12, Y + 76, 3.0f, 3.0f, 0xffffff, (int)(40 + 200 * f->goal.confidence));
+/* ---- stats card cache (2026-09-01) ----
+ * The card cost ~7 ms of every frame it was up (28k blended backdrop pixels
+ * + icons + meters) - fps sagged whenever the keeper inspected a fish. With a
+ * cache it is redrawn at most 4x a second over the STATIC water under it
+ * (from the scene cache, so the translucent backdrop looks as before; only
+ * things swimming behind the card stop showing through at 16%) and copied
+ * into the frame otherwise. The selection ring follows the fish per frame. */
+static uint16_t *g_card = NULL;
+static int g_card_fish = -1; static float g_card_t = -1; static unsigned g_card_epoch;
+void render_set_card_cache(uint16_t *buf) { g_card = buf; g_card_fish = -1; }
+
+void render_stats_card(const tank_t *t, int fish_idx, uint16_t *fb, int stride) {
+    if (fish_idx < 0 || fish_idx >= t->n_fish) return;
+    ctx_t c = ctx_full(fb, stride, 1.0f);            /* card ignores night dimming */
+    const fish_t *f = &t->fish[fish_idx];
+    ring(&c, f->x, f->y, 17 * f->size, f->color);
+    unsigned ep; const uint16_t *scene = render_scene_buf(&ep);
+    if (g_card && scene) {
+        if (fish_idx != g_card_fish || ep != g_card_epoch ||
+            t->clock - g_card_t > 0.25f || t->clock < g_card_t) {
+            for (int y = 0; y < RENDER_CARD_H; y++)
+                memcpy(g_card + y * RENDER_CARD_W,
+                       scene + (RENDER_CARD_Y + y) * TANK_W + RENDER_CARD_X, RENDER_CARD_W * 2);
+            ctx_t cc = { g_card, RENDER_CARD_W, 1.0f, RENDER_CARD_X, RENDER_CARD_Y, RENDER_CARD_W, RENDER_CARD_H };
+            card_draw(cc, t, fish_idx);
+            g_card_fish = fish_idx; g_card_epoch = ep; g_card_t = t->clock;
+        }
+        for (int y = 0; y < RENDER_CARD_H; y++)
+            memcpy(fb + (RENDER_CARD_Y + y) * stride + RENDER_CARD_X,
+                   g_card + y * RENDER_CARD_W, RENDER_CARD_W * 2);
+    } else card_draw(c, t, fish_idx);
 }
 
 /* ---- milestones view ---- */
 void render_milestones(const tank_t *t, uint16_t *fb, int stride) {
-    ctx_t c = { fb, stride, 1.0f };
+    ctx_t c = ctx_full(fb, stride, 1.0f);
     for (int y = 0; y < TANK_H; y++)
         for (int x = 0; x < TANK_W; x++) fb[y * stride + x] = rgb565(0x031015, 1);
     const int X0 = 40, PIP = 26, ROW = 40, Y0 = 36;

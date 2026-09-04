@@ -1,8 +1,8 @@
 # Schema v3 retrain — runbook (prepared 2026-08-21; RUN 2026-08-22, outcome at the bottom)
 
-**Heads-up: trace generation drives an Ollama server hard for hours** — point
-`HOST` at a machine you can monopolize. Everything below is prepared and
-dry-run; the only thing missing is the data.
+**Point `HOST` at an Ollama machine you can monopolize for the run** - a
+generation cycle keeps the teacher busy for hours. Everything below is
+prepared and dry-run; the only thing missing is the data.
 
 ## Why v3 (one data cycle, three wins)
 

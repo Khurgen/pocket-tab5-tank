@@ -13,6 +13,7 @@
 #include "esp_heap_caps.h"
 #include "esp_partition.h"
 #include "esp_system.h"
+#include "esp_memory_utils.h"
 #include "tank.h"
 #include "advisor.h"
 #include "render.h"
@@ -22,6 +23,7 @@
 #include "touch_port.h"
 #include "battery_port.h"
 #include "imu_port.h"
+#include "director.h"
 #include "progression.h"
 #include "nvs_flash.h"
 #include "rtc_port.h"
@@ -94,6 +96,7 @@ static bool s_btn_armed; static int64_t s_btn_low_since;   /* sleep_button_poll 
 static void enter_sleep(void) {
     ESP_LOGI(TAG, "sleep: save, panel off, drowse (slow metabolism; BOOT wakes)");
     progression_save(&tank);
+    imu_port_sleep();          /* quiesce BEFORE the rails cycle (latch-up guard) */
     display_port_sleep();
     while (!gpio_get_level(BTN_SLEEP)) vTaskDelay(pdMS_TO_TICKS(10));
     vTaskDelay(pdMS_TO_TICKS(30));
@@ -118,6 +121,7 @@ static void enter_sleep(void) {
     ESP_LOGI(TAG, "wake: slept %.0f s, hunger[0] %.1f", (esp_timer_get_time() - t0) / 1e6,
              tank.n_fish ? tank.fish[0].hunger : 0.0f);
     display_port_wake();
+    imu_port_wake();           /* soft reset + reconfig: never resume on trust */
     progression_save(&tank);
     s_btn_armed = false; s_btn_low_since = 0;               /* require a fresh press */
 }
@@ -155,7 +159,7 @@ static void tank_task(void *arg) {
     (void)arg;
     int64_t last = esp_timer_get_time(); int cur = 0;
     int64_t last_log = last;
-    int64_t render_us = 0, flush_us = 0; uint32_t frames = 0;
+    int64_t render_us = 0, flush_us = 0, card_us = 0; uint32_t frames = 0, card_frames = 0;
     for (;;) {
         int64_t now = esp_timer_get_time();
         float dt = (now - last) / 1e6f; last = now; if (dt > 0.25f) dt = 0.25f;
@@ -165,6 +169,7 @@ static void tank_task(void *arg) {
         display_port_set_inverted(inv);   /* per-frame, so a flip lands between flushes */
         touch_port_set_inverted(inv);
         touch_port_poll(&tank);
+        director_poll(&tank);
         tank_tick(&tank, dt, llm_ok ? advisor_llm_esp : advisor_rules);
         progression_tick(&tank, dt);
         if (fb[cur]) {
@@ -180,12 +185,19 @@ static void tank_task(void *arg) {
                                                 keep quick finger taps from slipping
                                                 between 40 ms frame boundaries */
             int sel = touch_port_selected();
+            int64_t tc = esp_timer_get_time();
+            if (touch_port_milestones()) {       /* milestones page: covers the tank until a tap */
+                render_milestones(&tank, fb[cur], TANK_W);
+                sel = -1;
+            }
             if (sel >= 0) {                      /* tapped fish: stats card + battery */
                 render_stats_card(&tank, sel, fb[cur], TANK_W);
-                float bf; bool chg;
-                if (battery_port_read(&bf, &chg)) render_battery(fb[cur], TANK_W, bf, chg);
+                static float bf; static bool chg, bok; static int64_t bat_us;
+                if (now - bat_us > 1000000) { bok = battery_port_read(&bf, &chg); bat_us = now; }  /* the I2C gauge read once a second, not per frame */
+                if (bok) render_battery(fb[cur], TANK_W, bf, chg);
             }
             int64_t t1 = esp_timer_get_time();
+            if (sel >= 0) { card_us += t1 - tc; card_frames++; }
             display_port_flush(fb[cur]);
             touch_port_poll(&tank);
             render_us += t1 - t0; flush_us += esp_timer_get_time() - t1; frames++;
@@ -205,12 +217,16 @@ static void tank_task(void *arg) {
                          fb[cur] ? fb[cur][5 * TANK_W + 5] : 0,
                          sc ? sc[(TANK_H / 2) * TANK_W + TANK_W / 2] : 0, ep,
                          (int)tank.night, (int)s_prefetch_pending);
-                ESP_LOGI("display", "%.1f fps | render %.1f ms flush %.1f ms | scene %.1f shafts %.1f veg %.1f fd/bub %.1f fish %.1f vig %.1f",
+                ESP_LOGI("display", "%.1f fps | render %.1f ms flush %.1f ms | scene %.1f shafts %.1f veg %.1f fd/bub %.1f fish %.1f vig %.1f algae %.1f | card %.1f ms x%lu | veg %.2f %.2f %.2f",
                          frames * 1e6f / (float)(now - last_log),
                          render_us / 1e3f / frames, flush_us / 1e3f / frames,
                          render_prof_us[0] / 1e3f / frames, render_prof_us[1] / 1e3f / frames,
                          render_prof_us[2] / 1e3f / frames, render_prof_us[3] / 1e3f / frames,
-                         render_prof_us[4] / 1e3f / frames, render_prof_us[5] / 1e3f / frames);
+                         render_prof_us[4] / 1e3f / frames, render_prof_us[5] / 1e3f / frames,
+                         render_prof_us[6] / 1e3f / frames,
+                         card_frames ? card_us / 1e3f / card_frames : 0.0f, (unsigned long)card_frames,
+                         tank.veg_growth[0], tank.veg_growth[1], tank.veg_growth[2]);
+                card_us = 0; card_frames = 0;
                 memset(render_prof_us, 0, sizeof render_prof_us);
             }
             render_us = flush_us = 0; frames = 0;
@@ -249,6 +265,19 @@ void app_main(void) {
     if (scene) render_set_scene_cache(scene); else ESP_LOGW(TAG, "no scene cache RAM: full redraw per frame");
     uint8_t *vig = heap_caps_malloc(TANK_W * TANK_H, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (vig) render_set_vignette_cache(vig);
+    /* dirty mask (20 KB): internal SRAM if it fits - it is cleared and read
+       every frame, and in PSRAM that was ~1.5 ms; PSRAM fallback */
+    uint32_t *dirty = heap_caps_malloc(RENDER_DIRTY_WORDS * 4, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!dirty) dirty = heap_caps_malloc(RENDER_DIRTY_WORDS * 4, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (dirty) render_set_dirty_mask(dirty); else ESP_LOGW(TAG, "no dirty mask RAM: full redraw per frame");
+    ESP_LOGI(TAG, "dirty mask %s", !dirty ? "none" : esp_ptr_external_ram(dirty) ? "PSRAM" : "internal SRAM");
+    /* stats card cache: redrawn 4x/s, blitted otherwise. Internal SRAM if it
+       fits (a PSRAM->PSRAM copy of the 56 KB sprite cost 3.3 ms per frame,
+       more than the draw it replaced) */
+    uint16_t *card = heap_caps_malloc(RENDER_CARD_W * RENDER_CARD_H * 2, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!card) card = heap_caps_malloc(RENDER_CARD_W * RENDER_CARD_H * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (card) render_set_card_cache(card);
+    ESP_LOGI(TAG, "card cache %s", !card ? "none" : esp_ptr_external_ram(card) ? "PSRAM" : "internal SRAM");
     /* model: mmap the raw partition; weights are read through the flash cache */
     const esp_partition_t *mp = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, 0x40, "model");
     if (!mp) { ESP_LOGE(TAG, "no model partition"); }
@@ -265,6 +294,7 @@ void app_main(void) {
     touch_port_init();
     battery_port_init(board_i2c_bus());
     imu_port_init(board_i2c_bus());   /* screen auto-flip; absent IMU = always upright */
+    director_init();                  /* serial scenario console (filming / bench) */
     /* scene-prefetch DMA: installed only AFTER the display grabbed its SPI DMA
        channel — installed earlier, async memcpy steals SPI2's GDMA trigger
        slot and the panel silently loses its pixel path (black screen). */
@@ -281,5 +311,20 @@ void app_main(void) {
     progression_boot(&tank);                 /* restore (or a new random pair) + ravenous rule */
     ESP_LOGI(TAG, "population %d (cap %d): %s + %s ...", tank.n_fish, POP_CAP,
              tank.fish[0].name, tank.n_fish > 1 ? tank.fish[1].name : "-");
+    /* one-shot: what a frame costs with the stats card up (the card only
+       renders on a tap, so the running profile rarely shows it) */
+    if (fb[0] && tank.n_fish > 0) {
+        uint16_t *tmp = heap_caps_aligned_alloc(64, PLAN_FB_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (tmp) {
+            render_tank(&tank, tmp, TANK_W);
+            int64_t t0 = esp_timer_get_time();
+            render_stats_card(&tank, 0, tmp, TANK_W);          /* first: redraw into the cache */
+            int64_t t1 = esp_timer_get_time();
+            for (int i = 0; i < 4; i++) render_stats_card(&tank, 0, tmp, TANK_W);   /* then: blits */
+            ESP_LOGI("display", "stats card: redraw %.1f ms, blit %.1f ms per frame",
+                     (t1 - t0) / 1e3f, (esp_timer_get_time() - t1) / 4e3f);
+            heap_caps_free(tmp);
+        }
+    }
     xTaskCreatePinnedToCore(tank_task, "tank", 12288, NULL, 4, NULL, 0);
 }

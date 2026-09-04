@@ -29,6 +29,43 @@
 #define MAX_FOOD   8
 #define MAX_BUBBLE 24
 
+/* upkeep: the vegetation beds keep growing - up toward the surface and out,
+ * wider - and algae films the glass with time (both faster while the device
+ * drowses); the keeper's thumb is the cure. Every frond has its own height
+ * (2026-09-04, Strato: trimming was a chunk at a time): a sideways stroke
+ * through a canopy cuts exactly the fronds it crosses, at the height where
+ * it crosses them (never below nubs - little bits of green always remain);
+ * a drag elsewhere wipes algae.
+ * Vegetation is a comfort system (2026-09-04 rework): growth IS height - a
+ * bed at growth g stands g of the way from the floor to the surface, so only
+ * the tank ceiling limits it. Fish like cover: any canopy calms them (more
+ * inside it - a hiding place halves a shadow's press), and NO cover anywhere
+ * (every bed scalped) is a mild unease. Only a tank being truly smothered
+ * presses back: two or more beds past VEG_SMOTHER height. Stress is already
+ * in the advisor's schema, so the model reacts without any schema change. */
+#define VEG_BEDS   3                           /* reef bed + two decor beds */
+#define VEG_NUB    0.03f                       /* trim floor: ~13 px green stubble */
+#define VEG_BARE   0.10f                       /* tallest bed under this = no cover
+                                                * anywhere: mild unease (relieved the
+                                                * moment one tuft regrows past it) */
+#define VEG_NURSERY 0.12f                      /* a bed this tall (~47 px, hides an adult
+                                                * body) is a NURSERY: courtship happens
+                                                * low in it and a fry is only born with
+                                                * one somewhere (2026-09-04) */
+#define VEG_SMOTHER 0.85f                      /* the SECOND-tallest bed past this =
+                                                * smothered: real stress, trim it back.
+                                                * One bed at the ceiling is just a
+                                                * good place to hide. */
+#define VEG_FRONDS_MAX 16                      /* per-bed frond slots (reef bed: 11-15) */
+#define VEG_SEGS_FULL 107                      /* frond segments at growth 1: the tip
+                                                * of the tallest frond touches y~10,
+                                                * just under the surface (render.c
+                                                * VEG_SEG_DY 3.2 px pitch from y=352) */
+#define ALGAE_CELL 16                          /* px per glass-film grid cell */
+#define ALGAE_COLS (TANK_W / ALGAE_CELL)       /* 28 */
+#define ALGAE_ROWS (TANK_H / ALGAE_CELL)       /* 23 */
+#define ALGAE_CELLS (ALGAE_COLS * ALGAE_ROWS)
+
 typedef enum {
     GOAL_SEEK_FOOD, GOAL_FLEE_SHADOW, GOAL_VISIT_BUBBLES, GOAL_FOLLOW_FRIEND,
     GOAL_EXPLORE, GOAL_REST, GOAL_DART_PLAY, GOAL_INSPECT_REEF,
@@ -66,7 +103,8 @@ enum {
     TMS_PAIR = 1u << 0, TMS_TRIO = 1u << 1, TMS_QUARTET = 1u << 2, TMS_QUINTET = 1u << 3,
     TMS_SEXTET = 1u << 4, TMS_FIRST_QUIET_NIGHT = 1u << 5, TMS_FIRST_PLAY_SESSION = 1u << 6,
     TMS_CHANGED_SOMEONE = 1u << 7, TMS_FIRST_FEEDING = 1u << 8,
-    TMS_COUNT = 9
+    TMS_FIRST_TRIM = 1u << 9, TMS_FIRST_CLEANING = 1u << 10,
+    TMS_COUNT = 11
 };
 
 typedef struct {
@@ -136,14 +174,55 @@ typedef struct tank {
     bool     startled;             /* aggressive-tap flee mode engaged */
     float    startle_x, startle_y;
     float    startle_cooldown;     /* seconds of calm needed to disengage */
+    /* glass wipe (algae cleaning) + canopy slash (vegetation trim): platform
+     * re-asserts drag_active every frame a finger is on the glass; tank.c
+     * consumes it like hold_active */
+    bool     drag_active;
+    bool     drag_has_prev;
+    float    drag_px, drag_py;     /* previous drag point */
+    float    drag_dist;            /* travel in this stroke; wiping engages past a threshold */
+    bool     slash_armed;          /* the stroke STARTED on a bed's canopy */
+    bool     slash_engaged;        /* ... and has travelled sideways enough to be scissors */
+    bool     slash_cut;            /* ... and has cut at least one frond (trims++ once) */
+    float    slash_x0, slash_y0;   /* stroke start (the pre-engage travel is cut retroactively) */
+    float    slash_h, slash_v;     /* travel this stroke: horizontal / vertical */
+    /* upkeep state (persisted by progression.c) */
+    float    veg_h[VEG_BEDS][VEG_FRONDS_MAX]; /* per-frond height, VEG_NUB..1 (fraction
+                                               * of the way from the floor to the surface) */
+    float    veg_growth[VEG_BEDS]; /* per-bed canopy = MEAN frond height, VEG_NUB..1,
+                                    * derived (tank.c veg_sync) - read-only outside;
+                                    * set a bed with tank_veg_set */
+    uint8_t  algae[ALGAE_CELLS];   /* glass film per cell, 0..255 */
+    float    algae_acc;            /* seconds toward the next algae growth step */
+    int32_t  trims;                /* lifetime bed trims (milestone + save) */
+    int32_t  cells_cleaned;        /* lifetime algae cells wiped (milestone + save) */
     /* keeper habits the tank remembers (persisted by progression.c) */
     float    feed_spot_x;          /* where the keeper usually feeds (EMA); <0 = unknown */
     int      player_feedings;      /* feed gestures so far */
     int      hold_approaches;      /* calm holds that drew a fish all the way in */
     float    greet_timer;          /* light-on greeting: trusting fish come up front */
-    bool     ravenous;             /* starving tank, empty water: fish beg at the
-                                    * surface, trickle holds off (progression.c
-                                    * owns entry/exit; tank.c renders the wait) */
+    /* courtship tell (progression.c decides, tank.c performs): when the tank
+     * is one care-condition away from earning an arrival - or one is already
+     * staged - the two most-trusting grown fish occasionally circle together
+     * near the reef. "Something is close", said in fish. */
+    bool     courting;
+    int8_t   court_a, court_b;     /* the parents-to-be (-1 = fewer than 2 grown fish) */
+    float    court_cool;           /* seconds until the next courtship episode */
+    float    court_active;         /* seconds left of the current episode */
+    bool     ravenous;             /* starving tank: with empty water the fish
+                                    * beg at the surface; the moment pellets
+                                    * land they DASH for them (feeding frenzy).
+                                    * Trickle holds off throughout. progression.c
+                                    * owns entry/exit; tank.c renders both
+                                    * phases; ends when everyone has eaten. */
+    bool     trickle_off;          /* director/test knob: the tank's own trickle
+                                    * holds off entirely (staged hunger for a
+                                    * shot). Not saved. */
+    bool     ravenous_fed;         /* the keeper HAS fed during this episode: whoever
+                                    * is still starving keeps begging, but the trickle
+                                    * no longer holds off (one fish gobbling every
+                                    * pellet must not leave a slower one begging for
+                                    * the whole give-up valve). progression.c sets it. */
     uint32_t tank_ms_bits;         /* TMS_* milestones reached */
     /* advisor scheduling (need-based, see tank_tick) */
     int      ask_rr;               /* rotating start index for fairness */
@@ -188,7 +267,9 @@ void  tank_light_auto(tank_t *t);
 
 /* Touch input (platform feeds these; sim = mouse, device = FT3168):
  *  tank_touch_hold: call EVERY FRAME while a finger rests on the glass at x,y.
- *    High-trust fish drift over to investigate; low-trust fish keep away.
+ *    After ~3 s of contact, high-trust fish drift over to investigate (the
+ *    delay keeps taps/double-taps from twitching the school); low-trust or
+ *    strongly hungry fish keep to their own business.
  *  tank_touch_tap:  call once per tap. A tap on the water surface (y below
  *    FEED_ZONE_Y) is a FEED gesture: pellets drop there, nothing else happens.
  *    Elsewhere: 2 quick taps then a pause toggles the light; 3+ quick taps =
@@ -201,6 +282,15 @@ void  tank_light_auto(tank_t *t);
 #define FEED_ZONE_Y 26.0f
 void  tank_touch_hold(tank_t *t, float x, float y);
 void  tank_touch_tap(tank_t *t, float x, float y);
+/* tank_touch_drag: call EVERY FRAME while a finger is down at x,y (moving or
+ * not; tank.c tracks travel). Once a stroke has moved far enough it becomes a
+ * WIPE: algae cells along the path are squeegeed clean. A mostly-HORIZONTAL
+ * stroke that STARTS on a vegetation bed is a SLASH: every frond it crosses
+ * is cut to the height where the stroke crosses it (a lower pass cuts again;
+ * nothing ever cuts below nubs) - a short sideways flick takes one or two
+ * fronds, a sweep along the floor mows the bed. Deliberately more travel
+ * than a tap, so aiming at a fish can never shear the garden. */
+void  tank_touch_drag(tank_t *t, float x, float y);
 void  tank_feed(tank_t *t, float x, int n);
 
 /* Diagnostic: episodes where a starving fish ignored available food >4s.
@@ -208,6 +298,21 @@ void  tank_feed(tank_t *t, float x, int n);
 extern int tank_reflex_overrides;
 void  tank_scatter_food(tank_t *t, int n);      /* the tank's own trickle (random x) */
 void  tank_start_shadow(tank_t *t);
+/* upkeep hooks. tank_veg_bed gives bed b's canopy geometry - x span, top y
+ * of its tallest frond, frond count - and tank_veg_frond one frond's spine x
+ * and segment count, shared by render (what you see) and tank.c physics
+ * (slow swimming inside, the cut test), so they can't drift apart.
+ * tank_veg_set puts every frond of a bed at height g (tests, the sim's demo
+ * key, old saves). tank_grow_algae runs n growth steps now (the same steps
+ * time runs on its own; tests and the sim's demo key use it directly). */
+void  tank_veg_bed(const tank_t *t, int b, float *x0, float *x1, float *top_y, int *fronds);
+int   tank_veg_frond(const tank_t *t, int b, int i, float *x);
+void  tank_veg_set(tank_t *t, int b, float g);
+/* the tallest bed at VEG_NURSERY or better, -1 if none (progression gates
+ * courtship and arrivals on it; tank.c stages the courtship there) */
+int   tank_nursery_bed(const tank_t *t);
+void  tank_veg_sync(tank_t *t);                 /* veg_growth[] from veg_h[][] (after a load) */
+void  tank_grow_algae(tank_t *t, int steps);
 
 /* helpers shared with advisor/render/progression */
 float tank_dist(float ax, float ay, float bx, float by);

@@ -1,4 +1,5 @@
 #include "progression.h"
+#include <stddef.h>
 #include <string.h>
 #include <math.h>
 
@@ -16,6 +17,7 @@ const char *const MS_NAMES[MS_FISH_COUNT] = {
 const char *const TMS_NAMES[TMS_COUNT] = {
     "a pair", "a trio", "a quartet", "a quintet", "a sextet",
     "first quiet night", "first play session", "the tank changed someone", "first feeding",
+    "first trimming", "first glass cleaning",
 };
 
 typedef struct {
@@ -36,7 +38,20 @@ typedef struct {
     int32_t  player_feedings, hold_approaches;
     uint32_t tank_ms_bits;
     fish_save_t fish[N_FISH_MAX];
+    /* ---- upkeep tail (2026-08-30). Fields only ever APPEND here: boot falls
+     * back to loading the prefix above from an older PTK2 save; the zeroed
+     * tail then reads as clean glass and default vegetation (0 is not a legal
+     * growth - the floor is VEG_NUB - so restore treats it as "keep the
+     * fresh-tank default"). ---- */
+    float    veg_growth[VEG_BEDS];
+    uint8_t  algae[ALGAE_CELLS];
+    int32_t  trims, cells_cleaned;
+    /* per-frond heights (2026-09-04); an older save (no tail, or zeros)
+     * seeds every frond from its bed's veg_growth */
+    float    veg_h[VEG_BEDS][VEG_FRONDS_MAX];
 } save_t;
+#define SAVE_CORE_SIZE   offsetof(save_t, veg_growth)   /* pre-upkeep PTK2 size */
+#define SAVE_UPKEEP_SIZE offsetof(save_t, veg_h)        /* 2026-08-30 .. 09-04 size */
 
 float progression_time_scale = 1.0f;
 
@@ -45,8 +60,9 @@ static float s_shrug_t[N_FISH_MAX];  /* seconds holding a non-flee goal with a s
 static bool  s_threatened[N_FISH_MAX];
 static float s_since_save, s_dirty_since;
 static bool  s_dirty;
-static bool  s_ravenous;             /* begging active until first feeding / give-up */
-static float s_ravenous_t;           /* seconds spent begging */
+static bool  s_ravenous;             /* begging/frenzy active until everyone's fed / give-up */
+static float s_ravenous_t;           /* seconds spent begging (dash time excluded) */
+static int   s_rav_feedings0;        /* player_feedings when the episode began (tank.ravenous_fed) */
 static bool  s_arrival_pending;
 static bool  s_prev_night;
 static bool  s_booted;
@@ -71,7 +87,7 @@ static void apply_stage(fish_t *f, float age) {
 
 /* size: base by stage, plus a meal-fed bonus; never shrinks below stage base */
 static void apply_growth(fish_t *f) {
-    static const float stage_scale[4] = { 0.55f, 0.78f, 1.0f, 1.08f };
+    static const float stage_scale[4] = { 0.55f, 0.78f, 1.04f, 1.23f };  /* elder +14% (2026-08-30) */
     float fed = 1.0f + clampf(f->eaten / 60.0f, 0, 1) * 0.18f;
     f->size = f->base_size * stage_scale[f->stage] * fed;
 }
@@ -90,15 +106,21 @@ static void do_arrival(tank_t *t) {
     int slot = tank_add_fish(t, a, b);
     s_arrival_pending = false;
     if (slot < 0) return;
+    int nb = tank_nursery_bed(t);            /* born in the grass it was courted in */
+    if (nb >= 0) {
+        float x0, x1; tank_veg_bed(t, nb, &x0, &x1, NULL, NULL);
+        t->fish[slot].x = (x0 + x1) * 0.5f; t->fish[slot].y = TANK_H - 16 - 18;
+    }
     s_age[slot] = 0; s_shrug_t[slot] = 0; s_threatened[slot] = false;
     t->fish[slot].ms_bits = MS_ARRIVED;
     if (t->n_fish <= N_FISH_MAX) set_tms(t, POP_TMS[t->n_fish]);
     mark_dirty();
 }
 
-/* care gates (docs/progression-next.md, Act 2): never time alone */
-static bool arrival_earned(const tank_t *t) {
-    if (t->n_fish >= POP_CAP || t->n_fish >= N_FISH_MAX) return false;
+/* care gates (docs/progression-next.md, Act 2): never time alone.
+ * Counted, not just checked, so the tank can TELL when it's close: one
+ * condition shy of an arrival, the parents-to-be start courting. */
+static void arrival_conditions(const tank_t *t, int *met, int *total) {
     float min_trust = 10; bool changed = false;
     for (int i = 0; i < t->n_fish; i++) {
         const fish_t *f = &t->fish[i];
@@ -107,25 +129,58 @@ static bool arrival_earned(const tank_t *t) {
     }
     const fish_t *last = &t->fish[t->n_fish - 1];
     switch (t->n_fish) {
-    case 2:  return min_trust >= 6.0f && t->player_feedings >= 12 && t->hold_approaches >= 1;
-    case 3:  return last->stage >= STAGE_JUV && (changed || t->player_feedings >= 40);
-    case 4:  return last->stage >= STAGE_ADULT && t->player_feedings >= 80 && min_trust >= 7.0f;
-    default: return last->stage >= STAGE_ADULT && t->player_feedings >= 140 && min_trust >= 8.0f;
+    case 2:  *total = 3; *met = (min_trust >= 6.0f) + (t->player_feedings >= 12) + (t->hold_approaches >= 1); break;
+    case 3:  *total = 2; *met = (last->stage >= STAGE_JUV) + (changed || t->player_feedings >= 40); break;
+    case 4:  *total = 3; *met = (last->stage >= STAGE_ADULT) + (t->player_feedings >= 80) + (min_trust >= 7.0f); break;
+    default: *total = 3; *met = (last->stage >= STAGE_ADULT) + (t->player_feedings >= 140) + (min_trust >= 8.0f); break;
     }
 }
 
+static bool arrival_earned(const tank_t *t) {
+    if (t->n_fish >= POP_CAP || t->n_fish >= N_FISH_MAX) return false;
+    if (tank_nursery_bed(t) < 0) return false;   /* no grass to be born in */
+    int met, total;
+    arrival_conditions(t, &met, &total);
+    return met == total;
+}
+
 void progression_force_arrival(tank_t *t) { s_arrival_pending = true; do_arrival(t); }
+void progression_stage_arrival(tank_t *t) { (void)t; if (!s_arrival_pending) { s_arrival_pending = true; mark_dirty(); } }
+
+void progression_fresh(tank_t *t) {
+    tank_new_population(t);          /* a new tank: two FRY, contrasting -
+                                      * the keeper watches them grow up */
+    for (int i = 0; i < N_FISH_MAX; i++) { s_age[i] = 0; s_shrug_t[i] = 0; s_threatened[i] = false; }
+    t->tank_ms_bits = TMS_PAIR;
+    for (int i = 0; i < t->n_fish; i++) { t->fish[i].ms_bits = MS_ARRIVED; apply_growth(&t->fish[i]); }
+    s_arrival_pending = false; s_prev_night = t->night;
+    s_ravenous = false; s_ravenous_t = 0;
+    s_booted = true;
+    mark_dirty();
+}
+
+void progression_set_age(tank_t *t, int idx, float seconds) {
+    if (idx < 0 || idx >= t->n_fish) return;
+    s_age[idx] = seconds < 0 ? 0 : seconds;
+    apply_stage(&t->fish[idx], s_age[idx]);
+    apply_growth(&t->fish[idx]);
+    mark_dirty();
+}
 
 void progression_boot(tank_t *t) {
     save_t sv; memset(&sv, 0, sizeof sv);
     s_booted = true;
-    if (!persist_port_load(&sv, sizeof sv) || sv.magic != SAVE_MAGIC || sv.n_fish < 2 || sv.n_fish > N_FISH_MAX) {
-        tank_new_population(t);                                  /* a new tank: two adults */
-        for (int i = 0; i < N_FISH_MAX; i++) { s_age[i] = STAGE_ADULT_AGE; s_shrug_t[i] = 0; s_threatened[i] = false; }
-        t->tank_ms_bits = TMS_PAIR;
-        for (int i = 0; i < t->n_fish; i++) t->fish[i].ms_bits = MS_ARRIVED | MS_REACHED_JUV | MS_REACHED_ADULT;
-        s_arrival_pending = false; s_prev_night = t->night;
-        mark_dirty();
+    bool loaded = persist_port_load(&sv, sizeof sv);
+    if (!loaded) {                       /* pre-frond upkeep save: load that prefix */
+        memset(&sv, 0, sizeof sv);
+        loaded = persist_port_load(&sv, SAVE_UPKEEP_SIZE);
+    }
+    if (!loaded) {                       /* pre-upkeep PTK2 save: load the prefix */
+        memset(&sv, 0, sizeof sv);
+        loaded = persist_port_load(&sv, SAVE_CORE_SIZE);
+    }
+    if (!loaded || sv.magic != SAVE_MAGIC || sv.n_fish < 2 || sv.n_fish > N_FISH_MAX) {
+        progression_fresh(t);
         return;
     }
     t->n_fish = 0;
@@ -143,14 +198,23 @@ void progression_boot(tank_t *t) {
     t->light_override = sv.light_override; t->light_on = sv.light_on;
     t->feed_spot_x = sv.feed_spot_x; t->player_feedings = sv.player_feedings;
     t->hold_approaches = sv.hold_approaches; t->tank_ms_bits = sv.tank_ms_bits;
+    for (int b = 0; b < VEG_BEDS; b++) {
+        if (sv.veg_h[b][0] > 0)
+            for (int i = 0; i < VEG_FRONDS_MAX; i++) t->veg_h[b][i] = sv.veg_h[b][i];
+        else if (sv.veg_growth[b] > 0) tank_veg_set(t, b, sv.veg_growth[b]);
+    }
+    tank_veg_sync(t);
+    memcpy(t->algae, sv.algae, ALGAE_CELLS);
+    t->trims = sv.trims; t->cells_cleaned = sv.cells_cleaned;
     s_arrival_pending = sv.arrival_pending;
     s_prev_night = t->night;
     int64_t now = clock_port_now_unix();
     if (now > 0 && sv.saved_unix > 0 && now - sv.saved_unix >= RAVENOUS_AFTER_S) {
         s_ravenous = true; s_ravenous_t = 0;                 /* the one offline rule */
+        s_rav_feedings0 = t->player_feedings;
         for (int i = 0; i < t->n_fish; i++) t->fish[i].hunger = 9.6f;
     }
-    if (s_arrival_pending && !t->night) do_arrival(t);       /* earned while you were away: here it is */
+    if (s_arrival_pending && !t->night && tank_nursery_bed(t) >= 0) do_arrival(t);   /* earned while you were away: here it is */
 }
 
 void progression_tick(tank_t *t, float dt) {
@@ -193,6 +257,14 @@ void progression_tick(tank_t *t, float dt) {
     if (n_dart >= 2) set_tms(t, TMS_FIRST_PLAY_SESSION);
     if (changed_someone) set_tms(t, TMS_CHANGED_SOMEONE);
     if (t->player_feedings > 0) set_tms(t, TMS_FIRST_FEEDING);
+    /* upkeep milestones + event saves (a chore done deserves to stick) */
+    static int32_t s_prev_trims, s_prev_cleaned;
+    if (t->trims > 0) set_tms(t, TMS_FIRST_TRIM);
+    if (t->cells_cleaned >= 30) set_tms(t, TMS_FIRST_CLEANING);
+    if (t->trims != s_prev_trims || t->cells_cleaned != s_prev_cleaned) {
+        s_prev_trims = t->trims; s_prev_cleaned = t->cells_cleaned;
+        mark_dirty();
+    }
 
     /* ravenous: a starving tank with empty water begs at the surface (tank.c
      * renders the wait; the trickle holds off so the keeper's pellets are the
@@ -203,18 +275,42 @@ void progression_tick(tank_t *t, float dt) {
     if (!s_ravenous && !any_food && t->n_fish > 0) {
         float mn = 10;
         for (int i = 0; i < t->n_fish; i++) if (t->fish[i].hunger < mn) mn = t->fish[i].hunger;
-        if (mn >= 8.5f) { s_ravenous = true; s_ravenous_t = 0; }
+        if (mn >= 8.5f) { s_ravenous = true; s_ravenous_t = 0; s_rav_feedings0 = t->player_feedings; }
     }
     if (s_ravenous) {
-        s_ravenous_t += dt;
-        int ate = 0; for (int i = 0; i < t->n_fish; i++) ate |= (t->fish[i].hunger < 6);
-        if (ate) s_ravenous = false;                          /* first feeding ends it */
+        if (!any_food) s_ravenous_t += dt;    /* the wait; a dash for live pellets isn't giving up */
+        float mx = 0;
+        for (int i = 0; i < t->n_fish; i++) if (t->fish[i].hunger > mx) mx = t->fish[i].hunger;
+        if (mx < 7.0f) s_ravenous = false;                    /* everyone got a bite */
         else if (s_ravenous_t > RAVENOUS_GIVE_UP_S) {         /* nobody came: back to life */
             s_ravenous = false;
             tank_scatter_food(t, 2);                          /* so it doesn't re-trigger at once */
         }
     }
-    t->ravenous = s_ravenous && !any_food;
+    /* tank.c picks the presentation: empty water = beg at the surface; live
+     * pellets = feeding-frenzy dash (real starving fish DART at fresh food) */
+    t->ravenous = s_ravenous;
+    t->ravenous_fed = s_ravenous && t->player_feedings != s_rav_feedings0;
+
+    /* the courtship tell: one condition shy of an arrival (or one staged),
+     * the two most-trusting grown fish pair up - tank.c stages the episodes.
+     * The pair is chosen exactly the way do_arrival picks parents. */
+    t->courting = false; t->court_a = t->court_b = -1;
+    if (t->n_fish < POP_CAP && t->n_fish < N_FISH_MAX && tank_nursery_bed(t) >= 0) {
+        /* ... and only with a nursery: a bed tall enough to hide in. Shave
+         * every bed and the courting stops until one regrows. */
+        int met, total;
+        arrival_conditions(t, &met, &total);
+        if (s_arrival_pending || met >= total - 1) {
+            int a = -1, b = -1;
+            for (int i = 0; i < t->n_fish; i++) {
+                if (t->fish[i].stage < STAGE_ADULT) continue;
+                if (a < 0 || t->fish[i].trust > t->fish[a].trust) { b = a; a = i; }
+                else if (b < 0 || t->fish[i].trust > t->fish[b].trust) b = i;
+            }
+            if (a >= 0 && b >= 0) { t->courting = true; t->court_a = (int8_t)a; t->court_b = (int8_t)b; }
+        }
+    }
 
     /* light-on: greet, and show a staged arrival */
     bool light_on_edge = s_prev_night && !t->night;
@@ -222,7 +318,7 @@ void progression_tick(tank_t *t, float dt) {
     s_prev_night = t->night;
     if (light_on_edge) {
         t->greet_timer = 6.0f;
-        if (s_arrival_pending) do_arrival(t);
+        if (s_arrival_pending && tank_nursery_bed(t) >= 0) do_arrival(t);   /* the fry waits for grass */
     }
     if (!s_arrival_pending && arrival_earned(t)) { s_arrival_pending = true; mark_dirty(); }
 
@@ -239,6 +335,12 @@ void progression_save(tank_t *t) {
     sv.arrival_pending = s_arrival_pending; sv.n_fish = (uint8_t)t->n_fish;
     sv.feed_spot_x = t->feed_spot_x; sv.player_feedings = t->player_feedings;
     sv.hold_approaches = t->hold_approaches; sv.tank_ms_bits = t->tank_ms_bits;
+    for (int b = 0; b < VEG_BEDS; b++) {
+        sv.veg_growth[b] = t->veg_growth[b];
+        for (int i = 0; i < VEG_FRONDS_MAX; i++) sv.veg_h[b][i] = t->veg_h[b][i];
+    }
+    memcpy(sv.algae, t->algae, ALGAE_CELLS);
+    sv.trims = t->trims; sv.cells_cleaned = t->cells_cleaned;
     for (int i = 0; i < t->n_fish; i++) {
         const fish_t *f = &t->fish[i]; fish_save_t *s = &sv.fish[i];
         s->preset = (uint8_t)f->preset; s->stage = (uint8_t)f->stage;

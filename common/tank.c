@@ -3,8 +3,11 @@
  * ~0.55 for the 448-wide tank. */
 #include "tank.h"
 #include <math.h>
+#include <stddef.h>
 
 #define TAU 6.2831853f
+static void veg_sync(tank_t *t);   /* veg_growth[] = per-bed mean of veg_h[][] */
+#define VEG_START 0.35f          /* a fresh tank: comfortable canopy cover */
 
 const char *const GOAL_NAMES[GOAL_COUNT] = {
     "seek_food", "flee_shadow", "visit_bubbles", "follow_friend",
@@ -103,7 +106,7 @@ void tank_make_fish(tank_t *t, int slot, int preset, float sociable, float bold,
     f->goal_age = 0; f->ask_age = 99; f->dart_timer = 0; f->dart_x = f->x; f->dart_y = f->y; f->hesitate = 0;
     f->eaten = 0; f->eaten_player = 0;
     /* its own spot by the reef: bolder fish rest a little further out */
-    f->rest_dx = 20 + slot * 9 + bold * 18; f->rest_dy = -slot * 7 - tank_randf(t, 0, 10);
+    f->rest_dx = 8 + slot * 24 + bold * 14; f->rest_dy = -slot * 9 - tank_randf(t, 0, 10);   /* a body apart (was 9 px per slot) */
     f->sig = 0xffffffffu; f->ms_bits = 0;
     f->color = p->color; f->fin = p->fin; f->accent = p->accent;
 }
@@ -122,8 +125,10 @@ void tank_new_population(tank_t *t) {
     float ba, bb, sa, sb;
     do { ba = tank_randf(t, 0.1f, 0.9f); bb = tank_randf(t, 0.1f, 0.9f); } while (fabsf(ba - bb) < 0.45f);
     do { sa = tank_randf(t, 0.1f, 0.9f); sb = tank_randf(t, 0.1f, 0.9f); } while (fabsf(sa - sb) < 0.3f);
-    tank_make_fish(t, 0, a, sa, ba, STAGE_ADULT);
-    tank_make_fish(t, 1, b, sb, bb, STAGE_ADULT);
+    /* both start as FRY: the founding pair grows up on the keeper's watch
+     * (progression halved the stage clocks to match - 0.5/3/24 tended hours) */
+    tank_make_fish(t, 0, a, sa, ba, STAGE_FRY);
+    tank_make_fish(t, 1, b, sb, bb, STAGE_FRY);
     t->n_fish = 2;
 }
 
@@ -169,7 +174,23 @@ void tank_init(tank_t *t, uint32_t seed) {
     t->tap_count = 0; t->tap_burst_t = 99; t->startled = false;
     t->startle_cooldown = 0;
     t->feed_spot_x = -1; t->player_feedings = 0; t->hold_approaches = 0; t->greet_timer = 0;
-    t->ravenous = false;
+    t->courting = false; t->court_a = t->court_b = -1;
+    t->court_cool = 30; t->court_active = 0;
+    t->ravenous = false; t->trickle_off = false;
+    t->drag_active = false; t->drag_has_prev = false; t->drag_dist = 0;
+    for (int b = 0; b < VEG_BEDS; b++) {
+        /* a fresh tank's canopy has a natural profile: fronds within +-0.04
+           of VEG_START, seeded per slot so it's the same tank every boot */
+        for (int i = 0; i < VEG_FRONDS_MAX; i++) {
+            uint32_t h = (uint32_t)((b * 17 + i + 1) * 2654435761u);
+            t->veg_h[b][i] = VEG_START + ((int)(h >> 8 & 255) - 128) / 128.0f * 0.04f;
+        }
+    }
+    veg_sync(t);
+    t->slash_armed = t->slash_engaged = t->slash_cut = false;
+    t->slash_h = t->slash_v = 0;
+    for (int i = 0; i < ALGAE_CELLS; i++) t->algae[i] = 0;
+    t->algae_acc = 0; t->trims = 0; t->cells_cleaned = 0;
     t->tank_ms_bits = 0; t->ask_rr = 0; t->advisor_asks = 0;
     tank_scatter_food(t, 2);
 }
@@ -177,10 +198,286 @@ void tank_init(tank_t *t, uint32_t seed) {
 #define TAP_WINDOW      0.5f    /* taps closer than this form a burst */
 #define STARTLE_RADIUS  140.0f  /* fish this close to an aggressive tap bolt */
 #define STARTLE_COOLDOWN 6.0f   /* calm seconds before the spook wears off */
-#define HOLD_RADIUS     160.0f  /* fish this close notice a resting finger */
+#define HOLD_RADIUS     1000.0f /* a resting finger is seen from anywhere on the
+                                 * glass (2026-09-04, was 160: a fish only came
+                                 * when you held next to it, which hid the
+                                 * trust tell) */
+#define HOLD_ATTRACT_S  2.7f    /* hold_time before fish approach; platforms
+                                 * report holds ~0.3 s in, so ≈3 s of contact */
+#define HOLD_HUNGER_VETO 7.5f   /* this hungry, a fish ignores the finger */
+
+/* ---- hunger economy (2026-09-01) ----
+ * The prototype's per-second metabolism (0.15 + 0.12*bold: fed to starving
+ * in under a minute) shipped unchanged into a tank the keeper tends for a
+ * few minutes at a time - and the trickle that fed the prototype's single
+ * fish was scaled per FRAME, so at the device's 25 fps it dropped 2.4x fewer
+ * pellets than the 60 fps sim and could never keep up with four fish: the
+ * school lived at hunger 9-10, begging under the surface (Strato: "ravenous
+ * too often, hovering near the top, breaking the experience").
+ * Now: a meal lasts ~5-6 minutes of awake time, and the tank's own trickle is
+ * HUNGER-GATED and per-second - it drops a pellet only while somebody is
+ * really hungry (a few seconds' wait), so an untended tank cycles between
+ * "peckish" and "just fed" on its own and never reaches the ravenous
+ * threshold (8.5, progression.c) awake. Ravenous begging is once again the
+ * after-sleep / long-absence event it was designed to be (tank_tick_sleep's
+ * 0.8/h), and the keeper's pellets are what make a fish FULL - play, bubbles,
+ * the reef, a friend: the fed-fish repertoire. The advisor sees only banded
+ * hunger, so its training distribution is untouched. */
+#define HUNGER_PER_S       0.010f   /* fed -> starving in ~17 min (shy fish) */
+#define HUNGER_BOLD_PER_S  0.008f   /* bold fish burn hotter: ~9 min */
+#define HUNGER_DART_PER_S  0.012f   /* play costs extra */
+#define TRICKLE_HUNGER     7.5f     /* the tank feeds itself only past this (someone) */
+#define TRICKLE_RATE       0.15f    /* pellets/s while the gate is open (~7 s wait) */
+#define CURIOSITY_SPEND_PER_S 0.25f /* spent at the bubbles / the reef: 9 -> 3 in ~24 s */
+#define CURIOSITY_SPEND_RADIUS 60.0f
+
+/* ---- upkeep: the vegetation keeps growing, algae films the glass ----
+ * Vegetation is a comfort system, not scenery: fish swim slower inside the
+ * canopy and their stress (already in the advisor's schema) answers to it -
+ * cover calms (a canopy is a place to hide), a tank being smothered (two
+ * beds past VEG_SMOTHER) presses hard, a completely scalped tank is a mild
+ * unease that lifts as soon as one tuft regrows. Rates are per real second;
+ * tank_tick runs them awake, tank_tick_sleep runs them faster (an untended
+ * dark tank is where the garden gets away from you). */
+#define VEG_GROW_AWAKE_S    108000.0f /* nubs -> full canopy in ~30 h awake */
+#define VEG_GROW_SLEEP_S    36000.0f  /* ~10 h of drowse */
+#define VEG_SEG_PX          3.2f      /* render.c VEG_SEG_DY: px of height per segment */
+#define VEG_SLOW            0.60f     /* cruise speed factor inside a canopy */
+#define ALGAE_STEP_AWAKE_S  240.0f    /* one film growth step per 4 min awake */
+#define ALGAE_STEP_SLEEP_S  120.0f
+#define ALGAE_COVER_CAP     0.30f     /* growth stops claiming new cells here */
+#define WIPE_RADIUS      20.0f  /* squeegee half-width around the drag path */
+#define WIPE_ENGAGE_PX   18.0f  /* stroke travel before a drag starts wiping
+                                 * (a rolly fingertip tap stays under this) */
+#define SLASH_PX         16.0f  /* sideways travel before a stroke is scissors (a
+                                 * rolly fingertip tap stays under this; one
+                                 * frond pitch is 12 px, so a flick takes 1-2) */
+#define SLASH_RATIO      1.5f   /* ... and it must be this much more h than v */
+#define SLASH_START_PX   10.0f  /* a slash must START this close to a FROND (its spine
+                                 * sideways, its tip upward) - not the bed's box:
+                                 * a cleaning scrub begun mid-glass over a tall bed
+                                 * used to arm the scissors (Strato, 2026-09-04) */
+
+static int popcount32u(uint32_t v) { int n = 0; while (v) { n += v & 1; v >>= 1; } return n; }
+
+/* canopy geometry: one source of truth for render, the trim hit test and the
+ * in-canopy slowdown. Bed 0 is the reef bed (milestone lushness widens its
+ * base, as ever); growth adds fronds (out, wider) and segments (up, toward
+ * the surface). Height IS growth (2026-09-04): every bed's tallest frond
+ * stands g of the way from the floor to the surface - at growth 1 it
+ * touches the tank ceiling, whichever bed it is - so "85% grown" and "85%
+ * of the tank's height" are the same thing for the comfort band below. At
+ * VEG_NUB the fronds are ~5 segment green stubble. */
+static int veg_segs(float h) { return 2 + (int)(h * (VEG_SEGS_FULL - 2)); }
+static void veg_bed_base(const tank_t *t, int b, float *bx0, int *n) {
+    int lush = popcount32u(t->tank_ms_bits); if (lush > 4) lush = 4;
+    int base_n;
+    if (b == 0)      { *bx0 = t->reef_x - 24 - lush * 6; base_n = 5 + lush; }
+    else if (b == 1) { *bx0 = TANK_W * 0.84f; base_n = 4; }
+    else             { *bx0 = TANK_W * 0.62f; base_n = 2; }
+    /* the frond count is fixed per bed now (it used to widen with growth):
+       with fronds cut one at a time, a bed's outer fronds can't be allowed
+       to vanish because its MEAN height dropped */
+    int nn = base_n + 6;
+    if (nn > VEG_FRONDS_MAX) nn = VEG_FRONDS_MAX;
+    while (nn > 1 && *bx0 + nn * 12 > TANK_W - 8) nn--;   /* beds stop at the glass */
+    *n = nn;
+}
+void tank_veg_bed(const tank_t *t, int b, float *x0, float *x1, float *top_y, int *fronds) {
+    float bx0; int n;
+    veg_bed_base(t, b, &bx0, &n);
+    float hmax = 0;
+    for (int i = 0; i < n; i++) if (t->veg_h[b][i] > hmax) hmax = t->veg_h[b][i];
+    if (x0) *x0 = bx0 - 6;
+    if (x1) *x1 = bx0 + n * 12 + 6;
+    if (top_y) *top_y = TANK_H - 16 - veg_segs(hmax) * VEG_SEG_PX - 4;
+    if (fronds) *fronds = n;
+}
+int tank_nursery_bed(const tank_t *t) {
+    int best = -1;
+    for (int b = 0; b < VEG_BEDS; b++)
+        if (t->veg_growth[b] >= VEG_NURSERY && (best < 0 || t->veg_growth[b] > t->veg_growth[best])) best = b;
+    return best;
+}
+/* where the pair circles: low inside the nursery bed, a flat loop that weaves
+ * the fronds (body centre ~14 px off the floor line) */
+static void court_site(const tank_t *t, float *cx, float *cy, float *rx) {
+    int b = tank_nursery_bed(t);
+    if (b < 0) { *cx = t->reef_x + 26; *cy = TANK_H - 78; *rx = 26; return; }   /* legacy spot */
+    float x0, x1; tank_veg_bed(t, b, &x0, &x1, NULL, NULL);
+    *cx = (x0 + x1) * 0.5f; *cy = TANK_H - 16 - 14;
+    float half = (x1 - x0) * 0.5f - 8; *rx = half < 16 ? 16 : half > 30 ? 30 : half;
+}
+int tank_veg_frond(const tank_t *t, int b, int i, float *x) {
+    float bx0; int n;
+    veg_bed_base(t, b, &bx0, &n);
+    if (x) *x = bx0 + i * 12;
+    return veg_segs(t->veg_h[b][i]);
+}
+/* veg_growth[b] is the bed's mean frond height - the comfort band, the save
+ * and the firmware log read it; recomputed after anything moves a frond */
+static void veg_sync(tank_t *t) {
+    for (int b = 0; b < VEG_BEDS; b++) {
+        float bx0; int n; veg_bed_base(t, b, &bx0, &n);
+        float sum = 0;
+        for (int i = 0; i < n; i++) sum += t->veg_h[b][i];
+        t->veg_growth[b] = sum / n;
+    }
+}
+static void veg_grow(tank_t *t, float dg) {
+    for (int b = 0; b < VEG_BEDS; b++)
+        for (int i = 0; i < VEG_FRONDS_MAX; i++)
+            t->veg_h[b][i] = fminf(1, t->veg_h[b][i] + dg);
+    veg_sync(t);
+}
+void tank_veg_sync(tank_t *t) { veg_sync(t); }
+void tank_veg_set(tank_t *t, int b, float g) {
+    for (int i = 0; i < VEG_FRONDS_MAX; i++) t->veg_h[b][i] = g;
+    veg_sync(t);
+}
+
+/* is (x,y) inside bed b's canopy? */
+/* is (x,y) within `m` px of some frond of bed b - beside its spine and no
+ * higher than its tip? The slash arms only from here. */
+static bool veg_near_frond(const tank_t *t, int b, float x, float y, float m) {
+    float x0, x1; int n;
+    tank_veg_bed(t, b, &x0, &x1, NULL, &n);
+    if (x < x0 - m || x > x1 + m) return false;
+    for (int i = 0; i < n; i++) {
+        float fx; int segs = tank_veg_frond(t, b, i, &fx);
+        float tip = TANK_H - 16 - segs * VEG_SEG_PX;
+        if (fabsf(x - fx) <= m && y >= tip - m) return true;
+    }
+    return false;
+}
+static bool veg_inside(const tank_t *t, int b, float x, float y) {
+    float x0, x1, ty;
+    tank_veg_bed(t, b, &x0, &x1, &ty, NULL);
+    return x >= x0 && x <= x1 && y >= ty;
+}
+
+/* the scissors: cut every frond whose spine the stroke segment (x0,y0)-(x1,y1)
+ * crosses, to the height where it crosses (only ever DOWN, never below nubs).
+ * Returns the number of fronds cut. */
+static int veg_cut(tank_t *t, float x0, float y0, float x1, float y1) {
+    int cuts = 0;
+    float lo = x0 < x1 ? x0 : x1, hi = x0 < x1 ? x1 : x0;
+    for (int b = 0; b < VEG_BEDS; b++) {
+        float bx0; int n; veg_bed_base(t, b, &bx0, &n);
+        for (int i = 0; i < n; i++) {
+            float fx = bx0 + i * 12;
+            if (fx < lo || fx > hi) continue;
+            float u = hi > lo ? (fx - x0) / (x1 - x0) : 0;
+            float cy = y0 + (y1 - y0) * u;
+            float hf = (TANK_H - 16 - cy) / ((VEG_SEGS_FULL - 1) * VEG_SEG_PX);
+            if (hf < VEG_NUB) hf = VEG_NUB;
+            if (hf >= t->veg_h[b][i]) continue;    /* the stroke passed above the tip */
+            t->veg_h[b][i] = hf;
+            cuts++;
+            int puffs = 2;                         /* cut leaves drift up */
+            for (int k = 0; k < MAX_BUBBLE && puffs > 0; k++) {
+                if (t->bubble[k].column) continue;
+                t->bubble[k].x = fx + tank_randf(t, -4, 4);
+                t->bubble[k].y = cy - tank_randf(t, 0, 6);
+                puffs--;
+            }
+        }
+    }
+    if (cuts) veg_sync(t);
+    return cuts;
+}
+
+/* one film step: thicken a covered cell, or claim a fresh one (preferring
+ * cells next to existing film, then the glass edges - the way a real tank
+ * fouls from the corners in) until the dapple cap is reached */
+void tank_grow_algae(tank_t *t, int steps) {
+    for (int s = 0; s < steps; s++) {
+        int covered = 0;
+        for (int i = 0; i < ALGAE_CELLS; i++) covered += t->algae[i] > 0;
+        bool claim = covered < (int)(ALGAE_CELLS * ALGAE_COVER_CAP);
+        for (int try = 0; try < 8; try++) {
+            int cx = (int)tank_randf(t, 0, ALGAE_COLS - 0.001f);
+            int cy = (int)tank_randf(t, 0, ALGAE_ROWS - 0.001f);
+            uint8_t *cell = &t->algae[cy * ALGAE_COLS + cx];
+            if (*cell) { *cell = (uint8_t)(*cell > 210 ? 255 : *cell + 45); break; }
+            if (!claim) continue;
+            bool near = false;
+            for (int dy = -1; dy <= 1 && !near; dy++)
+                for (int dx = -1; dx <= 1 && !near; dx++) {
+                    int nx = cx + dx, ny = cy + dy;
+                    if (nx >= 0 && nx < ALGAE_COLS && ny >= 0 && ny < ALGAE_ROWS)
+                        near = t->algae[ny * ALGAE_COLS + nx] > 0;
+                }
+            bool edge = cx == 0 || cy == 0 || cx == ALGAE_COLS - 1 || cy == ALGAE_ROWS - 1;
+            float p = near ? 1.0f : edge ? 0.5f : 0.10f;
+            if (tank_randf(t, 0, 1) < p) { *cell = 90; break; }
+        }
+    }
+}
+
+/* wipe the film in a WIPE_RADIUS band around the segment (x0,y0)-(x1,y1) */
+static void wipe_algae(tank_t *t, float x0, float y0, float x1, float y1) {
+    float dx = x1 - x0, dy = y1 - y0;
+    float len2 = dx * dx + dy * dy;
+    for (int cy = 0; cy < ALGAE_ROWS; cy++)
+        for (int cx = 0; cx < ALGAE_COLS; cx++) {
+            uint8_t *cell = &t->algae[cy * ALGAE_COLS + cx];
+            if (!*cell) continue;
+            float px = cx * ALGAE_CELL + ALGAE_CELL * 0.5f;
+            float py = cy * ALGAE_CELL + ALGAE_CELL * 0.5f;
+            float u = len2 > 1 ? clampf(((px - x0) * dx + (py - y0) * dy) / len2, 0, 1) : 0;
+            if (tank_dist(px, py, x0 + dx * u, y0 + dy * u) < WIPE_RADIUS) {
+                *cell = 0;
+                t->cells_cleaned++;
+            }
+        }
+}
 
 void tank_touch_hold(tank_t *t, float x, float y) {
     t->hold_active = true; t->hold_x = x; t->hold_y = y;
+}
+
+void tank_touch_drag(tank_t *t, float x, float y) {
+    t->drag_active = true;
+    if (!t->drag_has_prev) {
+        /* stroke start: a slash must BEGIN on a plant - within SLASH_START_PX
+         * of an actual frond (beside its spine, no higher than its tip). A
+         * cleaning scrub that starts mid-glass, even straight above a tall
+         * bed, and then works down through the grass arms nothing: it keeps
+         * wiping algae and the fronds stand. */
+        t->slash_armed = false;
+        for (int b = 0; b < VEG_BEDS && !t->slash_armed; b++)
+            t->slash_armed = veg_near_frond(t, b, x, y, SLASH_START_PX);
+        t->slash_engaged = t->slash_cut = false;
+        t->slash_x0 = x; t->slash_y0 = y; t->slash_h = t->slash_v = 0;
+    }
+    if (t->drag_has_prev) {
+        float sdx = x - t->drag_px, sdy = y - t->drag_py;
+        t->drag_dist += tank_dist(x, y, t->drag_px, t->drag_py);
+        if (t->drag_dist >= WIPE_ENGAGE_PX)        /* a real stroke, not a tap */
+            wipe_algae(t, t->drag_px, t->drag_py, x, y);
+        /* the slash (2026-09-04, per frond): an armed stroke becomes scissors
+         * once it has travelled SLASH_PX sideways, mostly sideways - deliberate
+         * work, so a tap or a missed poke at a fish never shears the garden.
+         * From then on every sideways segment cuts the fronds it crosses at
+         * the height it crosses them (the travel before engagement is cut
+         * retroactively as one straight segment from the stroke start), so
+         * a flick takes one or two fronds at the finger's height and a sweep
+         * along the floor mows the bed to nubs. */
+        if (t->slash_armed) {
+            t->slash_h += fabsf(sdx); t->slash_v += fabsf(sdy);
+            int cuts = 0;
+            if (!t->slash_engaged) {
+                if (t->slash_h >= SLASH_PX && t->slash_h > SLASH_RATIO * t->slash_v) {
+                    t->slash_engaged = true;
+                    cuts += veg_cut(t, t->slash_x0, t->slash_y0, x, y);
+                }
+            } else if (fabsf(sdx) >= fabsf(sdy))   /* only the sideways segments cut */
+                cuts += veg_cut(t, t->drag_px, t->drag_py, x, y);
+            if (cuts && !t->slash_cut) { t->slash_cut = true; t->trims++; }
+        }
+    }
+    t->drag_px = x; t->drag_py = y; t->drag_has_prev = true;
 }
 
 void tank_feed(tank_t *t, float x, int n) {
@@ -241,6 +538,32 @@ static void touch_tick(tank_t *t, float dt) {
         }
     } else { t->hold_time = 0; t->hold_approached = false; }
     if (t->greet_timer > 0) t->greet_timer -= dt;
+    /* courtship episodes: while progression says an arrival is close, the
+     * pair circles the reef for a few seconds every minute or so - frequent
+     * enough to notice across a couple of check-ins, rare enough to feel
+     * like something glimpsed rather than an indicator */
+    if (t->courting && !t->night) {
+        if (t->court_active > 0) t->court_active -= dt;
+        else if ((t->court_cool -= dt) <= 0) {
+            t->court_active = tank_randf(t, 6, 9);
+            t->court_cool = tank_randf(t, 40, 90);
+            int puffs = 2;                          /* a flirt of bubbles, from the grass */
+            float sx, sy, sr; court_site(t, &sx, &sy, &sr);
+            for (int i = 0; i < MAX_BUBBLE && puffs > 0; i++) {
+                if (t->bubble[i].column) continue;
+                t->bubble[i].x = sx + tank_randf(t, -10, 10);
+                t->bubble[i].y = sy - 6;
+                puffs--;
+            }
+        }
+    } else t->court_active = 0;
+    /* a lifted finger ends the wipe/slash stroke (platform re-asserts while down) */
+    if (!t->drag_active) {
+        t->drag_has_prev = false; t->drag_dist = 0;
+        t->slash_armed = t->slash_engaged = t->slash_cut = false;
+        t->slash_h = t->slash_v = 0;
+    }
+    t->drag_active = false;
 }
 
 void tank_toggle_light(tank_t *t) {
@@ -280,6 +603,18 @@ void tank_tick_sleep(tank_t *t, float seconds) {
     }
     for (int i = 0; i < MAX_FOOD; i++)                  /* overnight pellets go stale */
         if (t->food[i].alive && (t->food[i].age += seconds) > 45) t->food[i].alive = false;
+    /* the garden grows fastest in a dark, untended tank: waking to a taller
+     * canopy and film on the glass is the morning chore */
+    veg_grow(t, seconds / VEG_GROW_SLEEP_S);
+    /* film steps go through the same accumulator the awake tick uses: the
+     * device drowses in 30 s slices (firmware DROWSE_TICK_US) and
+     * (int)(30 / 120) is 0 - the truncation that had quietly stopped every
+     * bit of algae from forming overnight (2026-09-04). */
+    t->algae_acc += seconds;
+    int steps = (int)(t->algae_acc / ALGAE_STEP_SLEEP_S);
+    if (steps > 600) steps = 600;                       /* bounded; the cap rules anyway */
+    t->algae_acc -= steps * ALGAE_STEP_SLEEP_S;
+    tank_grow_algae(t, steps);
 }
 
 void tank_start_shadow(tank_t *t) {
@@ -333,8 +668,10 @@ static target_t target_for_goal(tank_t *t, int idx, goal_id_t goal, bool glance)
         break;
     }
     case GOAL_VISIT_BUBBLES:
-        tg.x = t->bubble_x + sinf(tm * 1.2f + f->wander) * 17;
-        tg.y = t->bubble_y - 74 + cosf(tm * 0.8f + f->wander) * 28;
+        /* each visitor keeps its own lane: a per-fish phase and radius, so
+         * four fish orbit the column instead of stacking on one point */
+        tg.x = t->bubble_x + sinf(tm * 1.2f + f->wander + idx * 1.9f) * (26 + idx * 6);
+        tg.y = t->bubble_y - 74 + cosf(tm * 0.8f + f->wander + idx * 1.3f) * (34 + idx * 6);
         tg.speed = 23;
         break;
     case GOAL_FOLLOW_FRIEND: {
@@ -342,8 +679,8 @@ static target_t target_for_goal(tank_t *t, int idx, goal_id_t goal, bool glance)
         if (i >= 0) {
             const fish_t *fr = &t->fish[i];
             float ang = atan2f(f->y - fr->y, f->x - fr->x) + sinf(tm + f->wander) * 0.35f;
-            tg.x = fr->x + cosf(ang) * 34; tg.y = fr->y + sinf(ang) * 22;
-            tg.speed = clampf(d - 25, 10, 42);
+            tg.x = fr->x + cosf(ang) * 54; tg.y = fr->y + sinf(ang) * 34;   /* a body length off, not on top */
+            tg.speed = clampf(d - 40, 10, 42);
         } else tg.valid = false;
         break;
     }
@@ -363,8 +700,8 @@ static target_t target_for_goal(tank_t *t, int idx, goal_id_t goal, bool glance)
         tg.speed = lerpf(65, 95, f->bold);
         break;
     case GOAL_INSPECT_REEF:
-        tg.x = t->reef_x + sinf(tm * 0.65f + f->wander) * 39;
-        tg.y = t->reef_y - 35 + cosf(tm * 0.8f + f->wander) * 15;
+        tg.x = t->reef_x + sinf(tm * 0.65f + f->wander + idx * 1.7f) * (39 + idx * 4);
+        tg.y = t->reef_y - 35 + cosf(tm * 0.8f + f->wander + idx * 1.1f) * (15 + idx * 4);
         tg.speed = 15 + f->curiosity * 1.7f;
         break;
     default: if (glance) tg.valid = false; break; /* EXPLORE keeps the wander target */
@@ -393,12 +730,15 @@ static void eat_nearby_food(tank_t *t, fish_t *f) {
             t->food[i].alive = false;
             f->hunger = clampf(f->hunger - 4.3f, 0, 10);
             f->energy = clampf(f->energy + 1.0f, 0, 10);
-            f->curiosity = clampf(f->curiosity + 0.8f, 0, 10);
+            f->curiosity = clampf(f->curiosity + 0.5f, 0, 10);   /* was 0.8: a trickle burst
+                                                                     re-synced the school's curiosity */
             f->eaten++;
             if (t->food[i].from_player) { f->eaten_player++; f->ms_bits |= MS_FIRST_MEAL_FROM_YOU; }
             /* post-meal reflex from the prototype */
             if (f->hunger < 2.2f && f->goal.id == GOAL_SEEK_FOOD)
                 f->goal.id = (xr(t) & 1) ? GOAL_VISIT_BUBBLES : GOAL_EXPLORE;
+            return;   /* one bite per frame: a fish in a cloud of pellets takes
+                         them one at a time, so a tank-mate gets a look in */
         }
     }
 }
@@ -406,15 +746,69 @@ static void eat_nearby_food(tank_t *t, fish_t *f) {
 static void update_fish(tank_t *t, int idx, float dt) {
     fish_t *f = &t->fish[idx];
     /* drives (prototype rates, speed rescaled by the same 0.55) */
-    f->hunger    = clampf(f->hunger + dt * (0.15f + f->bold * 0.12f +
-                          (f->goal.id == GOAL_DART_PLAY ? 0.18f : 0)), 0, 10);
-    f->curiosity = clampf(f->curiosity + dt * (f->goal.id == GOAL_EXPLORE ? 0.08f : -0.025f), 0, 10);
+    f->hunger    = clampf(f->hunger + dt * (HUNGER_PER_S + f->bold * HUNGER_BOLD_PER_S +
+                          (f->goal.id == GOAL_DART_PLAY ? HUNGER_DART_PER_S : 0)), 0, 10);
+    /* curiosity: exploring feeds it (prototype) and - new 2026-09-01 -
+     * satisfying it SPENDS it: a fish that has reached the bubbles or the
+     * reef uses curiosity up there, the way rest restores energy and a meal
+     * drops hunger. Before this a fed fish had no sink at all (+0.8 per
+     * pellet, nothing ever took it back), so after days the whole school sat
+     * at curiosity 9 and the advisor - reading "fed, calm, curious" exactly
+     * as trained - parked all four at the bubble column for good. The model
+     * still owns the goal; it just sees an honest drive, and the curiosity
+     * band is in the re-ask signature so it gets to react. */
+    {
+        float dc = f->goal.id == GOAL_EXPLORE ? 0.08f : -0.025f;
+        if (f->goal.id == GOAL_VISIT_BUBBLES || f->goal.id == GOAL_INSPECT_REEF) {
+            bool bub = f->goal.id == GOAL_VISIT_BUBBLES;
+            float sx = bub ? t->bubble_x : t->reef_x, sy = bub ? t->bubble_y - 74 : t->reef_y - 35;
+            if (tank_dist(f->x, f->y, sx, sy) < CURIOSITY_SPEND_RADIUS) dc = -CURIOSITY_SPEND_PER_S;
+        }
+        f->curiosity = clampf(f->curiosity + dt * dc, 0, 10);
+    }
     f->stress    = clampf(f->stress - dt * (f->goal.id == GOAL_REST ? 0.48f : 0.18f), 0, 10);
-    f->energy    = clampf(f->energy + dt * (f->goal.id == GOAL_REST ? 0.55f
-                          : -0.055f - f->speed / 950.0f), 0, 10);
+    /* energy: the prototype's per-second drain (full to empty in ~3 min of
+     * cruising) kept the school at energy ~3 - permanently tired, so the
+     * advisor never had a fish fit enough to dart and read every content
+     * fish as "relaxed": bubbles, reef, follow (2026-09-01 census). Now a
+     * fish cruises ~10 min on a full tank and a rest refills it in ~35 s. */
+    f->energy    = clampf(f->energy + dt * (f->goal.id == GOAL_REST ? 0.30f
+                          : -0.012f - f->speed / 4000.0f), 0, 10);
+    /* a canopy is a place to hide: a fish inside one feels a shadow at half
+     * the press, and calms faster (below) */
+    bool hidden = false;
+    for (int b = 0; b < VEG_BEDS && !hidden; b++)
+        hidden = t->veg_growth[b] >= VEG_BARE && veg_inside(t, b, f->x, f->y);
     if (t->shadow.active) {
         float sd = tank_dist(f->x, f->y, t->shadow.x, t->shadow.y);
-        if (sd < 115) f->stress = clampf(f->stress + dt * 1.7f * (1 - sd / 126), 0, 10);
+        if (sd < 115) f->stress = clampf(f->stress + dt * 1.7f * (1 - sd / 126) * (hidden ? 0.5f : 1.0f), 0, 10);
+    }
+    /* vegetation comfort (2026-09-04 rework: fish LIKE cover). Three regimes,
+     * each seeking its own equilibrium against the natural decay above:
+     *  - SMOTHERED: the second-tallest bed past VEG_SMOTHER (85% of the way to
+     *    the surface) - at least two beds crowding the ceiling - is the tank
+     *    being overrun: real stress, ramping from nothing at 85% to the full
+     *    press at 100% (settles ~6-7 with every bed at the ceiling). One bed
+     *    at the ceiling is just a good hiding place, never a stressor.
+     *  - BARE: no bed past VEG_BARE - nowhere to hide - is a mild unease
+     *    (settles ~1.3) that lifts the moment one tuft regrows.
+     *  - otherwise COVER CALMS: stress decays faster the more canopy there is
+     *    (up to +0.18/s, doubling the base rate, at a tank full of grass), and
+     *    faster again for a fish tucked inside a canopy. */
+    {
+        float g1 = 0, g2 = 0, gmean = 0;               /* tallest, second tallest */
+        for (int b = 0; b < VEG_BEDS; b++) {
+            float g = t->veg_growth[b];
+            gmean += g / VEG_BEDS;
+            if (g > g1) { g2 = g1; g1 = g; } else if (g > g2) g2 = g;
+        }
+        float over = (g2 - VEG_SMOTHER) / (1.0f - VEG_SMOTHER);
+        if (over > 0)
+            f->stress = clampf(f->stress + fminf(1, over) * 0.15f * (8.0f - f->stress) * dt, 0, 10);
+        else if (g1 < VEG_BARE)
+            f->stress = clampf(f->stress + 0.15f * (2.5f - f->stress) * dt, 0, 10);
+        else
+            f->stress = clampf(f->stress - dt * (0.18f * gmean + (hidden ? 0.18f : 0)), 0, 10);
     }
 
     f->wander += dt * (0.65f + f->curiosity * 0.04f) + sinf(t->clock + f->x * 0.01f) * dt * 0.12f;
@@ -457,13 +851,21 @@ static void update_fish(tank_t *t, int idx, float dt) {
             desired = norm_ang(desired + norm_ang(away - desired) * 0.85f);
             touch_speed = lerpf(55, 90, f->bold);
         }
-    } else if (t->hold_active && f->goal.id != GOAL_FLEE_SHADOW && f->trust >= 4.0f) {
+    } else if (t->hold_active && t->hold_time >= HOLD_ATTRACT_S &&
+               f->goal.id != GOAL_FLEE_SHADOW && f->trust >= 4.0f &&
+               f->hunger < HOLD_HUNGER_VETO) {
+        /* only a settled hold (~3 s of contact) draws fish in - quick taps and
+         * card-taps never twitch the school - and a strongly hungry fish has
+         * better things to do than visit a finger */
         float d = tank_dist(f->x, f->y, t->hold_x, t->hold_y);
         if (d < HOLD_RADIUS) {
             float w = (f->trust - 4.0f) / 6.0f;          /* 0..1 with trust */
             float to = atan2f(t->hold_y - f->y, t->hold_x - f->x);
             if (d > 28) desired = norm_ang(desired + norm_ang(to - desired) * (0.5f + 0.45f * w));
-            touch_speed = d > 28 ? lerpf(14, 30, w) : 4;  /* arrive and hover */
+            /* far fish cross the tank at a cruise, not a drift; close in
+             * they slow to arrive and hover */
+            float far = d > 120 ? 1.0f : d / 120.0f;
+            touch_speed = d > 28 ? lerpf(14, 30, w) + far * lerpf(10, 20, w) : 4;
         }
     } else if (t->greet_timer > 0 && f->trust >= 7.0f && f->goal.id != GOAL_FLEE_SHADOW &&
                f->goal.id != GOAL_SEEK_FOOD) {
@@ -475,29 +877,58 @@ static void update_fish(tank_t *t, int idx, float dt) {
             desired = norm_ang(desired + norm_ang(to - desired) * 0.7f);
             touch_speed = 26;
         } else touch_speed = 5;
-    } else if (t->ravenous && f->goal.id != GOAL_FLEE_SHADOW) {
-        /* starving tank, empty water: beg where meals come from - quick darts
-         * back and forth under the feed spot, unmistakably "feed me". Reflex
-         * presentation of the wait, like the greet/hold overrides above: the
-         * advisor still owns the goal, there is just no food to seek yet, and
-         * the first pellets sink straight onto them. */
-        float spot = t->feed_spot_x >= 0 ? t->feed_spot_x : TANK_W * 0.5f;
-        float wx = spot + sinf(t->clock * (1.6f + f->bold * 0.9f) + idx * 2.1f) * (34 + idx * 6);
-        float wy = 30 + idx * 4 + sinf(t->clock * 3.1f + f->wander) * 6;
+    } else if (t->ravenous && f->goal.id != GOAL_FLEE_SHADOW && f->hunger > 6.5f) {
+        /* starving tank: reflex presentation of the famine, like the greet/
+         * hold overrides above - the advisor still owns the goal. Two phases:
+         * empty water = beg where meals come from (quick darts back and forth
+         * under the feed spot, unmistakably "feed me"); live pellets = the
+         * DASH - a real starving fish bolts the moment food hits the water,
+         * it doesn't wait to think it over (the advisor's seek_food arrives
+         * seconds later and takes back a fish that is already eating). A fish
+         * that has eaten (hunger <= 6.5) drops out of the frenzy at once. */
+        float fd; int fi = tank_nearest_food(t, f, &fd);
+        if (fi >= 0) {
+            float to = atan2f(t->food[fi].y - f->y, t->food[fi].x - f->x);
+            desired = norm_ang(desired + norm_ang(to - desired) * 0.92f);
+            touch_speed = fd > 14 ? lerpf(85, 115, clampf(f->hunger / 10.0f, 0, 1)) : 30;
+        } else {
+            float spot = t->feed_spot_x >= 0 ? t->feed_spot_x : TANK_W * 0.5f;
+            float wx = spot + sinf(t->clock * (1.6f + f->bold * 0.9f) + idx * 2.1f) * (34 + idx * 6);
+            float wy = 30 + idx * 4 + sinf(t->clock * 3.1f + f->wander) * 6;
+            float to = atan2f(wy - f->y, wx - f->x);
+            desired = norm_ang(desired + norm_ang(to - desired) * 0.85f);
+            touch_speed = tank_dist(f->x, f->y, wx, wy) > 18
+                        ? lerpf(40, 68, clampf(f->hunger / 10.0f, 0, 1)) : 22;
+        }
+    } else if (t->court_active > 0 && !t->ravenous &&
+               (idx == t->court_a || idx == t->court_b) &&
+               f->goal.id != GOAL_FLEE_SHADOW && f->hunger < HOLD_HUNGER_VETO) {
+        /* courtship circle: the parents-to-be dive into the nursery grass and
+         * weave a low loop through it on opposite sides - the arrival tell,
+         * performed rather than printed (reflex presentation; the advisor
+         * still owns both goals). Down in the fronds, not mid-water: Strato
+         * (2026-09-04) - by the reef it read as two friends at the bubbles. */
+        float ph = t->clock * 1.7f + (idx == t->court_b ? 3.14159f : 0);
+        float cx, cy, rx; court_site(t, &cx, &cy, &rx);
+        float wx = cx + cosf(ph) * rx, wy = cy + sinf(ph) * 6;
         float to = atan2f(wy - f->y, wx - f->x);
         desired = norm_ang(desired + norm_ang(to - desired) * 0.85f);
-        touch_speed = tank_dist(f->x, f->y, wx, wy) > 18
-                    ? lerpf(40, 68, clampf(f->hunger / 10.0f, 0, 1)) : 22;
+        touch_speed = tank_dist(f->x, f->y, cx, cy) > 90 ? 46 : 30;
     }
 
-    /* separation */
-    for (int i = 0; i < t->n_fish; i++) {
-        if (i == idx) continue;
-        if (tank_dist(f->x, f->y, t->fish[i].x, t->fish[i].y) < 16 * f->size) {
-            float away = atan2f(f->y - t->fish[i].y, f->x - t->fish[i].x);
-            desired = norm_ang(desired + norm_ang(away - desired) * 0.45f);
+    /* separation - personal space. Fish are ~40 px long; the old 16 px
+     * radius let four content fish stack on one landmark like a pile of
+     * cards (2026-09-01). Now a body length, weighted by how close they are;
+     * a fleeing fish keeps its line. */
+    if (f->goal.id != GOAL_FLEE_SHADOW)
+        for (int i = 0; i < t->n_fish; i++) {
+            if (i == idx) continue;
+            float d = tank_dist(f->x, f->y, t->fish[i].x, t->fish[i].y), r = 36 * f->size;
+            if (d < r) {
+                float away = atan2f(f->y - t->fish[i].y, f->x - t->fish[i].x);
+                desired = norm_ang(desired + norm_ang(away - desired) * (0.35f + 0.5f * (1 - d / r)));
+            }
         }
-    }
 
     /* urgency scales cruise speed a touch (0..9 → 0.8..1.25) */
     float ugain = 0.8f + f->goal.urgency * 0.05f;
@@ -505,6 +936,10 @@ static void update_fish(tank_t *t, int idx, float dt) {
     f->heading = norm_ang(f->heading + turn);
     float want = touch_speed >= 0 ? touch_speed : hes_speed >= 0 ? hes_speed : tg.speed * ugain;
     f->target_speed = want * (f->energy < 1.2f ? 0.45f : 1);
+    /* swimming through a canopy is slow going (a fleeing fish crashes through) */
+    if (f->goal.id != GOAL_FLEE_SHADOW)
+        for (int b = 0; b < VEG_BEDS; b++)
+            if (veg_inside(t, b, f->x, f->y)) { f->target_speed *= VEG_SLOW; break; }
     f->speed = lerpf(f->speed, f->target_speed, clampf(dt * 2.6f, 0, 1));
     f->x += cosf(f->heading) * f->speed * dt;
     f->y += sinf(f->heading) * f->speed * dt + sinf(t->clock * 1.4f + f->wander) * dt * 1.7f;
@@ -531,7 +966,7 @@ static uint32_t state_signature(const tank_t *t, int idx) {
     int wall = f->x < 70 || f->x > TANK_W - 70 || f->y < 70 || f->y > TANK_H - 70;
     return (uint32_t)band3(f->hunger) | (uint32_t)band3(f->energy) << 2 | (uint32_t)band3(f->stress) << 4
          | (uint32_t)dbucket(fd) << 6 | (uint32_t)dbucket(sd) << 8 | (uint32_t)wall << 10
-         | (uint32_t)t->night << 11;
+         | (uint32_t)t->night << 11 | (uint32_t)band3(f->curiosity) << 12;
 }
 
 void tank_tick(tank_t *t, float dt, advisor_fn advise) {
@@ -541,9 +976,6 @@ void tank_tick(tank_t *t, float dt, advisor_fn advise) {
     t->night = t->light_override ? !t->light_on : t->day_phase > 0.6667f;
 
     touch_tick(t, dt);
-    bool hold_now = t->hold_active;   /* consumed this frame; platform re-asserts */
-    t->hold_active = false;
-    (void)hold_now;
 
     /* food sinks, settles, decays */
     int live_food = 0;
@@ -560,10 +992,29 @@ void tank_tick(tank_t *t, float dt, advisor_fn advise) {
     }
     /* the tank's own trickle keeps fish alive when nobody is home (never
      * ruined by absence); the keeper's pellets are what progression counts.
+     * Hunger-gated (see the hunger economy notes above): a pellet only when
+     * somebody is really hungry, at a per-SECOND rate, so it's the same tank
+     * at 25 fps and 60 fps and it never over-feeds a school that isn't asking.
      * While the tank is ravenous-begging it holds off, so the keeper's first
-     * pellets are the event that ends the wait (progression re-arms it). */
-    if (!t->ravenous && live_food < 2 && tank_randf(t, 0, 1) < 0.001f * t->n_fish)
+     * pellets are the event that ends the wait (progression re-arms it) -
+     * but once the keeper HAS fed this episode it helps again: a quick fish
+     * can gobble every pellet, and the slow one shouldn't beg out the whole
+     * give-up valve for it. */
+    float hungriest = 0;
+    for (int i = 0; i < t->n_fish; i++)
+        if (t->fish[i].hunger > hungriest) hungriest = t->fish[i].hunger;
+    bool hold = (t->ravenous && !t->ravenous_fed) || t->trickle_off;
+    if (!hold && live_food < 2 && hungriest >= TRICKLE_HUNGER &&
+        tank_randf(t, 0, 1) < TRICKLE_RATE * dt)
         tank_scatter_food(t, 1);
+
+    /* upkeep: the garden gets away from an idle keeper, slowly */
+    veg_grow(t, dt / VEG_GROW_AWAKE_S);
+    t->algae_acc += dt;
+    if (t->algae_acc >= ALGAE_STEP_AWAKE_S) {
+        t->algae_acc -= ALGAE_STEP_AWAKE_S;
+        tank_grow_algae(t, 1);
+    }
 
     /* bubbles rise */
     for (int i = 0; i < MAX_BUBBLE; i++) {
@@ -649,4 +1100,9 @@ void tank_tick(tank_t *t, float dt, advisor_fn advise) {
     }
 
     for (int i = 0; i < t->n_fish; i++) update_fish(t, i, dt);
+
+    /* consume the hold AFTER the fish have seen it (the platform re-asserts
+     * every frame the finger stays down). Clearing it at the top of the tick
+     * was the old bug that kept the drift-to-finger reflex from ever firing. */
+    t->hold_active = false;
 }

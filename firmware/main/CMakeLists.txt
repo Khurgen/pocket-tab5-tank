@@ -1,4 +1,4 @@
-set(SRCS main.c advisor_llm_esp.c battery_port_axp2101.c imu_port_qmi8658.c)
+set(SRCS main.c director.c advisor_llm_esp.c battery_port_axp2101.c imu_port_qmi8658.c)
 if(CONFIG_POCKET_TANK_DISPLAY_SH8601)
     list(APPEND SRCS display_port_sh8601.c)
 else()
@@ -12,6 +12,6 @@ endif()
 idf_component_register(
     SRCS ${SRCS}
     INCLUDE_DIRS "."
-    REQUIRES tankcore llm esp_partition spi_flash esp_timer esp_driver_spi esp_driver_i2c esp_driver_gpio esp_lcd nvs_flash
+    REQUIRES tankcore llm esp_partition spi_flash esp_timer esp_driver_spi esp_driver_i2c esp_driver_gpio esp_driver_usb_serial_jtag esp_lcd nvs_flash
     EMBED_FILES "tokenizer.bin"
 )

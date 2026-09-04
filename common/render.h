@@ -10,10 +10,11 @@
 void render_tank(const tank_t *t, uint16_t *fb, int stride);
 
 /* Optional frame profiling: set a microsecond clock and render_tank fills
- * render_prof_us per stage (0 scene-copy, 1 shafts, 2 veg, 3 food+bubbles,
- * 4 fish, 5 vignette). Accumulates until the caller zeroes it. NULL = off. */
+ * render_prof_us per stage (0 scene-copy, 1 shafts, 2 veg (back), 3 food+
+ * bubbles, 4 fish + front veg, 5 vignette sweep, 6 algae film). Accumulates
+ * until the caller zeroes it. NULL = off. */
 extern int64_t (*render_clock_us)(void);
-extern int64_t render_prof_us[6];
+extern int64_t render_prof_us[7];
 
 /* Optional static-scene cache (TANK_W*TANK_H uint16): the water gradient,
  * pebbles and reef rock are rendered once per lighting state and copied each
@@ -31,6 +32,12 @@ void render_set_vignette_cache(uint8_t *buf);
  * the scene into fb ahead of time (e.g. by DMA) calls render_fb_primed; the
  * next render_tank into that fb at that epoch skips its own scene restore. */
 const uint16_t *render_scene_buf(unsigned *epoch);
+
+/* Dirty mask (RENDER_DIRTY_WORDS uint32): required with the scene cache -
+ * marks the pixels drawn each frame so the vignette re-apply reads the mask,
+ * not the scene. Without it the renderer falls back to full redraws. */
+#define RENDER_DIRTY_WORDS (TANK_H * (TANK_W / 32))
+void render_set_dirty_mask(uint32_t *buf);
 void render_fb_primed(const uint16_t *fb, unsigned epoch);
 
 /* Stats overlay for one selected fish: selection ring + a small card of
@@ -39,6 +46,14 @@ void render_fb_primed(const uint16_t *fb, unsigned epoch);
  * are revealed only after the fish has shown that side of itself (milestone
  * bits): you learn your fish by watching. */
 void render_stats_card(const tank_t *t, int fish_idx, uint16_t *fb, int stride);
+/* Optional card cache (RENDER_CARD_W x RENDER_CARD_H uint16): with the scene
+ * cache live, the card is redrawn at most 4x/s and blitted otherwise (~7 ms
+ * -> ~1 ms per frame on the device). NULL = draw every frame. */
+#define RENDER_CARD_X 14
+#define RENDER_CARD_Y 8
+#define RENDER_CARD_W 124
+#define RENDER_CARD_H 228
+void render_set_card_cache(uint16_t *buf);
 
 /* Device battery pill (top-right), drawn with the stats card on hardware:
  * frac 0..1, charging tints the fill teal. */

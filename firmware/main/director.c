@@ -1,0 +1,291 @@
+/* director.c — serial console for staging scenarios (see director.h).
+ * RX only through the USB-Serial-JTAG driver; the log keeps its polled
+ * (no-driver) write path so an unattended tank never blocks on a host that
+ * isn't reading. Called from the tank task, so no locking. */
+#include <stdio.h>
+#include <string.h>
+#include <strings.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include "sdkconfig.h"
+#include "esp_log.h"
+#include "progression.h"
+#include "director.h"
+#include "touch_port.h"
+#include "esp_timer.h"
+#include "nvs.h"
+#if CONFIG_SOC_USB_SERIAL_JTAG_SUPPORTED
+#include "driver/usb_serial_jtag.h"
+#endif
+
+static const char *TAG = "director";
+
+/* the real tank's save, parked while a staged tank (fresh / stages) lives in
+ * its place: NVS blob "bk" beside progression's "save" in namespace "tank".
+ * The staged tank autosaves over "save" like any other; `restore` copies "bk"
+ * back and reboots progression from it. */
+static bool nvs_copy(const char *from, const char *to) {
+    nvs_handle_t h; if (nvs_open("tank", NVS_READWRITE, &h) != ESP_OK) return false;
+    size_t len = 0; bool ok = false;
+    if (nvs_get_blob(h, from, NULL, &len) == ESP_OK && len > 0) {
+        void *buf = malloc(len);
+        if (buf && nvs_get_blob(h, from, buf, &len) == ESP_OK &&
+            nvs_set_blob(h, to, buf, len) == ESP_OK && nvs_commit(h) == ESP_OK) ok = true;
+        free(buf);
+    }
+    nvs_close(h); return ok;
+}
+static bool nvs_has(const char *key) {
+    nvs_handle_t h; if (nvs_open("tank", NVS_READONLY, &h) != ESP_OK) return false;
+    size_t len = 0; bool ok = nvs_get_blob(h, key, NULL, &len) == ESP_OK && len > 0;
+    nvs_close(h); return ok;
+}
+static void nvs_drop(const char *key) {
+    nvs_handle_t h; esp_err_t e = nvs_open("tank", NVS_READWRITE, &h);
+    if (e == ESP_OK) { e = nvs_erase_key(h, key); if (e == ESP_OK) e = nvs_commit(h); nvs_close(h); }
+    if (e != ESP_OK) ESP_LOGW(TAG, "drop %s failed: %s", key, esp_err_to_name(e));
+    else if (nvs_has(key)) ESP_LOGW(TAG, "drop %s: still there after the erase", key);
+}
+static bool stash(tank_t *t) {
+    progression_save(t);
+    bool ok = nvs_copy("save", "bk");
+    ESP_LOGI(TAG, "%s", ok ? "real tank stashed (restore brings it back)" : "STASH FAILED - not touching the tank");
+    return ok;
+}
+/* a staged tank replaces the live one: park the real save first unless a
+ * stash is already parked (a second staging must not overwrite it) */
+static bool stage_guard(tank_t *t) {
+    if (nvs_has("bk")) { ESP_LOGI(TAG, "stash already parked; staging over the current tank"); return true; }
+    return stash(t);
+}
+/* a courtship / arrival scene needs room under the cap: the newest fish steps
+ * out of the STAGED tank (the parked one keeps it) */
+static void make_room(tank_t *t) {
+    if (t->n_fish < POP_CAP && t->n_fish < N_FISH_MAX) return;
+    t->n_fish--;
+    ESP_LOGI(TAG, "tank at the cap: %s steps out for the scene (the parked tank keeps it)", t->fish[t->n_fish].name);
+}
+static const float STAGE_AGE[4] = { 0, STAGE_JUV_AGE + 60, STAGE_ADULT_AGE + 60, STAGE_ELDER_AGE + 60 };
+static int stage_of(const char *s) {
+    for (int i = 0; i < 4; i++) if (!strcasecmp(s, STAGE_NAMES[i])) return i;
+    if (!strcasecmp(s, "juvenile")) return STAGE_JUV;
+    return -1;
+}
+static bool s_ok;
+static char s_line[96];
+static int  s_len;
+
+static int find_fish(const tank_t *t, const char *s) {
+    if (!s) return -1;
+    if (isdigit((unsigned char)s[0])) { int i = atoi(s); return i >= 0 && i < t->n_fish ? i : -1; }
+    for (int i = 0; i < t->n_fish; i++)
+        if (!strcasecmp(t->fish[i].name, s)) return i;
+    return -1;
+}
+
+static float *drive_of(fish_t *f, const char *s) {
+    if (!strcmp(s, "hunger"))    return &f->hunger;
+    if (!strcmp(s, "energy"))    return &f->energy;
+    if (!strcmp(s, "stress"))    return &f->stress;
+    if (!strcmp(s, "curiosity")) return &f->curiosity;
+    if (!strcmp(s, "trust"))     return &f->trust;
+    return NULL;
+}
+
+static void clear_pellets(tank_t *t) {
+    for (int i = 0; i < MAX_FOOD; i++) t->food[i].alive = false;
+}
+
+static void show_state(const tank_t *t) {
+    for (int i = 0; i < t->n_fish; i++) {
+        const fish_t *f = &t->fish[i];
+        ESP_LOGI(TAG, "%d %-6s %-5s age %.1fh size %.2f hunger %.1f energy %.1f stress %.1f curiosity %.1f trust %.1f  %s",
+                 i, f->name, STAGE_NAMES[f->stage], progression_age_s(t, i) / 3600.0f, f->size,
+                 f->hunger, f->energy, f->stress, f->curiosity, f->trust, GOAL_NAMES[f->goal.id]);
+    }
+    int pellets = 0, cells = 0;
+    for (int i = 0; i < MAX_FOOD; i++) pellets += t->food[i].alive;
+    for (int i = 0; i < ALGAE_CELLS; i++) cells += t->algae[i] > 0;
+    ESP_LOGI(TAG, "pellets %d | trickle %s | ravenous %d | %s%s | veg %.2f %.2f %.2f | algae cells %d/%d | shadow %d | courting %s%s%s%s | arrival %s",
+             pellets, t->trickle_off ? "OFF" : "on", (int)t->ravenous,
+             t->night ? "night" : "day", t->light_override ? " (manual)" : "",
+             t->veg_growth[0], t->veg_growth[1], t->veg_growth[2], cells, ALGAE_CELLS,
+             (int)t->shadow.active,
+             t->courting ? t->fish[t->court_a].name : "no", t->courting ? "+" : "",
+             t->courting ? t->fish[t->court_b].name : "", t->court_active > 0 ? " (circling)" : "",
+             progression_arrival_pending() ? "staged" : "-");
+    ESP_LOGI(TAG, "nursery bed %d (a bed >= %.2f) | parked real tank: %s", tank_nursery_bed(t), (double)VEG_NURSERY,
+             nvs_has("bk") ? "YES (restore)" : "no (this IS the real tank)");
+}
+
+static void help(void) {
+    ESP_LOGI(TAG, "help | state | hungry [N] [level=9] (N fish starving, water cleared, trickle held)");
+    ESP_LOGI(TAG, "fed [level=1] (everyone full, trickle back on) | set <hunger|energy|stress|curiosity|trust> <0-10> [fish name|idx]");
+    ESP_LOGI(TAG, "feed [n=3] [x] (keeper drops pellets; trickle back on) | trickle on|off | pellets clear");
+    ESP_LOGI(TAG, "shadow | algae <steps|clear> | veg <bed 0-2|all> <0.03-1> | light (toggle) | auto | sleep <hours> | save");
+    ESP_LOGI(TAG, "STAGED TANKS (the real one is parked first): fresh (new tank, two fry) | stages (fry juv adult elder) | stage <fish|all> <fry|juv|adult|elder>");
+    ESP_LOGI(TAG, "stash (park the real tank now) | restore (bring it back) | age <fish> <hours>");
+    ESP_LOGI(TAG, "milestones [off] (the page, on cue; on the device: tap the open stats card)");
+    ESP_LOGI(TAG, "overgrown (grass to the ceiling + fouled glass; fish stress climbs) | court (pair circles the reef now and every ~minute; fry at the next light-on) | arrive (the fry, now)");
+}
+
+static void run(tank_t *t, char *line) {
+    char *argv[6]; int argc = 0;
+    for (char *tok = strtok(line, " \t"); tok && argc < 6; tok = strtok(NULL, " \t")) argv[argc++] = tok;
+    if (!argc) return;
+    for (char *p = argv[0]; *p; p++) *p = (char)tolower((unsigned char)*p);
+    const char *c = argv[0];
+    if (!strcmp(c, "help")) help();
+    else if (!strcmp(c, "state")) show_state(t);
+    else if (!strcmp(c, "hungry")) {
+        int n = argc > 1 ? atoi(argv[1]) : t->n_fish;
+        float lvl = argc > 2 ? atof(argv[2]) : 9.0f;
+        if (n > t->n_fish) n = t->n_fish;
+        for (int i = 0; i < n; i++) t->fish[i].hunger = lvl;
+        clear_pellets(t);
+        t->trickle_off = true;
+        ESP_LOGI(TAG, "%d fish at hunger %.1f, pellets cleared, trickle held (feed / fed / trickle on releases)", n, lvl);
+        show_state(t);
+    } else if (!strcmp(c, "fed")) {
+        float lvl = argc > 1 ? atof(argv[1]) : 1.0f;
+        for (int i = 0; i < t->n_fish; i++) t->fish[i].hunger = lvl;
+        t->trickle_off = false;
+        ESP_LOGI(TAG, "everyone at hunger %.1f, trickle on", lvl);
+    } else if (!strcmp(c, "set") && argc >= 3) {
+        float lvl = atof(argv[2]);
+        int who = argc > 3 ? find_fish(t, argv[3]) : -1;
+        if (argc > 3 && who < 0) { ESP_LOGW(TAG, "no fish '%s'", argv[3]); return; }
+        int hit = 0;
+        for (int i = 0; i < t->n_fish; i++) {
+            if (who >= 0 && i != who) continue;
+            float *d = drive_of(&t->fish[i], argv[1]);
+            if (!d) { ESP_LOGW(TAG, "no drive '%s'", argv[1]); return; }
+            *d = lvl < 0 ? 0 : lvl > 10 ? 10 : lvl; hit++;
+        }
+        ESP_LOGI(TAG, "%s = %.1f for %d fish", argv[1], lvl, hit);
+    } else if (!strcmp(c, "feed")) {
+        int n = argc > 1 ? atoi(argv[1]) : 3;
+        float x = argc > 2 ? atof(argv[2]) : (t->feed_spot_x >= 0 ? t->feed_spot_x : TANK_W * 0.5f);
+        t->trickle_off = false;
+        tank_feed(t, x, n);
+        ESP_LOGI(TAG, "%d pellets at x %.0f (keeper feeding #%d), trickle on", n, x, t->player_feedings);
+    } else if (!strcmp(c, "trickle") && argc > 1) {
+        t->trickle_off = !strcmp(argv[1], "off");
+        ESP_LOGI(TAG, "trickle %s", t->trickle_off ? "OFF" : "on");
+    } else if (!strcmp(c, "pellets")) {
+        clear_pellets(t); ESP_LOGI(TAG, "pellets cleared");
+    } else if (!strcmp(c, "shadow")) {
+        tank_start_shadow(t); ESP_LOGI(TAG, "shadow launched");
+    } else if (!strcmp(c, "algae") && argc > 1) {
+        if (!strcmp(argv[1], "clear")) { memset(t->algae, 0, sizeof t->algae); ESP_LOGI(TAG, "glass clean"); }
+        else { int s = atoi(argv[1]); tank_grow_algae(t, s); ESP_LOGI(TAG, "algae +%d steps", s); }
+    } else if (!strcmp(c, "veg") && argc > 2) {
+        float g = atof(argv[2]);
+        if (!strcmp(argv[1], "all")) for (int b = 0; b < VEG_BEDS; b++) tank_veg_set(t, b, g);
+        else { int b = atoi(argv[1]); if (b >= 0 && b < VEG_BEDS) tank_veg_set(t, b, g); }
+        ESP_LOGI(TAG, "veg %s -> %.2f", argv[1], g);
+    } else if (!strcmp(c, "light")) {
+        tank_toggle_light(t); ESP_LOGI(TAG, "light %s (manual)", t->light_on ? "on" : "off");
+    } else if (!strcmp(c, "auto")) {
+        tank_light_auto(t); ESP_LOGI(TAG, "light back on the day/night cycle");
+    } else if (!strcmp(c, "sleep") && argc > 1) {
+        float h = atof(argv[1]);
+        tank_tick_sleep(t, h * 3600.0f);
+        ESP_LOGI(TAG, "slept %.1f h", h);
+        show_state(t);
+    } else if (!strcmp(c, "milestones")) {
+        bool on = argc < 2 || strcmp(argv[1], "off");
+        touch_port_show_milestones(on); ESP_LOGI(TAG, "milestones page %s", on ? "up (a tap closes it)" : "closed");
+    } else if (!strcmp(c, "save")) {
+        progression_save(t); ESP_LOGI(TAG, "saved");
+    } else if (!strcmp(c, "stash")) {
+        stash(t);
+    } else if (!strcmp(c, "restore")) {
+        if (!nvs_has("bk")) { ESP_LOGW(TAG, "nothing stashed"); return; }
+        if (!nvs_copy("bk", "save")) { ESP_LOGW(TAG, "restore copy failed"); return; }
+        nvs_drop("bk");
+        tank_init(t, (uint32_t)esp_timer_get_time() ^ 0xC0FFEEu);
+        progression_boot(t);
+        ESP_LOGI(TAG, "real tank restored (%d fish)%s", t->n_fish,
+                 t->ravenous ? " - parked over an hour, so it woke ravenous: `fed` if unwanted" : "");
+        show_state(t);
+    } else if (!strcmp(c, "fresh")) {
+        if (!stage_guard(t)) return;
+        tank_init(t, (uint32_t)esp_timer_get_time() ^ 0xC0FFEEu);
+        progression_fresh(t);
+        ESP_LOGI(TAG, "fresh tank: %s + %s, both fry", t->fish[0].name, t->fish[1].name);
+        show_state(t);
+    } else if (!strcmp(c, "stages")) {
+        if (!stage_guard(t)) return;
+        int n = t->n_fish < 4 ? t->n_fish : 4;
+        for (int i = 0; i < n; i++) progression_set_age(t, i, STAGE_AGE[4 - n + i]);
+        ESP_LOGI(TAG, "one fish per stage");
+        show_state(t);
+    } else if (!strcmp(c, "stage") && argc > 2) {
+        int st = stage_of(argv[2]);
+        if (st < 0) { ESP_LOGW(TAG, "stage is fry|juv|adult|elder"); return; }
+        if (!stage_guard(t)) return;
+        if (!strcmp(argv[1], "all")) for (int i = 0; i < t->n_fish; i++) progression_set_age(t, i, STAGE_AGE[st]);
+        else { int who = find_fish(t, argv[1]); if (who < 0) { ESP_LOGW(TAG, "no fish '%s'", argv[1]); return; }
+               progression_set_age(t, who, STAGE_AGE[st]); }
+        show_state(t);
+    } else if (!strcmp(c, "overgrown")) {
+        if (!stage_guard(t)) return;
+        for (int b = 0; b < VEG_BEDS; b++) tank_veg_set(t, b, 0.95f);
+        tank_grow_algae(t, 600);
+        ESP_LOGI(TAG, "overgrown: grass at the ceiling, glass fouled - stress settles toward ~6.7 over the next minute; swipe to trim, wipe to clean");
+        show_state(t);
+    } else if (!strcmp(c, "court")) {
+        if (!stage_guard(t)) return;
+        make_room(t);
+        if (tank_nursery_bed(t) < 0) { tank_veg_set(t, 0, 0.3f); ESP_LOGI(TAG, "no nursery: reef bed set to 0.30"); }
+        progression_stage_arrival(t);
+        t->court_cool = 0;                     /* first episode on the next frame (lights on) */
+        ESP_LOGI(TAG, "arrival staged: the two most-trusting grown fish circle the reef now and every 40-90 s; the fry appears at the next light-on (light twice) or `arrive`");
+    } else if (!strcmp(c, "arrive")) {
+        if (!stage_guard(t)) return;
+        make_room(t);
+        if (tank_nursery_bed(t) < 0) { tank_veg_set(t, 0, 0.3f); ESP_LOGI(TAG, "no nursery: reef bed set to 0.30"); }
+        int before = t->n_fish;
+        progression_force_arrival(t);
+        if (t->n_fish > before) ESP_LOGI(TAG, "a fry: %s, by the reef", t->fish[t->n_fish - 1].name);
+        else ESP_LOGW(TAG, "no arrival: tank at the cap (%d)", t->n_fish);
+        show_state(t);
+    } else if (!strcmp(c, "age") && argc > 2) {
+        int who = find_fish(t, argv[1]); if (who < 0) { ESP_LOGW(TAG, "no fish '%s'", argv[1]); return; }
+        if (!stage_guard(t)) return;
+        progression_set_age(t, who, atof(argv[2]) * 3600.0f);
+        show_state(t);
+    } else {
+        ESP_LOGW(TAG, "unknown: '%s' (help)", c);
+    }
+}
+
+void director_init(void) {
+#if CONFIG_SOC_USB_SERIAL_JTAG_SUPPORTED
+    usb_serial_jtag_driver_config_t cfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+    s_ok = usb_serial_jtag_driver_install(&cfg) == ESP_OK;
+    ESP_LOGI(TAG, "%s", s_ok ? "console ready (type help)" : "USB serial driver failed: console off");
+    if (nvs_has("bk")) ESP_LOGW(TAG, "a STAGED tank is up: the real tank is parked (restore brings it back)");
+#else
+    ESP_LOGI(TAG, "no USB serial: console off");
+#endif
+}
+
+void director_poll(tank_t *t) {
+#if CONFIG_SOC_USB_SERIAL_JTAG_SUPPORTED
+    if (!s_ok) return;
+    uint8_t buf[32]; int n;
+    while ((n = usb_serial_jtag_read_bytes(buf, sizeof buf, 0)) > 0) {
+        for (int i = 0; i < n; i++) {
+            char ch = (char)buf[i];
+            if (ch == '\n' || ch == '\r') {
+                if (s_len) { s_line[s_len] = 0; run(t, s_line); }
+                s_len = 0;
+            } else if (s_len < (int)sizeof s_line - 1) s_line[s_len++] = ch;
+        }
+    }
+#else
+    (void)t;
+#endif
+}

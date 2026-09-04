@@ -52,6 +52,10 @@ elder 8 h; lights-off pauses aging), size = stage scale × meal bonus; silent.*
   approach), regardless of which brain chose seek_food. Implemented in
   `sim/tank.c` (2026-08-20); the ravenous-boot behavior falls out of it.
 - UI: exposed as a simple visual meter only when the stats UI is revealed.
+- *Economy retuned 2026-09-01* (`tank.c` HUNGER_*/TRICKLE_*): a meal lasts
+  ~5-6 min awake, the tank's trickle is hunger-gated and per-second, so an
+  untended awake tank hovers between fed and peckish and **ravenous begging
+  is the after-sleep / long-absence event only**. `--selftest-hunger`.
 
 ## Trait drift
 
@@ -70,7 +74,9 @@ one trait unit per ~6 h of pressure. Trust (touch) also persists.*
 and device FT3168 (`firmware/main/touch_port_ft3168.c`) feed the same state
 machine.*
 
-- **Tap-and-hold**: fish swim toward the held spot (trust-gated approach).
+- **Tap-and-hold** (settled, ~3 s of contact — 2026-08-30): fish swim toward
+  the held spot (trust-gated approach; a strongly hungry fish ignores the
+  finger). The 3 s gate keeps taps/card-taps from twitching the school.
 - **Aggressive taps**: fish flee the impact site.
   - While fleeing, continued taps (chasing) keep them fleeing until a
     **cooldown timer** resets.
@@ -78,6 +84,34 @@ machine.*
     mode again (single taps become harmless).
 - Double-tap reserved for the light toggle (see below).
 - Tap reactions are reflex-layer, not model decisions.
+
+## Upkeep chores (2026-08-30, `tank_veg_bed`/`tank_grow_algae` in tank.c)
+
+- **Vegetation is alive**: the three beds keep growing — up toward the
+  surface (fastest during device drowse). **Every frond has its own height**
+  (2026-09-04, `tank_t.veg_h`): a sideways stroke that starts on a bed cuts
+  exactly the fronds it crosses, at the height where the finger crosses
+  them — a flick takes one or two at that height, a sweep along the floor
+  mows the bed toward **nubs, never bare** (little bits of green always
+  remain). Fish swim slower inside a canopy. **Height is
+  growth** (2026-09-04): a bed at growth g stands g of the way from the
+  floor to the surface — only the tank ceiling limits it, every bed alike.
+  Comfort band (2026-09-04 rework — fish LIKE cover): any canopy calms
+  (stress decays faster with more grass, faster again for a fish tucked
+  inside one, and a hidden fish feels a shadow at half the press); a fully
+  scalped tank (no bed past `VEG_BARE`) is a **mild** unease that lifts the
+  moment one tuft regrows; only a tank being **smothered** presses back —
+  the second-tallest bed past `VEG_SMOTHER` (85% of the way to the surface,
+  i.e. at least two beds crowding the ceiling), ramping to the full press
+  at 100%. One bed at the ceiling is just a good place to hide. Stress is
+  already in the schema, so the model reacts without any schema change.
+- **Algae films the glass** over hours (2x during drowse), dappled from the
+  corners/edges in; a **drag across the glass squeegees it clean**. Film
+  steps run through `tank_t.algae_acc` awake AND asleep — the device
+  drowses in 30 s slices and the old per-call `(int)(30 / 120)` had been
+  truncating every overnight step to zero (fixed 2026-09-04).
+- Tank milestones: first trimming, first glass cleaning.
+- Neither chore ever counts toward the tap burst (no accidental startles).
 
 ## IMU (motion)
 
