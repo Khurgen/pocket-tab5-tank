@@ -1,6 +1,7 @@
 # pocket-tank 🐟
 
 **A tiny language model keeps a fish tank alive on an $8 chip.**
+The ESP32-S3 board, with screen and battery used in this project is actually around $35.
 
 A 14-million-parameter transformer, distilled from a 26-billion-parameter
 teacher, runs entirely on an ESP32-S3 microcontroller and makes every
@@ -312,7 +313,7 @@ This repo is the companion to a YouTube series documenting the build:
 distilling the model, designing the schema, squeezing inference into PSRAM,
 first boot on real glass, and the tank growing into a pet.
 
-**▶ Watch:** _link coming with the first episode_
+**▶ Watch:** https://youtu.be/C2z7x47xxdM
 
 ## License
 
