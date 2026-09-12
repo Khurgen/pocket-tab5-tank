@@ -159,6 +159,13 @@ void progression_fresh(tank_t *t) {
     mark_dirty();
 }
 
+void progression_reset(tank_t *t, uint32_t seed) {
+    persist_port_erase();
+    tank_init(t, seed);
+    progression_fresh(t);
+    progression_save(t);
+}
+
 void progression_set_age(tank_t *t, int idx, float seconds) {
     if (idx < 0 || idx >= t->n_fish) return;
     s_age[idx] = seconds < 0 ? 0 : seconds;

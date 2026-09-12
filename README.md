@@ -26,6 +26,8 @@ wall clear last explore time day  ->  seek_food urgency 8
 
 This repo is the complete project: the trained model, the distillation
 pipeline that made it, a PC simulator, and the firmware for a real board.
+Got the board? **[Install it from your browser](https://stratobuilds.com/pocket-tank-installer/)**,
+no toolchain needed.
 
 ## Contents
 
@@ -35,6 +37,7 @@ pipeline that made it, a PC simulator, and the firmware for a real board.
 - [The living tank](#the-living-tank)
 - [Try it: PC simulator](#try-it-pc-simulator)
 - [Try it: firmware in QEMU](#try-it-firmware-in-qemu)
+- [Install from your browser](#install-from-your-browser)
 - [Run it on real hardware](#run-it-on-real-hardware)
 - [The director console](#the-director-console)
 - [Train your own](#train-your-own)
@@ -155,6 +158,10 @@ hunger rising and stress fading, no decisions made. Another press resumes in
 place. Holding BOOT powers the tank off entirely. Flip the device and the
 screen follows.
 
+**Starting over.** Hold BOOT and tap the glass: a *Reset tank?* prompt
+appears over the water with a NO and a YES. YES wipes the save and two new
+fry take the tank; NO, a sleep, or twenty seconds of silence keep everything.
+
 ## Try it: PC simulator
 
 The simulator runs the exact same `common/` code inside an LVGL + SDL2
@@ -181,13 +188,13 @@ clicks to startle, two to toggle the light, drag across the glass to wipe
 algae, and stroke sideways through a bed to trim it. Keys: **F** feed at the
 mouse, **S** cast a shadow, **N** light, **A** auto light, **L** switch
 between the rule stub and the LLM brain, **U** overlays, **M** milestones,
-**R** force an arrival, **Z** jump through seven hours of sleep, **G** grow
-the grass and algae now, **Q** quit.
+**X** the reset prompt, **R** force an arrival, **Z** jump through seven
+hours of sleep, **G** grow the grass and algae now, **Q** quit.
 
 Flags: `--fresh` starts a new random tank, `--fast N` runs tended time N×
 faster so you can watch fish grow up, `--greedy` disables sampling,
 `--narrate` prints every decision as it's made, `--snapshot <prefix>` writes
-PPM frames of the tank, card, and milestones page.
+PPM frames of the tank, card, milestones page, and reset prompt.
 
 Headless checks, all of which run in CI-style without a window:
 `--selftest` (reflex layer), `--selftest-llm [min]` (the real model),
@@ -208,11 +215,30 @@ You'll watch an emulated ESP32-S3 memory-map the 7.56 MB model from flash
 and start making decisions, about 2.3 s each in emulation. The display and
 touch ports are stubs in the QEMU overlay; decisions go to the log.
 
+## Install from your browser
+
+The easy way onto a board: **https://stratobuilds.com/pocket-tank-installer/**.
+Plug the Waveshare board into your computer, open the page in Chrome or Edge,
+click *Install Pocket Tank*, pick the port, and watch the bar fill. About
+8 MB goes over in a minute or two, the board reboots on its own, and two fry
+are waiting. The dialog offers to erase first: say yes for a brand-new tank,
+or leave it off to update a tank you already keep and your fish, their trust
+and their history survive. It is the same mechanism ESPHome and Home
+Assistant use ([ESP Web Tools](https://esphome.github.io/esp-web-tools/)),
+running entirely in the browser over Web Serial.
+
+To host your own copy, `tools/make_installer.py` turns a firmware build plus
+the shipped model into one static folder (`installer/dist/`: the page, a
+manifest with the four parts and their flash offsets, the binaries, and the
+vendored flasher). Any HTTPS static host will do, GitHub Pages included;
+[installer/README.md](installer/README.md) has the details.
+
 ## Run it on real hardware
 
 The target is the Waveshare **ESP32-S3-Touch-AMOLED-1.8** (ESP32-S3R8,
 16 MB flash, 8 MB PSRAM, 368×448 AMOLED, capacitive touch, IMU, PMIC, RTC).
-Both board revisions are supported and auto-detected.
+Both board revisions are supported and auto-detected. The browser installer
+above is the no-toolchain path; this is the developer one.
 
 ```bash
 . ~/esp/esp-idf/export.sh
@@ -242,6 +268,7 @@ tools/director.py shadow          # a shadow passes over
 tools/director.py overgrown       # grass to the ceiling, fouled glass
 tools/director.py court           # the courtship tell, fry at the next light-on
 tools/director.py milestones      # the milestones page
+tools/director.py reset           # the reset prompt (then `reset yes` or `reset no`)
 tools/director.py state           # every drive, the garden, what's staged
 tools/director.py help            # the full list
 ```
@@ -271,7 +298,8 @@ seven-minute prompt check before an overnight run is always worth it.
 
 - `common/` — everything shared verbatim by sim and firmware: `tank.c`
   (reflex layer), `render.c` (RGB565 software renderer, stats card,
-  milestones page), `progression.c` (the long game and persistence),
+  milestones page, the reset prompt and its pixel font), `progression.c`
+  (the long game and persistence),
   `icons.c` (baked pixel art), `llm/` (4-bit engine, word tokenizer, the
   shared encoder)
 - `sim/` — the LVGL + SDL2 simulator, its persistence port, and the self-tests
@@ -280,7 +308,10 @@ seven-minute prompt check before an overnight run is always worth it.
   console, the QEMU harness, and the partition table
 - `model/` — the frozen [state/goal schema](model/schema.md), trace
   generation, training, evaluation, probes, and the 4-bit export
-- `tools/` — the director console client and the icon baker
+- `installer/` — the browser installer page and the vendored ESP Web Tools
+  bundle; `tools/make_installer.py` assembles the upload folder
+- `tools/` — the director console client, the icon baker, and the installer
+  assembler
 - `assets/icons/` — the pixel-art source for the stats card
 
 ## Documentation
@@ -303,9 +334,12 @@ seven-minute prompt check before an overnight run is always worth it.
 - ✅ Firmware: running on the real board at 25 to 30 fps and 3.6 s per
   decision, with touch, sleep and power-off, auto-rotation, battery gauge
 - ✅ The living tank: growth, arrivals with courtship, trust, the hunger
-  economy, upkeep chores, milestones, the director console
-- 🚧 Next: legible labels on the milestones page, a partial-stripe display
-  flush, and a data run to broaden a content fish's repertoire
+  economy, upkeep chores, milestones, the director console, the reset prompt
+- ✅ Browser installer: one click from Chrome or Edge, hosted at
+  stratobuilds.com
+- 🚧 Next: labels on the milestones page (the renderer has a pixel font
+  now), a partial-stripe display flush, and a data run to broaden a content
+  fish's repertoire
 
 ## The video series
 

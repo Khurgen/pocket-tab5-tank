@@ -82,6 +82,7 @@ static void assert_plan(void) {
 
 static void enter_poweroff(void);
 static bool s_btn_armed; static int64_t s_btn_low_since;   /* sleep_button_poll state */
+static bool s_btn_used;   /* this press opened the reset prompt: no drowse, no power-off from it */
 
 /* Sleep = drowse (docs/HANDOFF.md): the tank keeps living, slowly. Screen and
  * touch rails cut, then duty-cycled LIGHT sleep - wake ~0.1 s every 30 s to
@@ -95,6 +96,7 @@ static bool s_btn_armed; static int64_t s_btn_low_since;   /* sleep_button_poll 
 #define DROWSE_SAVE_US (30LL * 60 * 1000000)
 static void enter_sleep(void) {
     ESP_LOGI(TAG, "sleep: save, panel off, drowse (slow metabolism; BOOT wakes)");
+    touch_port_confirm_answer(-1);              /* an open reset prompt is a NO */
     progression_save(&tank);
     imu_port_sleep();          /* quiesce BEFORE the rails cycle (latch-up guard) */
     display_port_sleep();
@@ -141,18 +143,36 @@ static void enter_poweroff(void) {
 /* armed only after the button has been seen released, so the press that ended
  * a drowse doesn't immediately start the next one. Short press = drowse, acted
  * on at RELEASE (enter_sleep returns after the eventual wake); held >= 1.5 s =
- * full power-off. */
+ * full power-off. The RESET chord (2026-09-11): while BOOT is held, a finger
+ * landing on the glass opens the confirm prompt instead - that press then
+ * neither drowses at release nor powers off, however long it is held; a
+ * finger that was already resting on the glass doesn't count (hold-attract
+ * then BOOT still just sleeps the tank). */
 #define BTN_DEBOUNCE_US 50000
 #define BTN_LONG_US     1500000
 static void sleep_button_poll(int64_t now) {
     if (gpio_get_level(BTN_SLEEP)) {
-        if (s_btn_armed && s_btn_low_since && now - s_btn_low_since >= BTN_DEBOUNCE_US)
+        if (s_btn_armed && s_btn_low_since && !s_btn_used && now - s_btn_low_since >= BTN_DEBOUNCE_US)
             enter_sleep();
-        s_btn_armed = true; s_btn_low_since = 0;
+        s_btn_armed = true; s_btn_low_since = 0; s_btn_used = false;
     } else if (s_btn_armed) {
         if (!s_btn_low_since) s_btn_low_since = now;
-        else if (now - s_btn_low_since >= BTN_LONG_US) enter_poweroff();
+        else if (!s_btn_used && touch_port_pressed_since(s_btn_low_since) && !touch_port_confirm_up()) {
+            s_btn_used = true;
+            ESP_LOGI(TAG, "BOOT + tap: reset prompt");
+            touch_port_confirm_open();
+        }
+        else if (!s_btn_used && now - s_btn_low_since >= BTN_LONG_US) enter_poweroff();
     }
+}
+
+/* the keeper said YES: every saved tank goes - the live one and a director-
+ * parked copy alike - and a fresh pair of fry takes the glass, saved at once
+ * so a reboot lands on them (progression_reset) */
+static void reset_tank(void) {
+    ESP_LOGW(TAG, "RESET: wiping the tank (%d fish) for a fresh one", tank.n_fish);
+    progression_reset(&tank, (uint32_t)esp_timer_get_time() ^ 0xC0FFEEu);
+    ESP_LOGI(TAG, "fresh tank: %s + %s, both fry", tank.fish[0].name, tank.fish[1].name);
 }
 
 static void tank_task(void *arg) {
@@ -170,6 +190,9 @@ static void tank_task(void *arg) {
         touch_port_set_inverted(inv);
         touch_port_poll(&tank);
         director_poll(&tank);
+        int ans = touch_port_confirm_take();
+        if (ans > 0) reset_tank();
+        else if (ans < 0) ESP_LOGI(TAG, "reset prompt: tank kept");
         tank_tick(&tank, dt, llm_ok ? advisor_llm_esp : advisor_rules);
         progression_tick(&tank, dt);
         if (fb[cur]) {
@@ -196,6 +219,8 @@ static void tank_task(void *arg) {
                 if (now - bat_us > 1000000) { bok = battery_port_read(&bf, &chg); bat_us = now; }  /* the I2C gauge read once a second, not per frame */
                 if (bok) render_battery(fb[cur], TANK_W, bf, chg);
             }
+            if (touch_port_confirm_up())         /* reset prompt: over everything, fish still swim */
+                render_confirm_reset(fb[cur], TANK_W, touch_port_confirm_frac());
             int64_t t1 = esp_timer_get_time();
             if (sel >= 0) { card_us += t1 - tc; card_frames++; }
             display_port_flush(fb[cur]);

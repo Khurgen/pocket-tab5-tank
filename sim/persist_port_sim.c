@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <errno.h>
 
 /* POCKET_TANK_SAVE overrides the save path (selftests use a scratch file) */
 static const char *path(void) {
@@ -23,4 +24,5 @@ bool persist_port_save(const void *buf, size_t len) {
     FILE *f = fopen(path(), "wb"); if (!f) return false;
     size_t n = fwrite(buf, 1, len, f); fclose(f); return n == len;
 }
+bool persist_port_erase(void) { return remove(path()) == 0 || errno == ENOENT; }
 int64_t clock_port_now_unix(void) { return (int64_t)time(NULL); }

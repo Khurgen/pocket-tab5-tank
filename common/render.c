@@ -276,6 +276,7 @@ int64_t render_prof_us[7];
 /* ---- static scene: gradient, pebbles, reef rock (cacheable) ---- */
 static uint16_t *g_scene = NULL;
 static float     g_scene_dim = -1;
+static uint32_t  g_scene_ms = 0;        /* tank milestones baked into the reef */
 static unsigned  g_scene_epoch = 0;
 static const uint16_t *g_primed_fb = NULL;
 static unsigned  g_primed_epoch = 0;
@@ -503,12 +504,15 @@ void render_tank(const tank_t *t, uint16_t *fb, int stride) {
         rects[nr].x1 = (short)(cx1); rects[nr].y1 = (short)(cy1); nr++; } } while (0)
 
     if (cached) {
-        if (g_scene_dim != dim) {
+        if (g_scene_dim != dim || g_scene_ms != t->tank_ms_bits) {
             /* rebuild the static scene with the vignette baked in (the
-               per-frame pass then only re-darkens dynamic patches) */
+               per-frame pass then only re-darkens dynamic patches). The
+               reef's lushness comes from the tank milestones, so a new
+               milestone - or a reset back to a bare pair - rebakes too
+               (it used to wait for the next day/night change). */
             bake_scene(t, g_scene, dim);
             if (g_vig) g_vig_filled = true;
-            g_scene_dim = dim; g_scene_epoch++;
+            g_scene_dim = dim; g_scene_ms = t->tank_ms_bits; g_scene_epoch++;
         }
         if (!(g_primed_fb == fb && g_primed_epoch == g_scene_epoch))
             memcpy(fb, g_scene, TANK_W * TANK_H * sizeof(uint16_t));
@@ -858,4 +862,125 @@ void render_milestones(const tank_t *t, uint16_t *fb, int stride) {
     }
     /* empty slots still to arrive: faint rings where a fish row would be */
     for (int i = t->n_fish; i < N_FISH_MAX; i++) ring(&c, X0 - 18, Y0 + i * ROW, 7, 0x1a2a30);
+}
+
+/* ---- a small pixel font (2026-09-11) ----
+ * 5x7 glyphs - upper case, digits, a little punctuation - drawn as scale x
+ * scale blocks, so one table reads at 2x for a caption and 3x for a
+ * button. The renderer's first text (the milestones page can borrow it for
+ * labels). Lower case maps to upper; anything else advances a cell. */
+static const uint8_t FONT5X7[][7] = {
+    { 0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11 }, /* A */
+    { 0x1e, 0x11, 0x11, 0x1e, 0x11, 0x11, 0x1e }, /* B */
+    { 0x0e, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0e }, /* C */
+    { 0x1e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1e }, /* D */
+    { 0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f }, /* E */
+    { 0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10 }, /* F */
+    { 0x0e, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0f }, /* G */
+    { 0x11, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11 }, /* H */
+    { 0x0e, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0e }, /* I */
+    { 0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0c }, /* J */
+    { 0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11 }, /* K */
+    { 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f }, /* L */
+    { 0x11, 0x1b, 0x15, 0x15, 0x11, 0x11, 0x11 }, /* M */
+    { 0x11, 0x11, 0x19, 0x15, 0x13, 0x11, 0x11 }, /* N */
+    { 0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e }, /* O */
+    { 0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10 }, /* P */
+    { 0x0e, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0d }, /* Q */
+    { 0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11 }, /* R */
+    { 0x0f, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e }, /* S */
+    { 0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04 }, /* T */
+    { 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e }, /* U */
+    { 0x11, 0x11, 0x11, 0x11, 0x11, 0x0a, 0x04 }, /* V */
+    { 0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0a }, /* W */
+    { 0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11 }, /* X */
+    { 0x11, 0x11, 0x11, 0x0a, 0x04, 0x04, 0x04 }, /* Y */
+    { 0x1f, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1f }, /* Z */
+    { 0x0e, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0e }, /* 0 */
+    { 0x04, 0x0c, 0x04, 0x04, 0x04, 0x04, 0x0e }, /* 1 */
+    { 0x0e, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1f }, /* 2 */
+    { 0x1f, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0e }, /* 3 */
+    { 0x02, 0x06, 0x0a, 0x12, 0x1f, 0x02, 0x02 }, /* 4 */
+    { 0x1f, 0x10, 0x1e, 0x01, 0x01, 0x11, 0x0e }, /* 5 */
+    { 0x06, 0x08, 0x10, 0x1e, 0x11, 0x11, 0x0e }, /* 6 */
+    { 0x1f, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08 }, /* 7 */
+    { 0x0e, 0x11, 0x11, 0x0e, 0x11, 0x11, 0x0e }, /* 8 */
+    { 0x0e, 0x11, 0x11, 0x0f, 0x01, 0x02, 0x0c }, /* 9 */
+    { 0x0e, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04 }, /* ? */
+    { 0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04 }, /* ! */
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x0c }, /* . */
+    { 0x00, 0x00, 0x00, 0x00, 0x0c, 0x04, 0x08 }, /* , */
+    { 0x00, 0x00, 0x00, 0x1f, 0x00, 0x00, 0x00 }, /* - */
+    { 0x00, 0x0c, 0x0c, 0x00, 0x0c, 0x0c, 0x00 }, /* : */
+    { 0x0c, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00 }, /* ' */
+    { 0x01, 0x02, 0x02, 0x04, 0x08, 0x08, 0x10 }, /* / */
+    { 0x00, 0x04, 0x04, 0x1f, 0x04, 0x04, 0x00 }, /* + */
+};
+static const char FONT_CHARS[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789?!.,-:'/+";
+static const uint8_t *glyph(char ch) {
+    if (ch >= 'a' && ch <= 'z') ch -= 'a' - 'A';
+    const char *p = ch ? strchr(FONT_CHARS, ch) : NULL;
+    return p ? FONT5X7[p - FONT_CHARS] : NULL;
+}
+static int text_w(const char *s, int scale) { int n = (int)strlen(s); return n ? n * 6 * scale - scale : 0; }
+static void draw_text(ctx_t *c, int x, int y, int scale, uint32_t rgb, const char *s) {
+    src_t col = src_color(rgb, c->dim);
+    for (; *s; s++, x += 6 * scale) {
+        const uint8_t *g = glyph(*s);
+        if (!g) continue;
+        for (int r = 0; r < 7; r++)
+            for (int k = 0; k < 5; k++)
+                if (g[r] & (0x10 >> k))
+                    for (int yy = 0; yy < scale; yy++)
+                        span(c, x + k * scale, x + k * scale + scale - 1, y + r * scale + yy, &col, 255);
+    }
+}
+
+/* ---- reset confirm (2026-09-11) ----
+ * The keeper's "start over" (device: hold BOOT, tap the glass; sim: X). A
+ * modal panel over the live tank - the fish keep swimming behind it - that
+ * asks before the save is wiped. Opaque stores only, so a frame with it up
+ * costs about what the milestones page does. */
+static void rect_fill(ctx_t *c, int x, int y, int w, int h, uint32_t rgb) {
+    src_t f = src_color(rgb, 1.0f);
+    for (int yy = y; yy < y + h; yy++) span(c, x, x + w - 1, yy, &f, 255);
+}
+static void rect_edge(ctx_t *c, int x, int y, int w, int h, uint32_t rgb) {
+    src_t e = src_color(rgb, 1.0f);
+    span(c, x, x + w - 1, y, &e, 255); span(c, x, x + w - 1, y + h - 1, &e, 255);
+    for (int yy = y + 1; yy < y + h - 1; yy++) { px(c, x, yy, e.v); px(c, x + w - 1, yy, e.v); }
+}
+static void button(ctx_t *c, int x, int y, uint32_t fill, uint32_t edge, const char *label) {
+    const int W = RENDER_CONFIRM_BTN_W, H = RENDER_CONFIRM_BTN_H;
+    rect_fill(c, x, y, W, H, fill);
+    rect_edge(c, x, y, W, H, edge); rect_edge(c, x + 1, y + 1, W - 2, H - 2, edge);
+    draw_text(c, x + (W - text_w(label, 3)) / 2, y + (H - 21) / 2, 3, 0xffffff, label);
+}
+void render_confirm_reset(uint16_t *fb, int stride, float frac) {
+    ctx_t c = ctx_full(fb, stride, 1.0f);              /* ignores night dimming, like the card */
+    const int X = RENDER_CONFIRM_X, Y = RENDER_CONFIRM_Y, W = RENDER_CONFIRM_W, H = RENDER_CONFIRM_H;
+    rect_fill(&c, X, Y, W, H, 0x04141a);
+    rect_edge(&c, X, Y, W, H, 0x9fd8e2); rect_edge(&c, X + 1, Y + 1, W - 2, H - 2, 0x1c2f36);
+    const char *title = "RESET TANK?";
+    draw_text(&c, X + (W - text_w(title, 3)) / 2, Y + 20, 3, 0xffffff, title);
+    const char *l1 = "START OVER WITH TWO FRY", *l2 = "EVERYTHING ELSE IS LOST";
+    draw_text(&c, X + (W - text_w(l1, 2)) / 2, Y + 58, 2, 0x9fd8e2, l1);
+    draw_text(&c, X + (W - text_w(l2, 2)) / 2, Y + 78, 2, 0x9fd8e2, l2);
+    /* NO is the calm one; YES wears the stress red */
+    button(&c, RENDER_CONFIRM_NO_X,  RENDER_CONFIRM_BTN_Y, 0x1c2f36, 0x9fd8e2, "NO");
+    button(&c, RENDER_CONFIRM_YES_X, RENDER_CONFIRM_BTN_Y, 0x7a2028, 0xf25b65, "YES");
+    /* the prompt lets itself go: a bar draining toward the timeout */
+    if (frac < 0) frac = 0;
+    if (frac > 1) frac = 1;
+    const int bw = W - 48, bx = X + 24, by = Y + H - 16;
+    rect_fill(&c, bx, by, bw, 3, 0x2a3f45);
+    int fw = (int)(bw * frac + 0.5f);
+    if (fw > 0) rect_fill(&c, bx, by, fw, 3, 0x9fd8e2);
+}
+int render_confirm_hit(float x, float y) {
+    const int m = 10;                                   /* a fingertip's slop around each button */
+    if (y < RENDER_CONFIRM_BTN_Y - m || y >= RENDER_CONFIRM_BTN_Y + RENDER_CONFIRM_BTN_H + m) return 0;
+    if (x >= RENDER_CONFIRM_NO_X - m  && x < RENDER_CONFIRM_NO_X  + RENDER_CONFIRM_BTN_W + m) return -1;
+    if (x >= RENDER_CONFIRM_YES_X - m && x < RENDER_CONFIRM_YES_X + RENDER_CONFIRM_BTN_W + m) return 1;
+    return 0;
 }

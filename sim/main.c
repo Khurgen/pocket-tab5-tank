@@ -4,6 +4,7 @@
  *
  *   ./fishsim              run the tank (keys: F feed at the mouse x, S shadow,
  *                          N light, L brain, U overlays, M milestones view,
+ *                          X reset prompt (device: hold BOOT + tap the glass),
  *                          R force an arrival (debug), A auto-light, Q quit;
  *                          click fish = stats; tap the water surface = feed;
  *                          drag down from the top = feed; hold >= 3 s = finger
@@ -75,6 +76,7 @@ static int selftest(void) {
     render_tank(&tank, fb, TANK_W);               /* renderer must not crash */
     render_stats_card(&tank, 0, fb, TANK_W);
     render_milestones(&tank, fb, TANK_W);
+    render_confirm_reset(fb, TANK_W, 0.5f);
     int eaten = 0, distinct = 0;
     for (int i = 0; i < tank.n_fish; i++) eaten += tank.fish[i].eaten;
     printf("selftest: 7200 ticks ok, %u advisor asks, %d player feedings, feed spot %.0f\n",
@@ -141,6 +143,25 @@ static int selftest_pop(void) {
             printf("FAIL: restore mismatch on fish %d\n", i); return 1;
         }
     printf("  save/restore ok (%d fish, tank ms 0x%03x)\n", tank.n_fish, tank.tank_ms_bits);
+    /* the keeper's reset: every save gone, two fry with nothing tended, and
+       the fresh pair already saved so a reboot lands on them */
+    progression_reset(&tank, 11);
+    if (tank.n_fish != 2 || tank.fish[0].stage != STAGE_FRY || tank.fish[1].stage != STAGE_FRY ||
+        tank.tank_ms_bits != TMS_PAIR || tank.player_feedings != 0 || progression_age_s(&tank, 0) != 0) {
+        printf("FAIL: reset did not give a fresh pair\n"); return 1;
+    }
+    tank_t fresh = tank;
+    tank_init(&tank, 12); progression_boot(&tank);
+    if (tank.n_fish != 2 || tank.fish[0].preset != fresh.fish[0].preset ||
+        tank.fish[1].preset != fresh.fish[1].preset || tank.tank_ms_bits != TMS_PAIR) {
+        printf("FAIL: the reset tank did not come back from its save\n"); return 1;
+    }
+    if (render_confirm_hit(RENDER_CONFIRM_NO_X + 10, RENDER_CONFIRM_BTN_Y + 10) != -1 ||
+        render_confirm_hit(RENDER_CONFIRM_YES_X + 10, RENDER_CONFIRM_BTN_Y + 10) != 1 ||
+        render_confirm_hit(RENDER_CONFIRM_X + 5, RENDER_CONFIRM_Y + 5) != 0 || render_confirm_hit(5, 5) != 0) {
+        printf("FAIL: confirm buttons hit-test\n"); return 1;
+    }
+    printf("  reset ok: %s + %s, both fry, saved and reloaded\n", tank.fish[0].name, tank.fish[1].name);
     (void)system(cmd);                            /* leave no test save behind */
     return 0;
 }
@@ -469,6 +490,9 @@ static bool llm_active = false;
 static int  selected_fish = -1;      /* click a fish for its stat card */
 static bool ui_visible = true;       /* U toggles all overlays */
 static bool milestones_view = false; /* M toggles the milestones screen */
+static bool confirm_view = false;    /* X: the reset prompt (YES wipes the save) */
+static uint32_t confirm_ms;          /* when it opened; it gives up after CONFIRM_MS */
+#define CONFIRM_MS 20000
 
 static uint32_t tick_cb(void) { return SDL_GetTicks(); }
 
@@ -497,6 +521,7 @@ static void frame_cb(lv_timer_t *timer) {
                 render_stats_card(&tank, selected_fish, canvas_buf, TANK_W);
         }
     }
+    if (confirm_view) render_confirm_reset(canvas_buf, TANK_W, 1.0f - (SDL_GetTicks() - confirm_ms) / (float)CONFIRM_MS);
     lv_obj_invalidate(canvas);
 }
 
@@ -623,7 +648,9 @@ static int snapshot(const char *prefix, int seconds) {
     snprintf(path, sizeof path, "%s_card1.ppm", prefix); write_ppm(path, fb);   /* partly unrevealed */
     render_milestones(&tank, fb, TANK_W);
     snprintf(path, sizeof path, "%s_milestones.ppm", prefix); write_ppm(path, fb);
-    printf("snapshot: %d fish, wrote %s_{tank,card,milestones}.ppm\n", tank.n_fish, prefix);
+    render_tank(&tank, fb, TANK_W); render_confirm_reset(fb, TANK_W, 0.7f);
+    snprintf(path, sizeof path, "%s_confirm.ppm", prefix); write_ppm(path, fb);
+    printf("snapshot: %d fish, wrote %s_{tank,card,card1,milestones,confirm}.ppm\n", tank.n_fish, prefix);
     return 0;
 }
 
@@ -793,7 +820,7 @@ int main(int argc, char **argv) {
     lv_timer_create(frame_cb, 16, NULL);
 
     bool fdown = false, sdown = false, ndown = false, ldown = false;
-    bool udown = false, mdown = false, mkdown = false, rdown = false, zdown = false, gdown = false;
+    bool udown = false, mdown = false, mkdown = false, rdown = false, zdown = false, gdown = false, xdown = false;
     uint32_t press_ms = 0; int press_x = 0, press_y = 0;
     float press_fx[N_FISH_MAX] = {0}, press_fy[N_FISH_MAX] = {0};
     while (1) {
@@ -812,11 +839,20 @@ int main(int argc, char **argv) {
             press_ms = now_ms; press_x = mx; press_y = my;
             for (int i = 0; i < tank.n_fish; i++) { press_fx[i] = tank.fish[i].x; press_fy[i] = tank.fish[i].y; }
         }
-        if (mpress) tank_touch_drag(&tank, (float)mx, (float)my);   /* stroke -> wipe/slash */
-        if (mpress && now_ms - press_ms > 300 && abs(my - press_y) < 30) tank_touch_hold(&tank, (float)mx, (float)my);
+        if (mpress && !confirm_view) tank_touch_drag(&tank, (float)mx, (float)my);   /* stroke -> wipe/slash */
+        if (mpress && !confirm_view && now_ms - press_ms > 300 && abs(my - press_y) < 30) tank_touch_hold(&tank, (float)mx, (float)my);
         if (!mpress && mdown) {
             int dx = mx - press_x, dy = my - press_y;
-            if (milestones_view) { milestones_view = false; }
+            if (confirm_view) {                    /* the prompt owns the glass: press AND release on one button */
+                int h = press_ms > confirm_ms ? render_confirm_hit((float)press_x, (float)press_y) : 0;
+                if (h && h == render_confirm_hit((float)mx, (float)my)) {
+                    confirm_view = false;
+                    if (h > 0) { progression_reset(&tank, SDL_GetTicks() + 7); selected_fish = -1;
+                                 printf("RESET: a fresh tank\n"); print_roster(&tank); }
+                    else printf("reset prompt: NO, tank kept\n");
+                }
+            }
+            else if (milestones_view) { milestones_view = false; }
             else if (now_ms - press_ms < 350 && dx * dx + dy * dy < 24 * 24) {
                 /* same hit test as the device: 38 px against the press-time
                    fish snapshot AND the current position, whichever is closer */
@@ -834,6 +870,12 @@ int main(int argc, char **argv) {
             } else if (press_y < 60 && dy >= 40) tank_feed(&tank, (float)mx, 3);
         }
         mdown = mpress;
+        if (confirm_view && now_ms - confirm_ms > CONFIRM_MS) { confirm_view = false; printf("reset prompt: timed out, tank kept\n"); }
+        if (k[SDL_SCANCODE_X] && !xdown && !confirm_view) {   /* the keeper's reset prompt (device: hold BOOT + tap) */
+            confirm_view = true; confirm_ms = now_ms; selected_fish = -1; milestones_view = false;
+            printf("reset prompt: click YES or NO (it gives up after %d s)\n", CONFIRM_MS / 1000);
+        }
+        xdown = k[SDL_SCANCODE_X];
         if (k[SDL_SCANCODE_U] && !udown) { ui_visible = !ui_visible; }
         udown = k[SDL_SCANCODE_U];
         if (k[SDL_SCANCODE_M] && !mkdown) { milestones_view = !milestones_view; }

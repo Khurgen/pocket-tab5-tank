@@ -17,3 +17,6 @@ firmware/sdkconfig.old
 firmware/dependencies.lock
 firmware/managed_components/
 firmware/build_qemu/
+
+# browser installer output (tools/make_installer.py) - the upload folder
+installer/dist/

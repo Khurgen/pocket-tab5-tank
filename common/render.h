@@ -64,4 +64,23 @@ void render_battery(uint16_t *fb, int stride, float frac, bool charging);
  * at the bottom. Visual only. */
 void render_milestones(const tank_t *t, uint16_t *fb, int stride);
 
+/* Reset confirm (2026-09-11): a modal panel over the live tank - "RESET
+ * TANK?", what it costs, a NO and a YES button, and a bar draining toward
+ * the timeout (frac 1 -> 0). The first text the renderer draws (a 5x7
+ * pixel font, upper case). Drawn last, over the card / milestones page.
+ * render_confirm_hit maps a tap in tank coordinates to a button (+1 YES,
+ * -1 NO, 0 neither) so the device's touch port and the sim's mouse share
+ * the geometry. */
+#define RENDER_CONFIRM_X     56
+#define RENDER_CONFIRM_Y     76
+#define RENDER_CONFIRM_W     336
+#define RENDER_CONFIRM_H     216
+#define RENDER_CONFIRM_BTN_W 132
+#define RENDER_CONFIRM_BTN_H 56
+#define RENDER_CONFIRM_BTN_Y (RENDER_CONFIRM_Y + 112)
+#define RENDER_CONFIRM_NO_X  (RENDER_CONFIRM_X + 24)
+#define RENDER_CONFIRM_YES_X (RENDER_CONFIRM_X + RENDER_CONFIRM_W - 24 - RENDER_CONFIRM_BTN_W)
+void render_confirm_reset(uint16_t *fb, int stride, float frac);
+int  render_confirm_hit(float x, float y);
+
 #endif

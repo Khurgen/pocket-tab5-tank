@@ -27,6 +27,7 @@
 /* ---- platform ports (sim: file + time(); device: NVS + RTC) ---- */
 bool    persist_port_load(void *buf, size_t len);          /* false = nothing saved */
 bool    persist_port_save(const void *buf, size_t len);
+bool    persist_port_erase(void);                          /* EVERY saved tank, parked copies included */
 int64_t clock_port_now_unix(void);                         /* 0 if unknown */
 
 /* call after tank_init: restores the saved tank (or creates a new population)
@@ -53,6 +54,12 @@ void progression_set_age(tank_t *t, int idx, float seconds);
  * milestones, nothing tended yet. Saves over the current save on the next
  * heartbeat: stash it first (firmware director: `stash`). */
 void progression_fresh(tank_t *t);
+/* the keeper's RESET (device: hold BOOT + tap the glass, then YES on the
+ * prompt; sim: X): every save is erased - a director-parked tank too - the
+ * tank is re-initialised with `seed`, the new-tank path runs and the fresh
+ * pair is saved at once, so a reboot lands on them. Two fry, clean glass,
+ * the default garden, nothing tended yet. */
+void progression_reset(tank_t *t, uint32_t seed);
 
 /* population ceiling. Compile-time so the device can ship lower until its
  * advisor latency is measured (docs/progression-next.md): firmware passes
