@@ -65,9 +65,11 @@ void render_battery(uint16_t *fb, int stride, float frac, bool charging);
  * tank's row below with the population strip and six tank badges. A locked
  * badge is the same picture as a grey silhouette; one earned since the
  * keeper last closed the page wears a ring. render_milestones_tap maps a
- * tap: a badge, a name or a strip puts a caption at the foot and returns
- * true (the page stays); anywhere else returns false and the caller closes
- * the page, then progression_ack_milestones + render_milestones_leave. */
+ * tap: a badge, a name or a strip opens a small detail modal (the art at
+ * 2x, a title, the words) and returns true; while the modal is up ANY tap
+ * closes it and returns true (the page stays). Otherwise it returns false
+ * and the caller closes the page, then progression_ack_milestones +
+ * render_milestones_leave. Callers try it BEFORE the brightness row. */
 void render_milestones(const tank_t *t, uint16_t *fb, int stride);
 bool render_milestones_tap(const tank_t *t, float x, float y);
 void render_milestones_leave(void);

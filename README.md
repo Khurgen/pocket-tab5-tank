@@ -152,7 +152,8 @@ tank's row below tracks the population and the firsts you share: first
 feeding, first trimming, first glass cleaning, first quiet night, first play
 session, the tank changed someone. A locked badge is the same picture as a
 grey silhouette; one earned since you last looked wears a ring. Tap a badge
-to read it; tap anywhere else to close the page.
+to read it (a small panel; tap again to dismiss); tap anywhere else to close
+the page.
 
 ![The milestones page](docs/media/sim-milestones.png)
 

@@ -739,9 +739,11 @@ static int snapshot(const char *prefix, int seconds) {
     for (int i = 0; i < tank.n_fish; i++) tank.fish[i].ms_seen = tank.fish[i].ms_bits;
     tank.tank_ms_seen = tank.tank_ms_bits;
     tank.fish[1].ms_seen &= ~MS_FIRST_MEAL_FROM_YOU; tank.tank_ms_seen &= ~TMS_FIRST_QUIET_NIGHT;
-    render_milestones_tap(&tank, 176 + 16, 4 + 40 + 20);
     render_milestones(&tank, fb, TANK_W); render_brightness_row(fb, TANK_W, 60);
     snprintf(path, sizeof path, "%s_milestones.ppm", prefix); write_ppm(path, fb);
+    render_milestones_tap(&tank, 176 + 16, 4 + 40 + 20);           /* fish 1's first badge -> the detail modal */
+    render_milestones(&tank, fb, TANK_W); render_brightness_row(fb, TANK_W, 60);
+    snprintf(path, sizeof path, "%s_milestone_modal.ppm", prefix); write_ppm(path, fb);
     render_milestones_leave();
     render_tank(&tank, fb, TANK_W); render_confirm_reset(fb, TANK_W, 0.7f);
     snprintf(path, sizeof path, "%s_confirm.ppm", prefix); write_ppm(path, fb);
@@ -977,9 +979,9 @@ int main(int argc, char **argv) {
             }
             else if (setup_up) { /* the setup owns the glass: setup_touch took it */ }
             else if (milestones_view) {
-                if (render_brightness_row_hit((float)press_x, (float)press_y))
+                if (render_milestones_tap(&tank, (float)press_x, (float)press_y)) { /* a badge / name: detail modal; or the modal closing */ }
+                else if (render_brightness_row_hit((float)press_x, (float)press_y))
                     sim_bright = sim_bright == 100 ? 60 : sim_bright == 60 ? 30 : 100;   /* the row cycles, the page stays */
-                else if (render_milestones_tap(&tank, (float)press_x, (float)press_y)) { /* a badge / name: caption, page stays */ }
                 else { milestones_view = false; progression_ack_milestones(&tank); render_milestones_leave(); }
             }
             else if (now_ms - press_ms < 350 && dx * dx + dy * dy < 24 * 24) {

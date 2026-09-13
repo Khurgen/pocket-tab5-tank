@@ -112,12 +112,12 @@ void touch_port_poll(tank_t *t) {
         if (now - s_press_us < 350000 && dx * dx + dy * dy < 24 * 24) {
             if (s_ms) {                                             /* the page closes on any tap, card too -
                                                                        except its brightness row, which cycles */
-                bool row = render_brightness_row_hit(s_px, s_py);
-                bool kept = !row && render_milestones_tap(t, s_px, s_py);   /* a badge / name: caption, the page stays */
+                bool kept = render_milestones_tap(t, s_px, s_py);   /* a badge / name: detail modal (or the modal closing) - page stays */
+                bool row = !kept && render_brightness_row_hit(s_px, s_py);
                 ESP_LOGI(TAG, "page tap at %.0f,%.0f (release %.0f,%.0f) -> %s", s_px, s_py, s_lx, s_ly,
-                         row ? "brightness row" : kept ? "caption" : "close");
-                if (row) { s_bright_tap = true; goto released; }
+                         kept ? "detail" : row ? "brightness row" : "close");
                 if (kept) goto released;
+                if (row) { s_bright_tap = true; goto released; }
                 s_ms = false; s_sel = -1;
                 progression_ack_milestones(t); render_milestones_leave();   /* everything shown is now "seen" */
                 goto released;
