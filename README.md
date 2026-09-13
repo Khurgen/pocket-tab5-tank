@@ -144,10 +144,15 @@ a bed down to nubs. Algae films the glass over hours and a drag across it
 squeegees it clean. Fish like cover: grass calms them, and only a tank truly
 smothered by two beds at the ceiling stresses them.
 
-**Milestones.** First meal from you, first hold-approach, first dart, first
-follow, first quiet night, first play session, first trimming, first glass
-cleaning, and more. Tap the open stats card to see the milestones page; tap
-again to close it.
+**Milestones.** Tap the open stats card for the milestones page: a row per
+fish with its sprite at its real size, its name and a growth strip, then a
+badge for each first it has chosen to do: first meal from you, first
+hold-approach, first reef, first bubbles, first follow, first dart. The
+tank's row below tracks the population and the firsts you share: first
+feeding, first trimming, first glass cleaning, first quiet night, first play
+session, the tank changed someone. A locked badge is the same picture as a
+grey silhouette; one earned since you last looked wears a ring. Tap a badge
+to read it; tap anywhere else to close the page.
 
 ![The milestones page](docs/media/sim-milestones.png)
 

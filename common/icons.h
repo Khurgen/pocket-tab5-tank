@@ -19,5 +19,17 @@ extern const icon_t icon_stress;
 extern const icon_t icon_trust;
 extern const icon_t icon_unknown_16;
 extern const icon_t icon_unknown_24;
+extern const icon_t icon_ms_first_bubbles;
+extern const icon_t icon_ms_first_dart;
+extern const icon_t icon_ms_first_feeding;
+extern const icon_t icon_ms_first_follow;
+extern const icon_t icon_ms_first_glass_cleaning;
+extern const icon_t icon_ms_first_hold_approach;
+extern const icon_t icon_ms_first_meal;
+extern const icon_t icon_ms_first_play_session;
+extern const icon_t icon_ms_first_quiet_night;
+extern const icon_t icon_ms_first_reef;
+extern const icon_t icon_ms_first_trimming;
+extern const icon_t icon_ms_tank_changed_someone;
 
 #endif
