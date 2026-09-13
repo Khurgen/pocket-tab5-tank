@@ -170,10 +170,10 @@ short setup over the live water. A welcome page, then each of the two fry in
 turn: the fish being introduced swims a slow loop front and centre with a
 ring around it while you name it on an arcade-style letter wheel (touch a
 slot, drag up or down to spin its letter, or tap the chevrons above and
-below it), then you pick its body colour from eight swatches and watch the
+below it), then you pick its body color from eight swatches and watch the
 fry wear it. Its accent stays a question mark: a fry has no markings yet,
 and they come in as it grows. A page of care tips finishes the tour. The
-light stays on throughout, and the names and colours you chose are saved
+light stays on throughout, and the names and colors you chose are saved
 with the tank.
 
 ![Naming a fish on the letter wheel](docs/media/sim-setup-name.png)
@@ -335,7 +335,7 @@ seven-minute prompt check before an overnight run is always worth it.
   decision, with touch, sleep and power-off, auto-rotation, battery gauge
 - ✅ The living tank: growth, arrivals with courtship, trust, the hunger
   economy, upkeep chores, milestones, the reset prompt, the first-run setup
-  (a letter wheel to name each fry, a body colour to pick)
+  (a letter wheel to name each fry, a body color to pick)
 - ✅ Browser installer: one click from Chrome or Edge, hosted at
   stratobuilds.com
 - 🚧 Next: labels on the milestones page (the renderer has a pixel font
