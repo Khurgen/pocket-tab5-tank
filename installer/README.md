@@ -23,6 +23,23 @@ offsets in the manifest come from the build's `flasher_args.json` and from
 gitignored: rebuild it for every release. `--build-dir` points at another
 `idf.py -B` build directory; the default is `firmware/build`.
 
+## It updates itself (GitHub Pages)
+
+`.github/workflows/installer.yml` builds the firmware with ESP-IDF v5.4.1 on
+every push to `main` that touches `firmware/`, `common/`, `model/out/`,
+`installer/` or the assembler, runs `tools/make_installer.py`, and deploys
+the folder to **https://mediacutlet.github.io/pocket-tank/**. A fork gets
+the same for free: enable Pages (Settings -> Pages -> Source: GitHub
+Actions) and push. Pages serves HTTPS with `Access-Control-Allow-Origin:
+*`, so a page on any other site can point its button at that manifest:
+
+```
+tools/make_installer.py --manifest-url https://<you>.github.io/pocket-tank/manifest.json --out /tmp/site
+```
+
+The page fetches the manifest on load and shows the version and build date
+of what it will actually flash.
+
 ## Host your own
 
 Web Serial needs a secure context, so the page must be on **HTTPS** (or

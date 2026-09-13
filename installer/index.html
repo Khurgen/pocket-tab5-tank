@@ -119,12 +119,12 @@
       <li><b>Wait for the bar to fill.</b> About {{TOTAL_MB}} MB goes over, which takes a minute or two. When it says <em>Installation complete</em>, the board reboots into the tank on its own, with two fry waiting for you.</li>
     </ol>
     <div class="install">
-      <esp-web-install-button manifest="manifest.json">
+      <esp-web-install-button manifest="{{MANIFEST}}">
         <button slot="activate">Install Pocket Tank</button>
         <span slot="unsupported">This browser can't talk to USB devices. Use Chrome or Edge on a desktop or laptop.</span>
         <span slot="not-allowed">Browser flashing only works on an HTTPS page (or localhost).</span>
       </esp-web-install-button>
-      <span class="meta">Chrome or Edge, desktop &middot; firmware <code>{{VERSION}}</code></span>
+      <span class="meta">Chrome or Edge, desktop &middot; firmware <code data-version>{{VERSION}}</code></span>
     </div>
     <p class="fine">The dialog offers to <b>erase the device first</b>. Say yes for a brand-new tank. If you're updating a tank you already keep, leave it off and your fish, their trust and their history stay exactly as they were.</p>
   </section>
@@ -168,9 +168,22 @@
   </section>
 
   <footer class="card foot">
-    <div><span>&copy; 2026 StratoBuilds</span><span>Firmware {{VERSION}}</span><span>Built {{DATE}}</span></div>
+    <div><span>&copy; 2026 StratoBuilds</span><span>Firmware <span data-version>{{VERSION}}</span></span><span>Built <span data-built>{{DATE}}</span></span></div>
     <div><span><a href="https://github.com/mediacutlet/pocket-tank">Source on GitHub</a></span><span><a href="https://esphome.github.io/esp-web-tools/">ESP Web Tools</a></span></div>
   </footer>
 </main>
+<script>
+  /* The page may live on a different host than the firmware it installs (the
+     site's copy points at the GitHub Pages manifest): show the version and
+     build date of what the button will actually flash. */
+  (async () => {
+    try {
+      const url = document.querySelector('esp-web-install-button').getAttribute('manifest');
+      const m = await fetch(url, { cache: 'no-store' }).then(r => r.json());
+      if (m.version) document.querySelectorAll('[data-version]').forEach(e => e.textContent = m.version);
+      if (m.built) document.querySelectorAll('[data-built]').forEach(e => e.textContent = m.built);
+    } catch (e) { /* offline or blocked: the stamped values stay */ }
+  })();
+</script>
 </body>
 </html>

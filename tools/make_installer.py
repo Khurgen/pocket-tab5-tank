@@ -54,6 +54,10 @@ def main():
     ap.add_argument("--model", default=os.path.join(ROOT, "model", "out", "model_q4.bin"))
     ap.add_argument("--out", default=os.path.join(ROOT, "installer", "dist"))
     ap.add_argument("--version", default=None)
+    ap.add_argument("--manifest-url", default="manifest.json",
+                    help="what the page's install button points at: the relative default for a "
+                         "self-contained folder, or an absolute URL (e.g. the GitHub Pages copy) "
+                         "for a page hosted somewhere else")
     a = ap.parse_args()
 
     fa_path = os.path.join(a.build_dir, "flasher_args.json")
@@ -86,6 +90,7 @@ def main():
     manifest = {
         "name": "Pocket Tank",
         "version": version,
+        "built": date,                       # read by the page (ESP Web Tools ignores extra keys)
         "new_install_prompt_erase": True,   # the dialog offers "erase": a factory-fresh tank
         "builds": [{
             "chipFamily": "ESP32-S3",
@@ -102,9 +107,11 @@ def main():
     page = open(os.path.join(ROOT, "installer", "index.html")).read()
     page = page.replace("{{VERSION}}", version).replace("{{DATE}}", date)
     page = page.replace("{{TOTAL_MB}}", f"{total / 1e6:.1f}")
+    page = page.replace("{{MANIFEST}}", a.manifest_url)
     open(os.path.join(out, "index.html"), "w").write(page)
+    open(os.path.join(out, ".nojekyll"), "w").close()   # GitHub Pages: serve the folder as-is
 
-    print(f"installer -> {out}  (version {version}, {date})")
+    print(f"installer -> {out}  (version {version}, {date}; manifest {a.manifest_url})")
     for off, src, pub in parts:
         print(f"  0x{off:06x}  {os.path.getsize(src):>9,} B  {pub}")
     print(f"  {total:,} B to flash")
