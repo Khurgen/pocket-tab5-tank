@@ -112,7 +112,8 @@ Everything below is detected from what actually happens in the tank, never
 scripted, and it is all persisted.
 
 **Growing up.** A new tank starts with two fry. Feed them and over days they
-grow through juvenile, adult, and elder. Adults get a dorsal crest; elders
+grow through juvenile, adult, and elder. A fry is plain; its markings come
+in with its first growth spurt. Adults get a dorsal crest; elders
 get bigger and settle down. Nothing announces it. Aging only counts while the
 tank is lit and lived in.
 
@@ -158,9 +159,23 @@ hunger rising and stress fading, no decisions made. Another press resumes in
 place. Holding BOOT powers the tank off entirely. Flip the device and the
 screen follows.
 
+**First run.** A new tank, whether a fresh install or a reset, opens with a
+short setup over the live water. A welcome page, then each of the two fry in
+turn: the fish being introduced swims a slow loop front and centre with a
+ring around it while you name it on an arcade-style letter wheel (touch a
+slot, drag up or down to spin its letter, or tap the chevrons above and
+below it), then you pick its body colour from eight swatches and watch the
+fry wear it. Its accent stays a question mark: a fry has no markings yet,
+and they come in as it grows. A page of care tips finishes the tour. The
+light stays on throughout, and the names and colours you chose are saved
+with the tank.
+
+![Naming a fish on the letter wheel](docs/media/sim-setup-name.png)
+
 **Starting over.** Hold BOOT and tap the glass: a *Reset tank?* prompt
 appears over the water with a NO and a YES. YES wipes the save and two new
-fry take the tank; NO, a sleep, or twenty seconds of silence keep everything.
+fry take the tank, with the first-run setup to name them; NO, a sleep, or
+twenty seconds of silence keep everything.
 
 ## Try it: PC simulator
 
@@ -188,17 +203,18 @@ clicks to startle, two to toggle the light, drag across the glass to wipe
 algae, and stroke sideways through a bed to trim it. Keys: **F** feed at the
 mouse, **N** light, **A** auto light, **L** switch
 between the rule stub and the LLM brain, **U** overlays, **M** milestones,
-**X** the reset prompt, **R** force an arrival, **Z** jump through seven
+**X** the reset prompt, **S** the first-run setup, **R** force an arrival, **Z** jump through seven
 hours of sleep, **G** grow the grass and algae now, **Q** quit.
 
 Flags: `--fresh` starts a new random tank, `--fast N` runs tended time N×
 faster so you can watch fish grow up, `--greedy` disables sampling,
 `--narrate` prints every decision as it's made, `--snapshot <prefix>` writes
-PPM frames of the tank, card, milestones page, and reset prompt.
+PPM frames of the tank, card, milestones page, reset prompt, and the setup
+pages.
 
 Headless checks, all of which run in CI-style without a window:
 `--selftest` (reflex layer), `--selftest-llm [min]` (the real model),
-`--selftest-pop` (arrivals and saves), `--selftest-sleep` (drowse metabolism
+`--selftest-pop` (arrivals, saves, and the setup flow), `--selftest-sleep` (drowse metabolism
 and ravenous begging), `--selftest-hunger` (the hunger economy),
 `--selftest-tend` (grass, algae, trust holds), and `--bench` (render cost).
 
@@ -237,7 +253,9 @@ vendored flasher). Any HTTPS static host will do, GitHub Pages included;
 
 The target is the Waveshare **ESP32-S3-Touch-AMOLED-1.8** (ESP32-S3R8,
 16 MB flash, 8 MB PSRAM, 368×448 AMOLED, capacitive touch, IMU, PMIC, RTC).
-Both board revisions are supported and auto-detected. The browser installer
+Both board revisions are supported and auto-detected. Touch targets sit
+10 px below where they are drawn, because fingers land a little low on a
+glass this small; the touch port corrects for it. The browser installer
 above is the no-toolchain path; this is the developer one.
 
 ```bash
@@ -310,7 +328,8 @@ seven-minute prompt check before an overnight run is always worth it.
 - ✅ Firmware: running on the real board at 25 to 30 fps and 3.6 s per
   decision, with touch, sleep and power-off, auto-rotation, battery gauge
 - ✅ The living tank: growth, arrivals with courtship, trust, the hunger
-  economy, upkeep chores, milestones, the reset prompt
+  economy, upkeep chores, milestones, the reset prompt, the first-run setup
+  (a letter wheel to name each fry, a body colour to pick)
 - ✅ Browser installer: one click from Chrome or Edge, hosted at
   stratobuilds.com
 - 🚧 Next: labels on the milestones page (the renderer has a pixel font

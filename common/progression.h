@@ -60,6 +60,18 @@ void progression_fresh(tank_t *t);
  * pair is saved at once, so a reboot lands on them. Two fry, clean glass,
  * the default garden, nothing tended yet. */
 void progression_reset(tank_t *t, uint32_t seed);
+/* first-run setup (setup.c, 2026-09-13): a tank born through
+ * progression_fresh - a fresh install, a reset - is PENDING setup until the
+ * keeper walks the welcome / names / colours flow; the flag rides in the
+ * save, so a reboot mid-setup re-opens it. progression_setup_done clears it
+ * and saves the names and looks at once. Tanks saved before the flag read as
+ * done (nobody's running tank gets the tutorial after an update). */
+bool progression_setup_pending(void);
+void progression_setup_done(tank_t *t);
+/* milestones page (2026-09-13): the keeper closed it - everything earned so
+ * far counts as seen (badges earned later wear a "new" ring until the next
+ * look). Rides in the save. */
+void progression_ack_milestones(tank_t *t);
 
 /* population ceiling. Compile-time so the device can ship lower until its
  * advisor latency is measured (docs/progression-next.md): firmware passes

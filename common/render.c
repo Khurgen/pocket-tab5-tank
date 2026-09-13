@@ -179,15 +179,14 @@ static float g_roll[N_FISH_MAX] = { 1, 1, 1, 1, 1, 1 };
 /* The fish's body is a ledger of its life: stage sets size (tank.c) and fin
  * elaboration, hunger drains saturation, and earned markings stay:
  *   elder -> a longer tail and a dorsal crest. All procedural, zero flash. */
-static void draw_fish(ctx_t *c, const tank_t *t, const fish_t *f, int idx) {
-    float tail = sinf(t->clock * (8 + f->speed * 0.055f) + f->wander) *
+/* `mark` scales the accent stripes: 1 in the tank (every stage wears the
+ * same 2 x 5 px marks), the preview's size so they read on a big fish */
+static void draw_fish_core(ctx_t *c, const fish_t *f, float clock, bool asleep, float roll, float mark) {
+    float tail = sinf(clock * (8 + f->speed * 0.055f) + f->wander) *
                  (0.32f + f->speed * 0.007f);
     float stress = f->stress / 10.0f;
     float pale = f->hunger > 7 ? (f->hunger - 7) / 3.0f * 0.35f : 0;   /* hungry = washed out */
     float ch = cosf(f->heading), sh = sinf(f->heading);
-    float want = ch < -0.05f ? -1.0f : ch > 0.05f ? 1.0f : g_roll[idx];
-    g_roll[idx] += (want - g_roll[idx]) * 0.18f;
-    float roll = g_roll[idx];
     bool elder = f->stage == STAGE_ELDER, grown = f->stage >= STAGE_ADULT;
     float tail_len = elder ? 1.22f : 1.0f;
     uint32_t body = mix(mix(f->color, 0xf25b65, stress * 0.22f), 0x7a8a8e, pale);
@@ -218,13 +217,15 @@ static void draw_fish(ctx_t *c, const tank_t *t, const fish_t *f, int idx) {
         for (int i = 0; i < 10; i++) { xs[i] = TX(blx[i], bly[i]); ys[i] = TY(blx[i], bly[i]); }
         fill_poly(c, xs, ys, 10, body);
     }
-    /* accent stripes (height tracks the roll so they flatten with the body) */
+    /* accent stripes (height tracks the roll so they flatten with the body).
+     * A FRY has none yet: its markings come in with its first growth spurt
+     * (the setup's colour page keeps the accent a "?" for that reason) */
     float rmag = roll < 0 ? -roll : roll;
-    for (int i = -1; i <= 1; i++)
+    if (f->stage >= STAGE_JUV) for (int i = -1; i <= 1; i++)
         fill_ellipse(c, TX(-3 + i * 6, 0), TY(-3 + i * 6, 0),
-                     2, 1.5f + 3.5f * rmag, f->accent, 150);
+                     2 * mark, (1.5f + 3.5f * rmag) * mark, f->accent, 150);
     /* eye — closed to a lid line when asleep (resting at night) */
-    if (t->night && f->goal.id == GOAL_REST) {
+    if (asleep) {
         fill_ellipse(c, TX(9, -3), TY(9, -3), 2.2f, 0.7f, 0x9fb4b8, 200);
     } else {
         fill_ellipse(c, TX(9, -3), TY(9, -3), 2.2f, 2.2f, 0xffffff, 255);
@@ -232,6 +233,13 @@ static void draw_fish(ctx_t *c, const tank_t *t, const fish_t *f, int idx) {
     }
 #undef TX
 #undef TY
+}
+/* the tank's fish: roll state per slot (the preview above has none) */
+static void draw_fish(ctx_t *c, const tank_t *t, const fish_t *f, int idx) {
+    float ch = cosf(f->heading);
+    float want = ch < -0.05f ? -1.0f : ch > 0.05f ? 1.0f : g_roll[idx];
+    g_roll[idx] += (want - g_roll[idx]) * 0.18f;
+    draw_fish_core(c, f, t->clock, t->night && f->goal.id == GOAL_REST, g_roll[idx], 1.0f);
 }
 
 /* a bed of swaying seaweed fronds; seed varies phase/heights between beds.
@@ -816,40 +824,6 @@ void render_stats_card(const tank_t *t, int fish_idx, uint16_t *fb, int stride) 
     } else card_draw(c, t, fish_idx);
 }
 
-/* ---- milestones view ---- */
-void render_milestones(const tank_t *t, uint16_t *fb, int stride) {
-    ctx_t c = ctx_full(fb, stride, 1.0f);
-    for (int y = 0; y < TANK_H; y++)
-        for (int x = 0; x < TANK_W; x++) fb[y * stride + x] = rgb565(0x031015, 1);
-    const int X0 = 40, PIP = 26, ROW = 40, Y0 = 36;
-    /* per-fish rows */
-    for (int i = 0; i < t->n_fish; i++) {
-        const fish_t *f = &t->fish[i];
-        int y = Y0 + i * ROW;
-        fill_ellipse(&c, X0 - 18, y, 7, 7, f->color, 255);               /* identity swatch */
-        for (int s = 0; s <= (int)f->stage; s++)                          /* stage pips under it */
-            fill_ellipse(&c, X0 - 27 + s * 6, y + 12, 1.8f, 1.8f, f->accent, 255);
-        for (int m = 0, col = 0; m < MS_FISH_COUNT; m++) {
-            if (MS_RETIRED_MASK & (1u << m)) continue;   /* the shadow's two, no column */
-            bool on = f->ms_bits & (1u << m);
-            int x = X0 + 10 + col++ * PIP;
-            if (on) { fill_ellipse(&c, x, y, 7, 7, f->color, 255); fill_ellipse(&c, x, y, 3, 3, f->accent, 255); }
-            else ring(&c, x, y, 6, 0x2a3f45);
-        }
-    }
-    /* tank row */
-    int y = Y0 + N_FISH_MAX * ROW + 10;
-    for (int x = X0 - 26; x < TANK_W - 30; x++) px_blend(&c, x, y - 20, 0x2a3f45, 200);
-    fill_ellipse(&c, X0 - 18, y, 7, 4, 0x9fd8e2, 255);
-    for (int m = 0; m < TMS_COUNT; m++) {
-        bool on = t->tank_ms_bits & (1u << m);
-        int x = X0 + 10 + m * PIP;
-        if (on) { fill_ellipse(&c, x, y, 7, 7, 0x9fd8e2, 255); fill_ellipse(&c, x, y, 3, 3, 0x031015, 255); }
-        else ring(&c, x, y, 6, 0x2a3f45);
-    }
-    /* empty slots still to arrive: faint rings where a fish row would be */
-    for (int i = t->n_fish; i < N_FISH_MAX; i++) ring(&c, X0 - 18, Y0 + i * ROW, 7, 0x1a2a30);
-}
 
 /* ---- a small pixel font (2026-09-11) ----
  * 5x7 glyphs - upper case, digits, a little punctuation - drawn as scale x
@@ -938,11 +912,41 @@ static void rect_edge(ctx_t *c, int x, int y, int w, int h, uint32_t rgb) {
     span(c, x, x + w - 1, y, &e, 255); span(c, x, x + w - 1, y + h - 1, &e, 255);
     for (int yy = y + 1; yy < y + h - 1; yy++) { px(c, x, yy, e.v); px(c, x + w - 1, yy, e.v); }
 }
-static void button(ctx_t *c, int x, int y, uint32_t fill, uint32_t edge, const char *label) {
-    const int W = RENDER_CONFIRM_BTN_W, H = RENDER_CONFIRM_BTN_H;
+static void button(ctx_t *c, int x, int y, int W, int H, uint32_t fill, uint32_t edge, const char *label, int scale) {
     rect_fill(c, x, y, W, H, fill);
     rect_edge(c, x, y, W, H, edge); rect_edge(c, x + 1, y + 1, W - 2, H - 2, edge);
-    draw_text(c, x + (W - text_w(label, 3)) / 2, y + (H - 21) / 2, 3, 0xffffff, label);
+    draw_text(c, x + (W - text_w(label, scale)) / 2, y + (H - 7 * scale) / 2, scale, 0xffffff, label);
+}
+/* the same primitives for panels built elsewhere (render.h) */
+int  render_text_w(const char *s, int scale) { return text_w(s, scale); }
+void render_text(uint16_t *fb, int stride, int x, int y, int scale, uint32_t rgb, const char *s) {
+    ctx_t c = ctx_full(fb, stride, 1.0f); draw_text(&c, x, y, scale, rgb, s);
+}
+void render_rect(uint16_t *fb, int stride, int x, int y, int w, int h, uint32_t rgb) {
+    ctx_t c = ctx_full(fb, stride, 1.0f); rect_fill(&c, x, y, w, h, rgb);
+}
+void render_rect_edge(uint16_t *fb, int stride, int x, int y, int w, int h, uint32_t rgb) {
+    ctx_t c = ctx_full(fb, stride, 1.0f); rect_edge(&c, x, y, w, h, rgb);
+}
+void render_rect_blend(uint16_t *fb, int stride, int x, int y, int w, int h, uint32_t rgb, int alpha) {
+    ctx_t c = ctx_full(fb, stride, 1.0f); src_t s = src_color(rgb, 1.0f);
+    for (int yy = y; yy < y + h; yy++) span(&c, x, x + w - 1, yy, &s, alpha);
+}
+void render_ring(uint16_t *fb, int stride, float cx, float cy, float r, uint32_t rgb) {
+    ctx_t c = ctx_full(fb, stride, 1.0f); ring(&c, cx, cy, r, rgb);
+}
+void render_button(uint16_t *fb, int stride, int x, int y, int w, int h, uint32_t fill, uint32_t edge, const char *label, int scale) {
+    ctx_t c = ctx_full(fb, stride, 1.0f); button(&c, x, y, w, h, fill, edge, label, scale);
+}
+void render_fish_preview(uint16_t *fb, int stride, float x, float y, float size,
+                         uint32_t body, uint32_t fin, uint32_t accent, float clock) {
+    ctx_t c = ctx_full(fb, stride, 1.0f);
+    fish_t f; memset(&f, 0, sizeof f);
+    f.x = x; f.y = y; f.heading = 0; f.size = size; f.speed = 40;
+    f.stage = STAGE_ADULT;                       /* grown: the crest shows the fin colour */
+    f.hunger = 4; f.stress = 0; f.goal.id = GOAL_EXPLORE;
+    f.color = body; f.fin = fin; f.accent = accent;
+    draw_fish_core(&c, &f, clock, false, 1.0f, size);
 }
 void render_confirm_reset(uint16_t *fb, int stride, float frac) {
     ctx_t c = ctx_full(fb, stride, 1.0f);              /* ignores night dimming, like the card */
@@ -955,8 +959,8 @@ void render_confirm_reset(uint16_t *fb, int stride, float frac) {
     draw_text(&c, X + (W - text_w(l1, 2)) / 2, Y + 58, 2, 0x9fd8e2, l1);
     draw_text(&c, X + (W - text_w(l2, 2)) / 2, Y + 78, 2, 0x9fd8e2, l2);
     /* NO is the calm one; YES wears the stress red */
-    button(&c, RENDER_CONFIRM_NO_X,  RENDER_CONFIRM_BTN_Y, 0x1c2f36, 0x9fd8e2, "NO");
-    button(&c, RENDER_CONFIRM_YES_X, RENDER_CONFIRM_BTN_Y, 0x7a2028, 0xf25b65, "YES");
+    button(&c, RENDER_CONFIRM_NO_X,  RENDER_CONFIRM_BTN_Y, RENDER_CONFIRM_BTN_W, RENDER_CONFIRM_BTN_H, 0x1c2f36, 0x9fd8e2, "NO", 3);
+    button(&c, RENDER_CONFIRM_YES_X, RENDER_CONFIRM_BTN_Y, RENDER_CONFIRM_BTN_W, RENDER_CONFIRM_BTN_H, 0x7a2028, 0xf25b65, "YES", 3);
     /* the prompt lets itself go: a bar draining toward the timeout */
     if (frac < 0) frac = 0;
     if (frac > 1) frac = 1;
@@ -994,5 +998,141 @@ bool render_brightness_row_hit(float x, float y) {
        the row sits where the bezel curves and finger reports drift there.
        NOT the full width: a tap low on the RIGHT still closes the page (a
        first version took the whole band and a closing tap cycled the level). */
-    return x >= 24 && x < 340 && y >= 296;
+    return x >= 24 && x < 340 && y >= 318;   /* below the caption line; the tank row's badges sit above */
 }
+
+/* ---- milestones page (2026-09-13 redesign: an achievement wall) ----
+ * Rows of 40 px: the fish (render_fish_preview at its real size, so growth
+ * shows), its name, a growth strip, then six 32 px badges at a 40 px pitch.
+ * The tank row repeats the shape with the population strip. A locked badge
+ * is the art as a flat grey silhouette (blit_icon_locked); a badge earned
+ * since the keeper last closed the page wears a two-tone ring. Tapping a
+ * badge / a name / a strip writes a caption line above the brightness row;
+ * the caption is render-local state, cleared by render_milestones_leave. */
+#define MSP_ROW_Y0    4
+#define MSP_ROW_H     40
+#define MSP_TANK_Y    254
+#define MSP_BADGE_X0  176
+#define MSP_BADGE_DX  40
+#define MSP_ICON      32
+#define MSP_CAPTION_Y 296
+#define MSP_INK       0x031015
+#define MSP_DIM       0x2a3f45
+#define MSP_TEAL      0x9fd8e2
+
+typedef struct { uint32_t bit; const icon_t *icon; } badge_t;
+static const badge_t FISH_BADGES[6] = {
+    { MS_FIRST_MEAL_FROM_YOU, &icon_ms_first_meal },  { MS_FIRST_HOLD_APPROACH, &icon_ms_first_hold_approach },
+    { MS_FIRST_REEF, &icon_ms_first_reef },           { MS_FIRST_BUBBLES, &icon_ms_first_bubbles },
+    { MS_FIRST_FOLLOW, &icon_ms_first_follow },       { MS_FIRST_DART, &icon_ms_first_dart },
+};
+static const badge_t TANK_BADGES[6] = {
+    { TMS_FIRST_FEEDING, &icon_ms_first_feeding },    { TMS_FIRST_TRIM, &icon_ms_first_trimming },
+    { TMS_FIRST_CLEANING, &icon_ms_first_glass_cleaning }, { TMS_FIRST_QUIET_NIGHT, &icon_ms_first_quiet_night },
+    { TMS_FIRST_PLAY_SESSION, &icon_ms_first_play_session }, { TMS_CHANGED_SOMEONE, &icon_ms_tank_changed_someone },
+};
+static const char *const STAGE_WORDS[4] = { "FRY", "JUVENILE", "ADULT", "ELDER" };
+static char g_ms_caption[72];
+static bool g_ms_caption_lit;
+
+/* a locked badge: the same art as a flat grey silhouette - luminance keeps
+ * the shapes readable, the low alpha keeps it quiet on the ink */
+static void blit_icon_locked(ctx_t *c, int x, int y, const icon_t *ic) {
+    for (int j = 0; j < ic->h; j++)
+        for (int i = 0; i < ic->w; i++) {
+            int a = ic->a[j * ic->w + i];
+            if (!a) continue;
+            uint16_t v = ic->rgb[j * ic->w + i];
+            int r = (v >> 11) << 3, g = ((v >> 5) & 63) << 2, b = (v & 31) << 3;
+            int l = (r * 77 + g * 151 + b * 28) >> 8;            /* 0..255 luminance */
+            int k = 140 + l * 115 / 255;                          /* 0.55 .. 1.0, in 1/255 */
+            uint32_t rgb = (uint32_t)(20 + (0x2a * k >> 8)) << 16
+                         | (uint32_t)(20 + (0x3f * k >> 8)) << 8
+                         | (uint32_t)(20 + (0x45 * k >> 8));
+            px_blend(c, x + i, y + j, rgb, a * 180 >> 8);
+        }
+}
+/* a tiny fish glyph facing right (the growth and population strips) */
+static void fish_glyph(ctx_t *c, float cx, float cy, float r, uint32_t rgb) {
+    float xs[3] = { cx - r * 1.2f, cx - r * 2.3f, cx - r * 2.3f }, ys[3] = { cy, cy - r * 0.9f, cy + r * 0.9f };
+    fill_poly(c, xs, ys, 3, rgb);
+    fill_ellipse(c, cx, cy, r * 1.6f, r, rgb, 255);
+}
+static void badge(ctx_t *c, int x, int y, const icon_t *ic, bool on, bool fresh) {
+    if (on) blit_icon(c, x, y, ic, 255); else blit_icon_locked(c, x, y, ic);
+    if (on && fresh) {
+        rect_edge(c, x - 3, y - 3, MSP_ICON + 6, MSP_ICON + 6, MSP_TEAL);
+        rect_edge(c, x - 4, y - 4, MSP_ICON + 8, MSP_ICON + 8, 0x3f6a72);
+    }
+}
+static int bit_index(uint32_t bit) { int i = 0; while (bit > 1u) { bit >>= 1; i++; } return i; }
+
+void render_milestones(const tank_t *t, uint16_t *fb, int stride) {
+    ctx_t c = ctx_full(fb, stride, 1.0f);
+    for (int y = 0; y < TANK_H; y++)
+        for (int x = 0; x < TANK_W; x++) fb[y * stride + x] = rgb565(MSP_INK, 1);
+    for (int i = 0; i < t->n_fish; i++) {
+        const fish_t *f = &t->fish[i];
+        int top = MSP_ROW_Y0 + i * MSP_ROW_H;
+        render_fish_preview(fb, stride, 52, top + 20, f->size, f->color, f->fin, f->accent, t->clock);
+        draw_text(&c, 92, top + 2, 2, 0xffffff, f->name);
+        for (int s = 0; s < 4; s++)          /* growth strip: fry -> elder, lit up to the stage reached */
+            fish_glyph(&c, 96 + s * 17, top + 30, 2.2f + s * 0.9f, s <= (int)f->stage ? f->accent : MSP_DIM);
+        for (int k = 0; k < 6; k++) {
+            uint32_t bit = FISH_BADGES[k].bit;
+            badge(&c, MSP_BADGE_X0 + k * MSP_BADGE_DX, top + 4, FISH_BADGES[k].icon,
+                  (f->ms_bits & bit) != 0, (f->ms_seen & bit) == 0);
+        }
+    }
+    /* the tank's row */
+    for (int x = 24; x < TANK_W - 24; x++) px_blend(&c, x, MSP_TANK_Y - 4, MSP_DIM, 200);
+    draw_text(&c, 92, MSP_TANK_Y + 2, 2, MSP_TEAL, "TANK");
+    for (int k = 0; k < POP_CAP; k++)        /* population strip: who is here, who could still arrive */
+        fish_glyph(&c, 96 + k * 14, MSP_TANK_Y + 30, 3.0f, k < t->n_fish ? MSP_TEAL : MSP_DIM);
+    for (int k = 0; k < 6; k++) {
+        uint32_t bit = TANK_BADGES[k].bit;
+        badge(&c, MSP_BADGE_X0 + k * MSP_BADGE_DX, MSP_TANK_Y + 4, TANK_BADGES[k].icon,
+              (t->tank_ms_bits & bit) != 0, (t->tank_ms_seen & bit) == 0);
+    }
+    if (g_ms_caption[0])
+        draw_text(&c, (TANK_W - text_w(g_ms_caption, 2)) / 2, MSP_CAPTION_Y, 2,
+                  g_ms_caption_lit ? 0xffffff : MSP_TEAL, g_ms_caption);
+}
+
+bool render_milestones_tap(const tank_t *t, float x, float y) {
+    int row = -1; bool tank_row = false;
+    if (y >= MSP_ROW_Y0 - 2 && y < MSP_ROW_Y0 + N_FISH_MAX * MSP_ROW_H) {
+        row = (int)((y - MSP_ROW_Y0) / MSP_ROW_H);
+        if (row < 0) row = 0;
+        if (row >= t->n_fish) return false;          /* an empty row */
+    } else if (y >= MSP_TANK_Y - 4 && y < MSP_TANK_Y + MSP_ROW_H) tank_row = true;
+    else return false;
+    int k;                                           /* badge column, or -1 for the name / strip cluster */
+    if (x >= MSP_BADGE_X0 - 4 && x < MSP_BADGE_X0 + 6 * MSP_BADGE_DX) {
+        k = (int)((x - MSP_BADGE_X0 + 4) / MSP_BADGE_DX);
+        if (k > 5) k = 5;
+    } else if (x >= 20 && x < MSP_BADGE_X0 - 4) k = -1;
+    else return false;
+    if (tank_row) {
+        if (k < 0) {
+            snprintf(g_ms_caption, sizeof g_ms_caption, "%d OF %d FISH SO FAR", t->n_fish, POP_CAP);
+            g_ms_caption_lit = true;
+        } else {
+            uint32_t bit = TANK_BADGES[k].bit; bool on = (t->tank_ms_bits & bit) != 0;
+            snprintf(g_ms_caption, sizeof g_ms_caption, "%s: %s", on ? "TANK" : "NOT YET", TMS_NAMES[bit_index(bit)]);
+            g_ms_caption_lit = on;
+        }
+    } else {
+        const fish_t *f = &t->fish[row];
+        if (k < 0) {
+            snprintf(g_ms_caption, sizeof g_ms_caption, "%s: %s", f->name, STAGE_WORDS[f->stage & 3]);
+            g_ms_caption_lit = true;
+        } else {
+            uint32_t bit = FISH_BADGES[k].bit; bool on = (f->ms_bits & bit) != 0;
+            snprintf(g_ms_caption, sizeof g_ms_caption, "%s: %s", on ? f->name : "NOT YET", MS_NAMES[bit_index(bit)]);
+            g_ms_caption_lit = on;
+        }
+    }
+    return true;
+}
+void render_milestones_leave(void) { g_ms_caption[0] = 0; }

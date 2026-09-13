@@ -59,10 +59,18 @@ void render_set_card_cache(uint16_t *buf);
  * frac 0..1, charging tints the fill teal. */
 void render_battery(uint16_t *fb, int stride, float frac, bool charging);
 
-/* Milestones view (separate screen, never on the tank): one row per fish in
- * its own color with a pip per first it has reached, and the tank's own row
- * at the bottom. Visual only. */
+/* Milestones page (separate screen, never on the tank; 2026-09-13 redesign
+ * on Strato's pixel-art badges): one row per fish - its sprite at its real
+ * size, its name, a growth strip fry -> elder - and six event badges; the
+ * tank's row below with the population strip and six tank badges. A locked
+ * badge is the same picture as a grey silhouette; one earned since the
+ * keeper last closed the page wears a ring. render_milestones_tap maps a
+ * tap: a badge, a name or a strip puts a caption at the foot and returns
+ * true (the page stays); anywhere else returns false and the caller closes
+ * the page, then progression_ack_milestones + render_milestones_leave. */
 void render_milestones(const tank_t *t, uint16_t *fb, int stride);
+bool render_milestones_tap(const tank_t *t, float x, float y);
+void render_milestones_leave(void);
 
 /* Reset confirm (2026-09-11): a modal panel over the live tank - "RESET
  * TANK?", what it costs, a NO and a YES button, and a bar draining toward
@@ -89,5 +97,23 @@ int  render_confirm_hit(float x, float y);
  * (render_brightness_row_hit). The sim draws it too, for parity. */
 void render_brightness_row(uint16_t *fb, int stride, int pct);
 bool render_brightness_row_hit(float x, float y);
+
+/* UI primitives (2026-09-13) for panels built outside this file (the first-
+ * run setup in common/setup.c): the confirm prompt's pixel font, flat rects
+ * and buttons, and a fish drawn on its own for a preview. All ignore the
+ * night dim, like the card, and draw AFTER render_tank (nothing re-vignettes
+ * them). Text is upper case + digits + a little punctuation; `scale` is the
+ * pixel size of one font dot (2 = caption, 3 = button). */
+int  render_text_w(const char *s, int scale);
+void render_text(uint16_t *fb, int stride, int x, int y, int scale, uint32_t rgb, const char *s);
+void render_rect(uint16_t *fb, int stride, int x, int y, int w, int h, uint32_t rgb);
+void render_rect_blend(uint16_t *fb, int stride, int x, int y, int w, int h, uint32_t rgb, int alpha);   /* alpha 0..255 */
+void render_rect_edge(uint16_t *fb, int stride, int x, int y, int w, int h, uint32_t rgb);
+void render_ring(uint16_t *fb, int stride, float cx, float cy, float r, uint32_t rgb);   /* the card's selection ring */
+void render_button(uint16_t *fb, int stride, int x, int y, int w, int h, uint32_t fill, uint32_t edge, const char *label, int scale);
+/* an adult fish facing right at (x,y), body length ~42 x size px, tail
+ * swimming on `clock` - the setup's live preview of a colour choice */
+void render_fish_preview(uint16_t *fb, int stride, float x, float y, float size,
+                         uint32_t body, uint32_t fin, uint32_t accent, float clock);
 
 #endif

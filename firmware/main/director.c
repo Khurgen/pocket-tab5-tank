@@ -10,6 +10,7 @@
 #include "sdkconfig.h"
 #include "esp_log.h"
 #include "progression.h"
+#include "setup.h"
 #include "director.h"
 #include "touch_port.h"
 #include "battery_port.h"
@@ -135,6 +136,8 @@ static void help(void) {
     ESP_LOGI(TAG, "stash (park the real tank now) | restore (bring it back) | age <fish> <hours>");
     ESP_LOGI(TAG, "milestones [off] (the page, on cue; on the device: tap the open stats card)");
     ESP_LOGI(TAG, "reset (the keeper's confirm prompt, as BOOT + tap opens it) | reset yes|no (answer it here) - YES WIPES EVERY SAVE, a parked tank too");
+    ESP_LOGI(TAG, "setup [off] (the first-run flow: welcome, names, colours; off drops the panel) | name <fish|idx> <newname> (up to %d letters, saved)", FISH_NAME_MAX);
+    ESP_LOGI(TAG, "touch [bias <px>] (finger-landing correction: reported touches move up by px; not saved)");
     ESP_LOGI(TAG, "pmic (AXP2101 dump) | pmic on|off <aldo1|aldo2..4|bldo1|bldo2|cpusldo|dcdc2..5|dldo1|dldo2> (experiments; boot trims the unused ones) | pmic trim");
     ESP_LOGI(TAG, "bright <0-255> (panel now; not saved) | level 100|60|30 (the keeper's setting, saved)");
     ESP_LOGI(TAG, "batlog [clear] (the tank's own battery log: SoC/VBAT every 5 min awake, 30 min asleep, mA derived - read it after a night on battery) | codec (ES8311 registers)");
@@ -228,6 +231,16 @@ static void run(tank_t *t, char *line) {
         if (!ans) { ESP_LOGW(TAG, "reset [yes|no]"); return; }
         if (!touch_port_confirm_answer(ans)) ESP_LOGW(TAG, "no reset prompt is up (`reset` first)");
         else ESP_LOGI(TAG, "reset prompt: %s", ans > 0 ? "YES - the tank task wipes it this frame" : "NO");
+    } else if (!strcmp(c, "setup")) {
+        if (argc > 1 && !strcmp(argv[1], "off")) { setup_cancel(t); ESP_LOGI(TAG, "setup panel dropped%s", progression_setup_pending() ? " (still owed: it returns at the next boot)" : ""); }
+        else { setup_begin(t); ESP_LOGI(TAG, "setup: welcome page up (tap through on the glass)"); }
+    } else if (!strcmp(c, "touch")) {
+        if (argc > 2 && !strcmp(argv[1], "bias")) touch_port_set_bias(atoi(argv[2]));
+        ESP_LOGI(TAG, "touch bias %d px (reported y - %d)", touch_port_bias(), touch_port_bias());
+    } else if (!strcmp(c, "name") && argc > 2) {
+        int who = find_fish(t, argv[1]); if (who < 0) { ESP_LOGW(TAG, "no fish '%s'", argv[1]); return; }
+        tank_set_name(t, who, argv[2]); progression_save(t);
+        ESP_LOGI(TAG, "fish %d is now %s (saved)", who, t->fish[who].name);
     } else if (!strcmp(c, "save")) {
         progression_save(t); ESP_LOGI(TAG, "saved");
     } else if (!strcmp(c, "stash")) {
@@ -245,6 +258,7 @@ static void run(tank_t *t, char *line) {
         if (!stage_guard(t)) return;
         tank_init(t, (uint32_t)esp_timer_get_time() ^ 0xC0FFEEu);
         progression_fresh(t);
+        progression_setup_done(t);       /* a staged scene, not a keeper's new tank: no welcome (`setup` cues it) */
         ESP_LOGI(TAG, "fresh tank: %s + %s, both fry", t->fish[0].name, t->fish[1].name);
         show_state(t);
     } else if (!strcmp(c, "stages")) {

@@ -26,6 +26,8 @@
 #define N_FISH_MAX 6            /* array bound; the live count is tank_t.n_fish */
 #define N_FISH_START 2          /* a new tank: two contrasting adults */
 #define N_TRAINED_NAMES 4       /* name tokens the v2 model was trained on */
+#define FISH_NAME_MAX 7         /* the keeper's name for a fish (first-run setup) */
+#define LOOK_N 8                /* body / accent swatches the keeper can pick from */
 #define MAX_FOOD   8
 #define MAX_BUBBLE 24
 
@@ -112,7 +114,8 @@ enum {
 };
 
 typedef struct {
-    const char *name;       /* display name (roster preset) */
+    char   name[FISH_NAME_MAX + 1]; /* display name: the roster preset's until the
+                                     * keeper renames it (setup.c); saved per fish */
     const char *model_name; /* one of TRAINED_NAMES: the token the v2 model sees */
     int    preset;          /* roster index (colors, base size, temperament) */
     float x, y;
@@ -141,7 +144,9 @@ typedef struct {
     float  rest_dx, rest_dy;/* this fish's own spot by the reef (individuation) */
     uint32_t sig;           /* coarse state signature at the last advisor ask */
     uint32_t ms_bits;       /* MS_* milestones reached */
-    /* colors as 0xRRGGBB, used by render only */
+    uint32_t ms_seen;       /* MS_* the keeper has looked at on the milestones page (new = bits & ~seen) */
+    /* colors as 0xRRGGBB, used by render only: the preset's, or the keeper's
+     * picks from LOOK_BODY / LOOK_ACCENT (setup.c); saved per fish */
     uint32_t color, fin, accent;
 } fish_t;
 
@@ -213,6 +218,16 @@ typedef struct tank {
                                     * Trickle holds off throughout. progression.c
                                     * owns entry/exit; tank.c renders both
                                     * phases; ends when everyone has eaten. */
+    bool     hold_light;           /* platform: a setup page or a prompt is up - the
+                                    * day/night cycle pauses and the light stays on
+                                    * (2026-09-13, Strato: the tank went dark mid-name).
+                                    * Not saved; a light override still wins. */
+    float    held_s;               /* seconds the cycle has been paused, lifetime */
+    int8_t   stage_fish;           /* setup: this fish is being named / coloured - it swims
+                                    * a slow loop at (stage_x, stage_y), the clear spot the
+                                    * page leaves for it, so it is never behind the UI
+                                    * (2026-09-13). -1 = nobody. Not saved. */
+    float    stage_x, stage_y;
     bool     trickle_off;          /* director/test knob: the tank's own trickle
                                     * holds off entirely (staged hunger for a
                                     * shot). Not saved. */
@@ -222,6 +237,7 @@ typedef struct tank {
                                     * pellet must not leave a slower one begging for
                                     * the whole give-up valve). progression.c sets it. */
     uint32_t tank_ms_bits;         /* TMS_* milestones reached */
+    uint32_t tank_ms_seen;         /* TMS_* looked at on the milestones page */
     /* advisor scheduling (need-based, see tank_tick) */
     int      ask_rr;               /* rotating start index for fairness */
     uint32_t advisor_asks;         /* diagnostic: requests issued */
@@ -325,5 +341,15 @@ float tank_randf(tank_t *t, float lo, float hi);
 /* roster preset count (6) and a preset's display name, for UI */
 int   tank_roster_count(void);
 const char *tank_roster_name(int preset);
+/* the keeper's say over a fish's identity (first-run setup, 2026-09-13; a
+ * rename from the card may follow). tank_set_name copies up to FISH_NAME_MAX
+ * chars (empty = back to the preset's name); tank_set_look sets the body and
+ * accent colours - the fin follows the body (the preset's own fin when the
+ * body is a roster colour, a darkened body otherwise). The swatch palettes
+ * hold every roster colour, so an untouched fish always sits on a swatch. */
+extern const uint32_t LOOK_BODY[LOOK_N];
+extern const uint32_t LOOK_ACCENT[LOOK_N];
+void  tank_set_name(tank_t *t, int slot, const char *name);
+void  tank_set_look(tank_t *t, int slot, uint32_t body, uint32_t accent);
 
 #endif

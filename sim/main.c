@@ -5,6 +5,7 @@
  *   ./fishsim              run the tank (keys: F feed at the mouse x,
  *                          N light, L brain, U overlays, M milestones view,
  *                          X reset prompt (device: hold BOOT + tap the glass),
+ *                          S the first-run setup flow (welcome / names / colours),
  *                          R force an arrival (debug), A auto-light, Q quit;
  *                          click fish = stats; tap the water surface = feed;
  *                          drag down from the top = feed; hold >= 3 s = finger
@@ -28,11 +29,13 @@
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
+#include <ctype.h>
 #include "tank.h"
 #include "advisor.h"
 #include "advisor_core.h"
 #include "render.h"
 #include "progression.h"
+#include "setup.h"
 
 static tank_t tank;
 
@@ -77,6 +80,9 @@ static int selftest(void) {
     render_stats_card(&tank, 0, fb, TANK_W);
     render_milestones(&tank, fb, TANK_W); render_brightness_row(fb, TANK_W, 100);
     render_confirm_reset(fb, TANK_W, 0.5f);
+    setup_begin(&tank);
+    for (int pg = 0; pg < SETUP_PG_N; pg++) { render_setup(&tank, fb, TANK_W, 1.0f); if (pg + 1 < SETUP_PG_N) setup_activate(&tank, SETUP_HIT_NEXT); }
+    setup_cancel(&tank);
     int eaten = 0, distinct = 0;
     for (int i = 0; i < tank.n_fish; i++) eaten += tank.fish[i].eaten;
     printf("selftest: 7200 ticks ok, %u advisor asks, %d player feedings, feed spot %.0f\n",
@@ -103,6 +109,7 @@ static int selftest_pop(void) {
     progression_boot(&tank);                      /* no save -> new random pair */
     print_roster(&tank);
     if (tank.n_fish != 2) { printf("FAIL: new tank should start with 2\n"); return 1; }
+    if (!progression_setup_pending()) { printf("FAIL: a new tank should owe the first-run setup\n"); return 1; }
     progression_time_scale = 600;                 /* 10 minutes of tended time per second */
     int arrivals = 0, last_n = tank.n_fish;
     bool saw_court = false;                       /* the tell fires before the fry */
@@ -162,6 +169,96 @@ static int selftest_pop(void) {
         printf("FAIL: confirm buttons hit-test\n"); return 1;
     }
     printf("  reset ok: %s + %s, both fry, saved and reloaded\n", tank.fish[0].name, tank.fish[1].name);
+    /* the first-run setup (setup.c): the reset tank owes it; walk it the way
+       a finger would - hit-test where a finger lands, activate what came
+       back, drag the letter wheel through setup_touch - name the first fish
+       BUB, give it the blue body and white accent, empty the second name
+       (the preset's returns), BEGIN; then reload and find it all kept */
+    if (!progression_setup_pending()) { printf("FAIL: the reset tank should owe the setup\n"); return 1; }
+    setup_begin(&tank);
+    if (!setup_active() || setup_page() != SETUP_PG_WELCOME) { printf("FAIL: setup did not open on the welcome page\n"); return 1; }
+    if (setup_hit(SETUP_MID_X + 20, SETUP_BTN_Y + 20) != SETUP_HIT_NEXT || setup_hit(5, 5) != 0) { printf("FAIL: welcome NEXT hit-test\n"); return 1; }
+    setup_activate(&tank, setup_hit(SETUP_MID_X + 20, SETUP_BTN_Y + 20));
+    if (setup_page() != SETUP_PG_NAME_A) { printf("FAIL: NEXT did not reach the name page\n"); return 1; }
+    /* the fish being named takes the stage - the clear spot above the letters */
+    setup_touch(&tank, 0, 0, false);
+    if (tank.stage_fish != 0) { printf("FAIL: fish 0 not staged\n"); return 1; }
+    tank.fish[0].x = 60; tank.fish[0].y = 300;
+    for (int i = 0; i < 900; i++) tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
+    if (tank_dist(tank.fish[0].x, tank.fish[0].y, SETUP_STAGE_X, SETUP_STAGE_NAME_Y) > 45) {
+        printf("FAIL: staged fish at (%.0f,%.0f), stage (%d,%d)\n", tank.fish[0].x, tank.fish[0].y, SETUP_STAGE_X, SETUP_STAGE_NAME_Y); return 1;
+    }
+    const char *preset0 = tank_roster_name(tank.fish[0].preset);
+    /* the wheel's bands: the row picks a slot, above / below the active one are the chevrons */
+    if (setup_hit(SETUP_SLOT_X + 2 * SETUP_SLOT_PX + 10, SETUP_SLOT_Y + 20) != SETUP_HIT_SLOT0 + 2 ||
+        setup_hit(SETUP_SLOT_X + 15, SETUP_SLOT_Y - 50) != SETUP_HIT_UP ||
+        setup_hit(SETUP_SLOT_X + 15, SETUP_SLOT_Y + SETUP_SLOT_H + 60) != SETUP_HIT_DOWN ||
+        setup_hit(SETUP_TOP_NEXT_X + 20, SETUP_TOP_BTN_Y + 20) != SETUP_HIT_NEXT) { printf("FAIL: name page hit-test\n"); return 1; }
+    for (int i = 0; i < 3; i++) {                     /* B U B by spinning three slots */
+        setup_activate(&tank, SETUP_HIT_SLOT0 + i);
+        if (setup_slot() != i) { printf("FAIL: slot %d not picked\n", i); return 1; }
+        int guard = 30;
+        while (guard-- && toupper((unsigned char)tank.fish[0].name[i]) != "BUB"[i]) setup_activate(&tank, SETUP_HIT_UP);
+    }
+    while ((int)strlen(tank.fish[0].name) > 3) {       /* a longer preset: blank the tail */
+        setup_activate(&tank, SETUP_HIT_SLOT0 + 3);
+        int guard = 30;
+        while (guard-- && (int)strlen(tank.fish[0].name) > 3) setup_activate(&tank, SETUP_HIT_DOWN);
+    }
+    if (strcmp(tank.fish[0].name, "BUB")) { printf("FAIL: spun name is '%s'\n", tank.fish[0].name); return 1; }
+    /* the drag: press on slot 2, pull up three steps (B -> E), no tap fires on
+       release; pull back down three: B again */
+    {
+        float sx = SETUP_SLOT_X + 2 * SETUP_SLOT_PX + 15, sy = SETUP_SLOT_Y + 20;
+        setup_touch(&tank, sx, sy, true);
+        for (int k = 1; k <= 30; k++) setup_touch(&tank, sx, sy - k * 3 * SETUP_SPIN_PX / 30.0f - 0.5f, true);
+        if (strcmp(tank.fish[0].name, "BUE")) { printf("FAIL: drag up gave '%s'\n", tank.fish[0].name); return 1; }
+        setup_touch(&tank, sx, sy - 3 * SETUP_SPIN_PX, false);
+        if (strcmp(tank.fish[0].name, "BUE") || setup_slot() != 2) { printf("FAIL: the drag's release acted as a tap\n"); return 1; }
+        setup_touch(&tank, sx, sy, true);
+        for (int k = 1; k <= 30; k++) setup_touch(&tank, sx, sy + k * 3 * SETUP_SPIN_PX / 30.0f + 0.5f, true);
+        setup_touch(&tank, sx, sy, false);
+        if (strcmp(tank.fish[0].name, "BUB")) { printf("FAIL: drag down gave '%s'\n", tank.fish[0].name); return 1; }
+    }
+    setup_touch(&tank, SETUP_TOP_NEXT_X + 20, SETUP_TOP_BTN_Y + 20, true);     /* a tap through setup_touch */
+    setup_touch(&tank, SETUP_TOP_NEXT_X + 22, SETUP_TOP_BTN_Y + 24, false);
+    if (setup_page() != SETUP_PG_LOOK_A) { printf("FAIL: NEXT did not reach the look page\n"); return 1; }
+    /* the swatch row takes a finger 30 px under it (fingers land low), never the "?" */
+    if (setup_hit(SETUP_SW_X + 6 * SETUP_SW_PX + 20, SETUP_SW_Y + SETUP_SW_H + 30) != SETUP_HIT_BODY0 + 6 ||
+        setup_hit(SETUP_SW_X + 20, SETUP_ACC_Y + 30) != 0) { printf("FAIL: swatch row hit-test\n"); return 1; }
+    setup_activate(&tank, setup_hit(SETUP_SW_X + 6 * SETUP_SW_PX + 20, SETUP_SW_Y + 25));
+    uint32_t accent0 = tank.fish[0].accent;
+    if (tank.fish[0].color != LOOK_BODY[6] || accent0 == LOOK_BODY[6]) {
+        printf("FAIL: swatch gave body %06x accent %06x\n", tank.fish[0].color, tank.fish[0].accent); return 1;
+    }
+    /* a body the same as the accent: the accent moves (stripes must show) */
+    tank_set_look(&tank, 0, accent0, 0);
+    if (tank.fish[0].accent == accent0) { printf("FAIL: accent did not step aside for a matching body\n"); return 1; }
+    tank_set_look(&tank, 0, LOOK_BODY[6], accent0);
+    setup_activate(&tank, SETUP_HIT_BACK);            /* back to the name page and forward again: name kept */
+    if (setup_page() != SETUP_PG_NAME_A || strcmp(tank.fish[0].name, "BUB")) { printf("FAIL: BACK lost the name\n"); return 1; }
+    setup_activate(&tank, SETUP_HIT_NEXT); setup_activate(&tank, SETUP_HIT_NEXT);
+    if (setup_page() != SETUP_PG_NAME_B) { printf("FAIL: not on the second name page\n"); return 1; }
+    const char *preset1 = tank_roster_name(tank.fish[1].preset);
+    for (int i = (int)strlen(tank.fish[1].name) - 1; i >= 0; i--) {   /* blank it from the end... */
+        setup_activate(&tank, SETUP_HIT_SLOT0 + i);
+        int guard = 30;
+        while (guard-- && (int)strlen(tank.fish[1].name) > i) setup_activate(&tank, SETUP_HIT_DOWN);
+    }
+    if (tank.fish[1].name[0]) { printf("FAIL: could not blank the name ('%s')\n", tank.fish[1].name); return 1; }
+    setup_activate(&tank, SETUP_HIT_NEXT);                                  /* ...and leave it empty: the preset's returns */
+    if (strcmp(tank.fish[1].name, preset1)) { printf("FAIL: empty name did not fall back ('%s')\n", tank.fish[1].name); return 1; }
+    setup_activate(&tank, SETUP_HIT_NEXT);
+    if (setup_page() != SETUP_PG_CARE) { printf("FAIL: not on the care page (%d)\n", setup_page()); return 1; }
+    setup_activate(&tank, SETUP_HIT_NEXT);            /* BEGIN */
+    if (setup_active() || progression_setup_pending() || tank.stage_fish != -1) { printf("FAIL: BEGIN did not finish the setup\n"); return 1; }
+    tank_init(&tank, 13); progression_boot(&tank);
+    if (progression_setup_pending() || strcmp(tank.fish[0].name, "BUB") || strcmp(tank.fish[1].name, preset1) ||
+        tank.fish[0].color != LOOK_BODY[6] || tank.fish[0].accent != accent0 || strcmp(preset0, tank_roster_name(tank.fish[0].preset))) {
+        printf("FAIL: names/looks did not come back from the save ('%s' %06x/%06x, pending %d)\n",
+               tank.fish[0].name, tank.fish[0].color, tank.fish[0].accent, progression_setup_pending()); return 1;
+    }
+    printf("  setup ok: %s (blue) + %s, saved and reloaded, nothing owed\n", tank.fish[0].name, tank.fish[1].name);
     (void)system(cmd);                            /* leave no test save behind */
     return 0;
 }
@@ -500,6 +597,7 @@ static void frame_cb(lv_timer_t *timer) {
     float dt = (now - last_ms) / 1000.0f;
     last_ms = now;
     if (dt > 0.1f) dt = 0.1f;                     /* window drag pause */
+    tank.hold_light = setup_active() || confirm_view;   /* no lights-out mid-name */
     tank_tick(&tank, dt, llm_active ? advisor_llm : advisor_rules);
     progression_tick(&tank, dt);
     if (milestones_view) { render_milestones(&tank, canvas_buf, TANK_W); render_brightness_row(canvas_buf, TANK_W, sim_bright); }
@@ -511,6 +609,7 @@ static void frame_cb(lv_timer_t *timer) {
                 render_stats_card(&tank, selected_fish, canvas_buf, TANK_W);
         }
     }
+    if (setup_active()) render_setup(&tank, canvas_buf, TANK_W, tank.clock);
     if (confirm_view) render_confirm_reset(canvas_buf, TANK_W, 1.0f - (SDL_GetTicks() - confirm_ms) / (float)CONFIRM_MS);
     lv_obj_invalidate(canvas);
 }
@@ -635,11 +734,32 @@ static int snapshot(const char *prefix, int seconds) {
     snprintf(path, sizeof path, "%s_card.ppm", prefix); write_ppm(path, fb);
     render_tank(&tank, fb, TANK_W); render_stats_card(&tank, 1, fb, TANK_W);
     snprintf(path, sizeof path, "%s_card1.ppm", prefix); write_ppm(path, fb);   /* partly unrevealed */
+    /* the milestones page: everything seen but one fish badge and one tank
+       badge (they wear the "new" ring), and a tapped badge's caption */
+    for (int i = 0; i < tank.n_fish; i++) tank.fish[i].ms_seen = tank.fish[i].ms_bits;
+    tank.tank_ms_seen = tank.tank_ms_bits;
+    tank.fish[1].ms_seen &= ~MS_FIRST_MEAL_FROM_YOU; tank.tank_ms_seen &= ~TMS_FIRST_QUIET_NIGHT;
+    render_milestones_tap(&tank, 176 + 16, 4 + 40 + 20);
     render_milestones(&tank, fb, TANK_W); render_brightness_row(fb, TANK_W, 60);
     snprintf(path, sizeof path, "%s_milestones.ppm", prefix); write_ppm(path, fb);
+    render_milestones_leave();
     render_tank(&tank, fb, TANK_W); render_confirm_reset(fb, TANK_W, 0.7f);
     snprintf(path, sizeof path, "%s_confirm.ppm", prefix); write_ppm(path, fb);
-    printf("snapshot: %d fish, wrote %s_{tank,card,card1,milestones,confirm}.ppm\n", tank.n_fish, prefix);
+    /* the first-run setup, page by page (never BEGIN: that would save this
+       staged tank over the real one) */
+    setup_begin(&tank);
+    static const char *const pg_name[SETUP_PG_N] = { "welcome", "name", "look", "name2", "look2", "care" };
+    for (int pg = 0; pg < SETUP_PG_N; pg++) {
+        if (pg == SETUP_PG_NAME_A) { tank_set_name(&tank, 0, "BUB"); setup_activate(&tank, SETUP_HIT_SLOT0 + 1); }
+        if (pg == SETUP_PG_LOOK_A) setup_activate(&tank, SETUP_HIT_BODY0 + 6);
+        setup_touch(&tank, 0, 0, false);                   /* the stage is set; let the fish get there */
+        for (int i = 0; i < 300; i++) tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
+        render_tank(&tank, fb, TANK_W); render_setup(&tank, fb, TANK_W, 1.0f);
+        snprintf(path, sizeof path, "%s_setup_%s.ppm", prefix, pg_name[pg]); write_ppm(path, fb);
+        if (pg + 1 < SETUP_PG_N) setup_activate(&tank, SETUP_HIT_NEXT);
+    }
+    setup_cancel(&tank);
+    printf("snapshot: %d fish, wrote %s_{tank,card,card1,milestones,confirm,setup_*}.ppm\n", tank.n_fish, prefix);
     return 0;
 }
 
@@ -787,6 +907,7 @@ int main(int argc, char **argv) {
     }
     progression_boot(&tank);               /* restore, or a new random pair */
     print_roster(&tank);
+    if (progression_setup_pending()) { setup_begin(&tank); printf("first-run setup: welcome, names, colours (S re-opens it)\n"); }
     for (int a = 1; a < argc; a++)
         if (strcmp(argv[a], "--narrate") == 0) {
             advisor_llm_narrate = true;   /* film the tank + this terminal */
@@ -816,7 +937,7 @@ int main(int argc, char **argv) {
     lv_timer_create(frame_cb, 16, NULL);
 
     bool fdown = false, ndown = false, ldown = false;
-    bool udown = false, mdown = false, mkdown = false, rdown = false, zdown = false, gdown = false, xdown = false;
+    bool udown = false, mdown = false, mkdown = false, rdown = false, zdown = false, gdown = false, xdown = false, sdown = false;
     uint32_t press_ms = 0; int press_x = 0, press_y = 0;
     float press_fx[N_FISH_MAX] = {0}, press_fy[N_FISH_MAX] = {0};
     while (1) {
@@ -835,8 +956,14 @@ int main(int argc, char **argv) {
             press_ms = now_ms; press_x = mx; press_y = my;
             for (int i = 0; i < tank.n_fish; i++) { press_fx[i] = tank.fish[i].x; press_fy[i] = tank.fish[i].y; }
         }
-        if (mpress && !confirm_view) tank_touch_drag(&tank, (float)mx, (float)my);   /* stroke -> wipe/slash */
-        if (mpress && !confirm_view && now_ms - press_ms > 300 && abs(my - press_y) < 30) tank_touch_hold(&tank, (float)mx, (float)my);
+        bool setup_up = setup_active();          /* before the touch: BEGIN's release must not become a tank tap */
+        if (setup_up) {
+            setup_touch(&tank, (float)mx, (float)my, mpress);   /* taps and the letter wheel, classified in setup.c */
+            if (!setup_active()) { printf("setup done\n"); print_roster(&tank); }
+        }
+        bool modal = confirm_view || setup_up;
+        if (mpress && !modal) tank_touch_drag(&tank, (float)mx, (float)my);   /* stroke -> wipe/slash */
+        if (mpress && !modal && now_ms - press_ms > 300 && abs(my - press_y) < 30) tank_touch_hold(&tank, (float)mx, (float)my);
         if (!mpress && mdown) {
             int dx = mx - press_x, dy = my - press_y;
             if (confirm_view) {                    /* the prompt owns the glass: press AND release on one button */
@@ -844,14 +971,16 @@ int main(int argc, char **argv) {
                 if (h && h == render_confirm_hit((float)mx, (float)my)) {
                     confirm_view = false;
                     if (h > 0) { progression_reset(&tank, SDL_GetTicks() + 7); selected_fish = -1;
-                                 printf("RESET: a fresh tank\n"); print_roster(&tank); }
+                                 printf("RESET: a fresh tank\n"); print_roster(&tank); setup_begin(&tank); }
                     else printf("reset prompt: NO, tank kept\n");
                 }
             }
+            else if (setup_up) { /* the setup owns the glass: setup_touch took it */ }
             else if (milestones_view) {
                 if (render_brightness_row_hit((float)press_x, (float)press_y))
                     sim_bright = sim_bright == 100 ? 60 : sim_bright == 60 ? 30 : 100;   /* the row cycles, the page stays */
-                else milestones_view = false;
+                else if (render_milestones_tap(&tank, (float)press_x, (float)press_y)) { /* a badge / name: caption, page stays */ }
+                else { milestones_view = false; progression_ack_milestones(&tank); render_milestones_leave(); }
             }
             else if (now_ms - press_ms < 350 && dx * dx + dy * dy < 24 * 24) {
                 /* same hit test as the device: 38 px against the press-time
@@ -876,9 +1005,17 @@ int main(int argc, char **argv) {
             printf("reset prompt: click YES or NO (it gives up after %d s)\n", CONFIRM_MS / 1000);
         }
         xdown = k[SDL_SCANCODE_X];
+        if (k[SDL_SCANCODE_S] && !sdown) {                    /* the first-run flow, on cue */
+            if (setup_active()) { setup_cancel(&tank); printf("setup: closed (still owed if it was pending)\n"); }
+            else { setup_begin(&tank); selected_fish = -1; milestones_view = false; printf("setup: welcome page (click through; BEGIN saves)\n"); }
+        }
+        sdown = k[SDL_SCANCODE_S];
         if (k[SDL_SCANCODE_U] && !udown) { ui_visible = !ui_visible; }
         udown = k[SDL_SCANCODE_U];
-        if (k[SDL_SCANCODE_M] && !mkdown) { milestones_view = !milestones_view; }
+        if (k[SDL_SCANCODE_M] && !mkdown) {
+            milestones_view = !milestones_view;
+            if (!milestones_view) { progression_ack_milestones(&tank); render_milestones_leave(); }
+        }
         mkdown = k[SDL_SCANCODE_M];
         if (k[SDL_SCANCODE_R] && !rdown) { progression_force_arrival(&tank); print_roster(&tank); }
         rdown = k[SDL_SCANCODE_R];

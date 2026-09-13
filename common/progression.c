@@ -49,9 +49,22 @@ typedef struct {
     /* per-frond heights (2026-09-04); an older save (no tail, or zeros)
      * seeds every frond from its bed's veg_growth */
     float    veg_h[VEG_BEDS][VEG_FRONDS_MAX];
+    /* identity tail (2026-09-13, first-run setup): the keeper's names and
+     * colours per fish - an empty name / a zero colour = the preset's - and
+     * whether the setup flow still owes the keeper a visit. Older saves read
+     * zeros: preset looks, setup done. */
+    uint8_t  setup_pending, pad_id[3];
+    char     names[N_FISH_MAX][FISH_NAME_MAX + 1];
+    uint32_t body[N_FISH_MAX], accent[N_FISH_MAX];
+    /* seen-milestones tail (2026-09-13, the milestones page): what the
+     * keeper has already looked at, so a badge earned since wears a ring.
+     * Older saves read zeros: everything earned shows as new once. */
+    uint32_t ms_seen[N_FISH_MAX], tank_ms_seen;
 } save_t;
 #define SAVE_CORE_SIZE   offsetof(save_t, veg_growth)   /* pre-upkeep PTK2 size */
 #define SAVE_UPKEEP_SIZE offsetof(save_t, veg_h)        /* 2026-08-30 .. 09-04 size */
+#define SAVE_FROND_SIZE  offsetof(save_t, setup_pending) /* 2026-09-04 .. 09-13 size */
+#define SAVE_IDENT_SIZE  offsetof(save_t, ms_seen)       /* identity tail, before the seen masks */
 
 float progression_time_scale = 1.0f;
 
@@ -64,12 +77,15 @@ static int   s_rav_feedings0;        /* player_feedings when the episode began (
 static bool  s_arrival_pending;
 static bool  s_prev_night;
 static bool  s_booted;
+static bool  s_setup_pending;        /* the first-run flow still owed (setup.c) */
 
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
 static void mark_dirty(void) { if (!s_dirty) { s_dirty = true; s_dirty_since = 0; } }
 
 float progression_age_s(const tank_t *t, int idx) { (void)t; return idx >= 0 && idx < N_FISH_MAX ? s_age[idx] : 0; }
 bool  progression_arrival_pending(void) { return s_arrival_pending; }
+bool  progression_setup_pending(void)   { return s_setup_pending; }
+void  progression_setup_done(tank_t *t) { s_setup_pending = false; progression_save(t); }
 
 static void set_ms(fish_t *f, uint32_t bit) { if (!(f->ms_bits & bit)) { f->ms_bits |= bit; mark_dirty(); } }
 static void set_tms(tank_t *t, uint32_t bit) { if (!(t->tank_ms_bits & bit)) { t->tank_ms_bits |= bit; mark_dirty(); } }
@@ -153,6 +169,7 @@ void progression_fresh(tank_t *t) {
     for (int i = 0; i < t->n_fish; i++) { t->fish[i].ms_bits = MS_ARRIVED; apply_growth(&t->fish[i]); }
     s_arrival_pending = false; s_prev_night = t->night;
     s_ravenous = false; s_ravenous_t = 0;
+    s_setup_pending = true;          /* a new tank: welcome, names, colours */
     s_booted = true;
     mark_dirty();
 }
@@ -176,6 +193,14 @@ void progression_boot(tank_t *t) {
     save_t sv; memset(&sv, 0, sizeof sv);
     s_booted = true;
     bool loaded = persist_port_load(&sv, sizeof sv);
+    if (!loaded) {                       /* pre-seen-masks save: load that prefix */
+        memset(&sv, 0, sizeof sv);
+        loaded = persist_port_load(&sv, SAVE_IDENT_SIZE);
+    }
+    if (!loaded) {                       /* pre-identity save: load that prefix */
+        memset(&sv, 0, sizeof sv);
+        loaded = persist_port_load(&sv, SAVE_FROND_SIZE);
+    }
     if (!loaded) {                       /* pre-frond upkeep save: load that prefix */
         memset(&sv, 0, sizeof sv);
         loaded = persist_port_load(&sv, SAVE_UPKEEP_SIZE);
@@ -197,13 +222,18 @@ void progression_boot(tank_t *t) {
         f->hunger = s->hunger; f->energy = s->energy; f->stress = s->stress; f->curiosity = s->curiosity;
         f->eaten = s->eaten; f->eaten_player = s->eaten_player;
         f->ms_bits = s->ms_bits & ~MS_RETIRED_MASK;   /* the shadow milestones, gone with it */
+        f->ms_seen = sv.ms_seen[i] & f->ms_bits;
         f->rest_dx = s->rest_dx; f->rest_dy = s->rest_dy;
         s_age[i] = s->age_s;
         t->n_fish = i + 1;
+        if (sv.names[i][0]) { sv.names[i][FISH_NAME_MAX] = 0; tank_set_name(t, i, sv.names[i]); }
+        tank_set_look(t, i, sv.body[i], sv.accent[i]);        /* zeros keep the preset's */
     }
+    s_setup_pending = sv.setup_pending != 0;
     t->light_override = sv.light_override; t->light_on = sv.light_on;
     t->feed_spot_x = sv.feed_spot_x; t->player_feedings = sv.player_feedings;
     t->hold_approaches = sv.hold_approaches; t->tank_ms_bits = sv.tank_ms_bits;
+    t->tank_ms_seen = sv.tank_ms_seen & t->tank_ms_bits;
     for (int b = 0; b < VEG_BEDS; b++) {
         if (sv.veg_h[b][0] > 0)
             for (int i = 0; i < VEG_FRONDS_MAX; i++) t->veg_h[b][i] = sv.veg_h[b][i];
@@ -330,21 +360,34 @@ void progression_save(tank_t *t) {
     sv.arrival_pending = s_arrival_pending; sv.n_fish = (uint8_t)t->n_fish;
     sv.feed_spot_x = t->feed_spot_x; sv.player_feedings = t->player_feedings;
     sv.hold_approaches = t->hold_approaches; sv.tank_ms_bits = t->tank_ms_bits;
+    sv.tank_ms_seen = t->tank_ms_seen;
     for (int b = 0; b < VEG_BEDS; b++) {
         sv.veg_growth[b] = t->veg_growth[b];
         for (int i = 0; i < VEG_FRONDS_MAX; i++) sv.veg_h[b][i] = t->veg_h[b][i];
     }
     memcpy(sv.algae, t->algae, ALGAE_CELLS);
     sv.trims = t->trims; sv.cells_cleaned = t->cells_cleaned;
+    sv.setup_pending = s_setup_pending;
     for (int i = 0; i < t->n_fish; i++) {
         const fish_t *f = &t->fish[i]; fish_save_t *s = &sv.fish[i];
+        if (strcmp(f->name, tank_roster_name(f->preset))) memcpy(sv.names[i], f->name, FISH_NAME_MAX + 1);
+        sv.body[i] = f->color; sv.accent[i] = f->accent;      /* the preset's too: harmless, exact */
         s->preset = (uint8_t)f->preset; s->stage = (uint8_t)f->stage;
         s->size = f->size; s->trust = f->trust; s->bold = f->bold; s->sociable = f->sociable;
         s->bold0 = f->bold0; s->sociable0 = f->sociable0;
         s->hunger = f->hunger; s->energy = f->energy; s->stress = f->stress; s->curiosity = f->curiosity;
         s->age_s = s_age[i]; s->rest_dx = f->rest_dx; s->rest_dy = f->rest_dy;
         s->eaten = f->eaten; s->eaten_player = f->eaten_player; s->ms_bits = f->ms_bits;
+        sv.ms_seen[i] = f->ms_seen;
     }
     persist_port_save(&sv, sizeof sv);
     s_since_save = 0; s_dirty = false; s_dirty_since = 0;
+}
+
+void progression_ack_milestones(tank_t *t) {
+    bool changed = false;
+    for (int i = 0; i < t->n_fish; i++)
+        if (t->fish[i].ms_seen != t->fish[i].ms_bits) { t->fish[i].ms_seen = t->fish[i].ms_bits; changed = true; }
+    if (t->tank_ms_seen != t->tank_ms_bits) { t->tank_ms_seen = t->tank_ms_bits; changed = true; }
+    if (changed) mark_dirty();
 }

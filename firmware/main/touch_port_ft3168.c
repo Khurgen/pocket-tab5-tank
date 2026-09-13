@@ -13,6 +13,8 @@
 #include "board_pins.h"
 #include "tank.h"
 #include "render.h"
+#include "setup.h"
+#include "progression.h"
 #include "esp_lcd_touch_ft5x06.h"
 #include "esp_lcd_touch_cst816s.h"
 #include "esp_lcd_panel_io.h"
@@ -32,6 +34,14 @@ static bool s_cf; static int64_t s_cf_us; static int s_cf_ans;   /* reset confir
 static bool s_bright_tap;                         /* milestones page: brightness row tapped */
 #define CONFIRM_TIMEOUT_US (20LL * 1000000)
 static bool s_inverted;                           /* screen 180-flipped: mirror into tank space */
+/* Fingers land a little BELOW where the eye aims - the pad rolls onto the
+ * glass under the fingertip (phones shift their hit targets down for the
+ * same reason; Strato saw it on the swatch rows, 2026-09-13). Reported
+ * points move UP by this many px in displayed space; director `touch bias
+ * <px>` tunes it live. */
+static int s_bias_y = 10;
+void touch_port_set_bias(int px) { s_bias_y = px; }
+int  touch_port_bias(void) { return s_bias_y; }
 
 void touch_port_set_inverted(bool inverted) { s_inverted = inverted; }
 extern i2c_master_bus_handle_t board_i2c_bus(void);
@@ -64,15 +74,22 @@ void touch_port_poll(tank_t *t) {
     /* portrait panel (px,py) -> landscape tank (tx,ty): tx = TANK_W-1-py, ty = px;
      * flipped screen: mirror both, so downstream gestures live in displayed space */
     float tx = touched ? (s_inverted ? (float)y[0] : (float)(TANK_W - 1 - y[0])) : s_lx;
-    float ty = touched ? (s_inverted ? (float)(TANK_H - 1 - x[0]) : (float)x[0]) : s_ly;
+    float ty = touched ? (s_inverted ? (float)(TANK_H - 1 - x[0]) : (float)x[0]) - s_bias_y : s_ly;
+    if (touched && ty < 0) ty = 0;
     if (touched && !s_down) {
         s_press_us = now; s_px = tx; s_py = ty;
         /* snapshot the school: the user aims at where a fish WAS - by release
            a darting fish has moved and the finger hid it the whole time */
         for (int i = 0; i < t->n_fish && i < N_FISH_MAX; i++) { s_fx[i] = t->fish[i].x; s_fy[i] = t->fish[i].y; }
     }
-    if (touched) { s_lx = tx; s_ly = ty; if (!s_ms && !s_cf) tank_touch_drag(t, tx, ty); }  /* stroke = wipe/slash */
-    if (touched && !s_ms && !s_cf && now - s_press_us > 300000 && fabsf(ty - s_py) < 30) tank_touch_hold(t, tx, ty);
+    bool su = setup_active();                                /* before the touch: BEGIN's release is not a tank tap */
+    if (su && !s_cf) {
+        setup_touch(t, tx, ty, touched);                     /* taps and the letter wheel, classified in setup.c */
+        if (!setup_active()) ESP_LOGI(TAG, "setup done: %s + %s", t->fish[0].name, t->fish[1].name);
+    }
+    bool modal = s_ms || s_cf || su;                         /* a page or a prompt owns the glass */
+    if (touched) { s_lx = tx; s_ly = ty; if (!modal) tank_touch_drag(t, tx, ty); }  /* stroke = wipe/slash */
+    if (touched && !modal && now - s_press_us > 300000 && fabsf(ty - s_py) < 30) tank_touch_hold(t, tx, ty);
     if (!touched && s_down) {
         /* release: classify with the LAST touched position (the old code fell
            back to the PRESS position here, so dx/dy were always 0 - every
@@ -85,13 +102,25 @@ void touch_port_poll(tank_t *t) {
             if (h && h == render_confirm_hit(s_lx, s_ly)) touch_port_confirm_answer(h);
             goto released;
         }
+        if (su) {                       /* the setup had the glass (setup_touch above); just the log:
+                                           where the finger landed vs what it hit, in case this panel
+                                           reports fingers offset from where they feel */
+            ESP_LOGI(TAG, "setup touch press %.0f,%.0f release %.0f,%.0f -> %s", s_px, s_py, s_lx, s_ly,
+                     setup_hit_name(setup_active() ? setup_hit(s_px, s_py) : 0));
+            s_sel = -1; goto released;
+        }
         if (now - s_press_us < 350000 && dx * dx + dy * dy < 24 * 24) {
             if (s_ms) {                                             /* the page closes on any tap, card too -
                                                                        except its brightness row, which cycles */
                 bool row = render_brightness_row_hit(s_px, s_py);
-                ESP_LOGI(TAG, "page tap at %.0f,%.0f (release %.0f,%.0f) -> %s", s_px, s_py, s_lx, s_ly, row ? "brightness row" : "close");
+                bool kept = !row && render_milestones_tap(t, s_px, s_py);   /* a badge / name: caption, the page stays */
+                ESP_LOGI(TAG, "page tap at %.0f,%.0f (release %.0f,%.0f) -> %s", s_px, s_py, s_lx, s_ly,
+                         row ? "brightness row" : kept ? "caption" : "close");
                 if (row) { s_bright_tap = true; goto released; }
-                s_ms = false; s_sel = -1; goto released;
+                if (kept) goto released;
+                s_ms = false; s_sel = -1;
+                progression_ack_milestones(t); render_milestones_leave();   /* everything shown is now "seen" */
+                goto released;
             }
             if (s_sel >= 0 && s_px >= RENDER_CARD_X && s_px < RENDER_CARD_X + RENDER_CARD_W &&
                 s_py >= RENDER_CARD_Y && s_py < RENDER_CARD_Y + RENDER_CARD_H) {
@@ -125,7 +154,7 @@ released:
 
 int touch_port_selected(void) { return s_sel; }
 bool touch_port_milestones(void) { return s_ms; }
-void touch_port_show_milestones(bool on) { s_ms = on; }
+void touch_port_show_milestones(bool on) { if (s_ms && !on) render_milestones_leave(); s_ms = on; }
 
 /* ---- reset confirm prompt ---- */
 void touch_port_confirm_open(void) {

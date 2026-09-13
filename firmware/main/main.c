@@ -28,6 +28,7 @@
 #include "batlog.h"
 #include "codec_port.h"
 #include "progression.h"
+#include "setup.h"
 #include "nvs_flash.h"
 #include "rtc_port.h"
 #include "driver/i2c_master.h"
@@ -187,6 +188,7 @@ static void reset_tank(void) {
     progression_reset(&tank, (uint32_t)esp_timer_get_time() ^ 0xC0FFEEu);
     brightness_save();                          /* the erase took the setting with it */
     ESP_LOGI(TAG, "fresh tank: %s + %s, both fry", tank.fish[0].name, tank.fish[1].name);
+    setup_begin(&tank);                         /* welcome, names, colours - as on a fresh install */
 }
 
 static void tank_task(void *arg) {
@@ -211,6 +213,7 @@ static void tank_task(void *arg) {
         brightness_apply(tank.night);
         { static int64_t last_bat; if (now - last_bat > 5LL * 60 * 1000000) {   /* battery log: awake sample every 5 min */
             batlog_add(battery_pct(), battery_port_vbat_mv(), display_port_brightness(), false, last_bat ? "" : "boot"); last_bat = now; } }
+        tank.hold_light = setup_active() || touch_port_confirm_up();   /* no lights-out mid-name */
         tank_tick(&tank, dt, llm_ok ? advisor_llm_esp : advisor_rules);
         progression_tick(&tank, dt);
         if (fb[cur]) {
@@ -238,6 +241,8 @@ static void tank_task(void *arg) {
                 if (now - bat_us > 1000000) { bok = battery_port_read(&bf, &chg); bat_us = now; }  /* the I2C gauge read once a second, not per frame */
                 if (bok) render_battery(fb[cur], TANK_W, bf, chg);
             }
+            if (setup_active())                  /* first-run setup: over the tank, under the prompt */
+                render_setup(&tank, fb[cur], TANK_W, tank.clock);
             if (touch_port_confirm_up())         /* reset prompt: over everything, fish still swim */
                 render_confirm_reset(fb[cur], TANK_W, touch_port_confirm_frac());
             int64_t t1 = esp_timer_get_time();
@@ -359,6 +364,10 @@ void app_main(void) {
     progression_boot(&tank);                 /* restore (or a new random pair) + ravenous rule */
     ESP_LOGI(TAG, "population %d (cap %d): %s + %s ...", tank.n_fish, POP_CAP,
              tank.fish[0].name, tank.n_fish > 1 ? tank.fish[1].name : "-");
+    if (progression_setup_pending()) {           /* a new tank (fresh install, or a reset mid-flow): the welcome */
+        setup_begin(&tank);
+        ESP_LOGI(TAG, "first-run setup: welcome, names, colours (director `setup off` drops it)");
+    }
     /* one-shot: what a frame costs with the stats card up (the card only
        renders on a tap, so the running profile rarely shows it) */
     if (fb[0] && tank.n_fish > 0) {

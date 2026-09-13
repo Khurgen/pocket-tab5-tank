@@ -86,10 +86,38 @@ static const preset_t ROSTER[] = {
 int tank_roster_count(void) { return ROSTER_N; }
 const char *tank_roster_name(int preset) { return preset >= 0 && preset < ROSTER_N ? ROSTER[preset].name : "?"; }
 
+/* the keeper's palettes (setup.c): the six roster bodies + a blue and a
+ * silver; the roster's five accents + white, the stress red and a dark ink */
+const uint32_t LOOK_BODY[LOOK_N]   = { 0x38dcc7, 0xff725c, 0x78d67d, 0xa799ff, 0xffd166, 0xf48fb1, 0x4da3ff, 0xe8f1f2 };
+const uint32_t LOOK_ACCENT[LOOK_N] = { 0xffbd59, 0xffe08a, 0xa799ff, 0x78d67d, 0x38dcc7, 0xffffff, 0xf25b65, 0x1a2a30 };
+
+void tank_set_name(tank_t *t, int slot, const char *name) {
+    if (slot < 0 || slot >= N_FISH_MAX) return;
+    fish_t *f = &t->fish[slot];
+    if (!name || !*name) name = tank_roster_name(f->preset);
+    int n = 0;
+    while (name[n] && n < FISH_NAME_MAX) { f->name[n] = name[n]; n++; }
+    f->name[n] = 0;
+}
+static uint32_t fin_for(uint32_t body) {
+    for (int i = 0; i < ROSTER_N; i++) if (ROSTER[i].color == body) return ROSTER[i].fin;
+    /* a body colour of the keeper's own: the fin is that body at 58% */
+    uint32_t r = (body >> 16 & 255) * 58 / 100, g = (body >> 8 & 255) * 58 / 100, b = (body & 255) * 58 / 100;
+    return (r << 16) | (g << 8) | b;
+}
+void tank_set_look(tank_t *t, int slot, uint32_t body, uint32_t accent) {
+    if (slot < 0 || slot >= N_FISH_MAX) return;
+    fish_t *f = &t->fish[slot];
+    if (body)   { f->color = body; f->fin = fin_for(body); }
+    if (accent) f->accent = accent;
+    if (f->accent == f->color)                        /* stripes the body's own colour would vanish */
+        for (int i = 0; i < LOOK_N; i++) if (LOOK_ACCENT[i] != f->color) { f->accent = LOOK_ACCENT[i]; break; }
+}
+
 void tank_make_fish(tank_t *t, int slot, int preset, float sociable, float bold, stage_t stage) {
     fish_t *f = &t->fish[slot];
     const preset_t *p = &ROSTER[preset];
-    f->name = p->name; f->preset = preset;
+    f->preset = preset; tank_set_name(t, slot, p->name);
     f->model_name = TRAINED_NAMES[slot % N_TRAINED_NAMES];   /* names carry no signal */
     f->x = tank_randf(t, 90, TANK_W - 90); f->y = tank_randf(t, 80, TANK_H - 90);
     f->heading = tank_randf(t, 0, TAU);
@@ -107,7 +135,7 @@ void tank_make_fish(tank_t *t, int slot, int preset, float sociable, float bold,
     f->eaten = 0; f->eaten_player = 0;
     /* its own spot by the reef: bolder fish rest a little further out */
     f->rest_dx = 8 + slot * 24 + bold * 14; f->rest_dy = -slot * 9 - tank_randf(t, 0, 10);   /* a body apart (was 9 px per slot) */
-    f->sig = 0xffffffffu; f->ms_bits = 0;
+    f->sig = 0xffffffffu; f->ms_bits = 0; f->ms_seen = 0;
     f->color = p->color; f->fin = p->fin; f->accent = p->accent;
 }
 
@@ -176,6 +204,7 @@ void tank_init(tank_t *t, uint32_t seed) {
     t->courting = false; t->court_a = t->court_b = -1;
     t->court_cool = 30; t->court_active = 0;
     t->ravenous = false; t->trickle_off = false;
+    t->stage_fish = -1; t->hold_light = false; t->held_s = 0;
     t->drag_active = false; t->drag_has_prev = false; t->drag_dist = 0;
     for (int b = 0; b < VEG_BEDS; b++) {
         /* a fresh tank's canopy has a natural profile: fronds within +-0.04
@@ -190,7 +219,7 @@ void tank_init(tank_t *t, uint32_t seed) {
     t->slash_h = t->slash_v = 0;
     for (int i = 0; i < ALGAE_CELLS; i++) t->algae[i] = 0;
     t->algae_acc = 0; t->trims = 0; t->cells_cleaned = 0;
-    t->tank_ms_bits = 0; t->ask_rr = 0; t->advisor_asks = 0;
+    t->tank_ms_bits = 0; t->tank_ms_seen = 0; t->ask_rr = 0; t->advisor_asks = 0;
     tank_scatter_food(t, 2);
 }
 
@@ -835,6 +864,16 @@ static void update_fish(tank_t *t, int idx, float dt) {
             desired = norm_ang(desired + norm_ang(away - desired) * 0.85f);
             touch_speed = lerpf(55, 90, f->bold);
         }
+    } else if (idx == t->stage_fish) {
+        /* on stage (setup): a lazy figure-of-eight round the page's clear
+         * spot, turning at each end so both flanks show; a fish far from it
+         * cruises over first. Above every other presentation: the keeper is
+         * looking at THIS fish. */
+        float ph = t->clock * 1.1f + f->wander;
+        float wx = t->stage_x + cosf(ph) * 24, wy = t->stage_y + sinf(ph * 2) * 6;
+        float to = atan2f(wy - f->y, wx - f->x);
+        desired = norm_ang(desired + norm_ang(to - desired) * 0.85f);
+        touch_speed = tank_dist(f->x, f->y, t->stage_x, t->stage_y) > 80 ? 44 : 20;
     } else if (t->hold_active && t->hold_time >= HOLD_ATTRACT_S &&
                f->goal.id != GOAL_FLEE_SHADOW && f->trust >= 4.0f &&
                f->hunger < HOLD_HUNGER_VETO) {
@@ -966,9 +1005,12 @@ static uint32_t state_signature(const tank_t *t, int idx) {
 
 void tank_tick(tank_t *t, float dt, advisor_fn advise) {
     t->clock += dt;
-    /* 240s day/night cycle: 160s day, 80s night; a user light override wins */
-    t->day_phase = fmodf(t->clock, 240.0f) / 240.0f;
-    t->night = t->light_override ? !t->light_on : t->day_phase > 0.6667f;
+    /* 240s day/night cycle: 160s day, 80s night; a user light override wins.
+     * While the keeper is on a setup page or a prompt the cycle waits (the
+     * clock still runs for the animation) and the light stays on. */
+    if (t->hold_light) t->held_s += dt;
+    t->day_phase = fmodf(t->clock - t->held_s, 240.0f) / 240.0f;
+    t->night = t->light_override ? !t->light_on : !t->hold_light && t->day_phase > 0.6667f;
 
     touch_tick(t, dt);
 
