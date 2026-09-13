@@ -990,7 +990,7 @@ void render_brightness_row(uint16_t *fb, int stride, int pct) {
         rect_fill(&c, x + i * 30, BRIGHT_ROW_Y + 14 - h, 22, h, pct >= lv[i] ? 0x9fd8e2 : 0x2a3f45);
     }
     char buf[8]; snprintf(buf, sizeof buf, "%d%%", pct);
-    draw_text(&c, x + 3 * 30 + 8, BRIGHT_ROW_Y, 2, 0xffffff, buf);
+    draw_text(&c, x + 3 * 30 - 2, BRIGHT_ROW_Y, 2, 0xffffff, buf);   /* 6 px off the last bar, clear of CLOSE at 100% */
 }
 bool render_brightness_row_hit(float x, float y) {
     /* the row's x span (caption, bars, number: 40..~330, with slop) and the
