@@ -39,7 +39,6 @@ no toolchain needed.
 - [Try it: firmware in QEMU](#try-it-firmware-in-qemu)
 - [Install from your browser](#install-from-your-browser)
 - [Run it on real hardware](#run-it-on-real-hardware)
-- [The director console](#the-director-console)
 - [Train your own](#train-your-own)
 - [Layout](#layout)
 - [Documentation](#documentation)
@@ -254,30 +253,6 @@ explains where every kilobyte goes. The boot log prints a per-stage frame
 profile and per-decision inference timings, so performance work is
 measurable without instruments.
 
-## The director console
-
-For demos, filming, and bench work, the firmware listens for commands on the
-same USB serial port the log comes out of. `tools/director.py` sends one
-line and prints the reply (it needs `pyserial`):
-
-```bash
-tools/director.py hungry 3        # three fish starving, the tank's own feeder held
-tools/director.py hungry          # everyone starving: the ravenous wake-up
-tools/director.py feed 6          # drop pellets on cue
-tools/director.py shadow          # a shadow passes over
-tools/director.py overgrown       # grass to the ceiling, fouled glass
-tools/director.py court           # the courtship tell, fry at the next light-on
-tools/director.py milestones      # the milestones page
-tools/director.py reset           # the reset prompt (then `reset yes` or `reset no`)
-tools/director.py state           # every drive, the garden, what's staged
-tools/director.py help            # the full list
-```
-
-Scenes that would rewrite the tank (`fresh`, `stages`, `overgrown`, `court`,
-`arrive`) park the real save first; `restore` brings it back. The console
-sets state the tank already has; the model still decides what the fish do
-with it.
-
 ## Train your own
 
 The whole distillation pipeline is here. `model/gen_traces.py` runs the
@@ -304,14 +279,14 @@ seven-minute prompt check before an overnight run is always worth it.
   shared encoder)
 - `sim/` — the LVGL + SDL2 simulator, its persistence port, and the self-tests
 - `firmware/` — ESP-IDF app: display, touch, battery, IMU, and RTC ports for
-  the Waveshare board, the on-device advisor scheduler, the director
-  console, the QEMU harness, and the partition table
+  the Waveshare board, the on-device advisor scheduler, the QEMU harness, and the
+  partition table
 - `model/` — the frozen [state/goal schema](model/schema.md), trace
   generation, training, evaluation, probes, and the 4-bit export
 - `installer/` — the browser installer page and the vendored ESP Web Tools
   bundle; `tools/make_installer.py` assembles the upload folder
-- `tools/` — the director console client, the icon baker, and the installer
-  assembler
+- `tools/` — the icon baker, the installer assembler, and a serial bench
+  client
 - `assets/icons/` — the pixel-art source for the stats card
 
 ## Documentation
@@ -334,7 +309,7 @@ seven-minute prompt check before an overnight run is always worth it.
 - ✅ Firmware: running on the real board at 25 to 30 fps and 3.6 s per
   decision, with touch, sleep and power-off, auto-rotation, battery gauge
 - ✅ The living tank: growth, arrivals with courtship, trust, the hunger
-  economy, upkeep chores, milestones, the director console, the reset prompt
+  economy, upkeep chores, milestones, the reset prompt
 - ✅ Browser installer: one click from Chrome or Edge, hosted at
   stratobuilds.com
 - 🚧 Next: labels on the milestones page (the renderer has a pixel font
