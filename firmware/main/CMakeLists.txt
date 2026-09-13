@@ -1,4 +1,4 @@
-set(SRCS main.c director.c advisor_llm_esp.c battery_port_axp2101.c imu_port_qmi8658.c)
+set(SRCS main.c director.c brightness.c batlog.c codec_port.c advisor_llm_esp.c battery_port_axp2101.c imu_port_qmi8658.c)
 if(CONFIG_POCKET_TANK_DISPLAY_SH8601)
     list(APPEND SRCS display_port_sh8601.c)
 else()

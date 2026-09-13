@@ -12,10 +12,8 @@ static float frand(const tank_t *t, int fish_idx) {
 goal_t advisor_rules(const tank_t *t, int fish_idx, bool request) {
     const fish_t *f = &t->fish[fish_idx];
     if (!request) return f->goal;            /* rules are synchronous: polls no-op */
-    float food_d, shadow_d = 1e9f;
+    float food_d;
     int food_i = tank_nearest_food(t, f, &food_d);
-    if (t->shadow.active)
-        shadow_d = tank_dist(f->x, f->y, t->shadow.x, t->shadow.y);
     float friend_d;
     tank_nearest_friend(t, fish_idx, &friend_d);
     float r = frand(t, fish_idx);
@@ -24,9 +22,7 @@ goal_t advisor_rules(const tank_t *t, int fish_idx, bool request) {
     g.confidence = 1.0f; g.runner_up = GOAL_COUNT;   /* rules are never torn */
     if (f->goal_age < 2.5f && f->goal.id != GOAL_FLEE_SHADOW) return g;
 
-    if (shadow_d < 70 || (shadow_d < 180 && f->bold < 0.35f)) {
-        g.id = GOAL_FLEE_SHADOW; g.urgency = shadow_d < 70 ? 9 : 7;
-    } else if (f->energy < 2.5f || f->stress > 7.5f ||
+    if (f->energy < 2.5f || f->stress > 7.5f ||
                (f->lazy > 0.55f && f->hunger < 5 && r < 0.35f) ||
                (t->night && f->hunger < 6 && r < 0.5f)) {
         g.id = GOAL_REST; g.urgency = f->energy < 1.5f ? 7 : 4;

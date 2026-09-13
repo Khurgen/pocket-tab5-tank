@@ -17,4 +17,8 @@ void display_port_sleep(void);
 void display_port_wake(void);
 /* true = present the frame rotated 180 degrees (device held upside down) */
 void display_port_set_inverted(bool inverted);
+/* panel brightness 0..255 (DCS 0x51; the init sequence starts at 255). Kept
+ * across display_port_wake, which re-inits the panel. */
+void    display_port_set_brightness(uint8_t level);
+uint8_t display_port_brightness(void);
 #endif

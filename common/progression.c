@@ -11,7 +11,7 @@
 
 const char *const MS_NAMES[MS_FISH_COUNT] = {
     "arrived", "first meal from you", "first hold-approach", "first dart", "first bubbles",
-    "first reef", "first shadow survived", "first shrug", "first follow",
+    "first reef", "(retired)", "(retired)", "first follow",
     "reached juv", "reached adult", "reached elder",
 };
 const char *const TMS_NAMES[TMS_COUNT] = {
@@ -56,8 +56,6 @@ typedef struct {
 float progression_time_scale = 1.0f;
 
 static float s_age[N_FISH_MAX];      /* seconds of tended life per fish */
-static float s_shrug_t[N_FISH_MAX];  /* seconds holding a non-flee goal with a shadow mid-range */
-static bool  s_threatened[N_FISH_MAX];
 static float s_since_save, s_dirty_since;
 static bool  s_dirty;
 static bool  s_ravenous;             /* begging/frenzy active until everyone's fed / give-up */
@@ -111,7 +109,7 @@ static void do_arrival(tank_t *t) {
         float x0, x1; tank_veg_bed(t, nb, &x0, &x1, NULL, NULL);
         t->fish[slot].x = (x0 + x1) * 0.5f; t->fish[slot].y = TANK_H - 16 - 18;
     }
-    s_age[slot] = 0; s_shrug_t[slot] = 0; s_threatened[slot] = false;
+    s_age[slot] = 0;
     t->fish[slot].ms_bits = MS_ARRIVED;
     if (t->n_fish <= N_FISH_MAX) set_tms(t, POP_TMS[t->n_fish]);
     mark_dirty();
@@ -150,7 +148,7 @@ void progression_stage_arrival(tank_t *t) { (void)t; if (!s_arrival_pending) { s
 void progression_fresh(tank_t *t) {
     tank_new_population(t);          /* a new tank: two FRY, contrasting -
                                       * the keeper watches them grow up */
-    for (int i = 0; i < N_FISH_MAX; i++) { s_age[i] = 0; s_shrug_t[i] = 0; s_threatened[i] = false; }
+    for (int i = 0; i < N_FISH_MAX; i++) s_age[i] = 0;
     t->tank_ms_bits = TMS_PAIR;
     for (int i = 0; i < t->n_fish; i++) { t->fish[i].ms_bits = MS_ARRIVED; apply_growth(&t->fish[i]); }
     s_arrival_pending = false; s_prev_night = t->night;
@@ -197,9 +195,10 @@ void progression_boot(tank_t *t) {
         fish_t *f = &t->fish[i];
         f->trust = s->trust; f->bold0 = s->bold0; f->sociable0 = s->sociable0;
         f->hunger = s->hunger; f->energy = s->energy; f->stress = s->stress; f->curiosity = s->curiosity;
-        f->eaten = s->eaten; f->eaten_player = s->eaten_player; f->ms_bits = s->ms_bits;
+        f->eaten = s->eaten; f->eaten_player = s->eaten_player;
+        f->ms_bits = s->ms_bits & ~MS_RETIRED_MASK;   /* the shadow milestones, gone with it */
         f->rest_dx = s->rest_dx; f->rest_dy = s->rest_dy;
-        s_age[i] = s->age_s; s_shrug_t[i] = 0; s_threatened[i] = false;
+        s_age[i] = s->age_s;
         t->n_fish = i + 1;
     }
     t->light_override = sv.light_override; t->light_on = sv.light_on;
@@ -246,17 +245,6 @@ void progression_tick(tank_t *t, float dt) {
         if (f->goal.id == GOAL_VISIT_BUBBLES && tank_dist(f->x, f->y, t->bubble_x, t->bubble_y) < 90) set_ms(f, MS_FIRST_BUBBLES);
         if (f->goal.id == GOAL_INSPECT_REEF && tank_dist(f->x, f->y, t->reef_x, t->reef_y) < 90) set_ms(f, MS_FIRST_REEF);
         if (f->goal.id == GOAL_FOLLOW_FRIEND && f->goal_age > 2.0f) set_ms(f, MS_FIRST_FOLLOW);
-        if (t->shadow.active) {
-            float sd = tank_dist(f->x, f->y, t->shadow.x, t->shadow.y);
-            if (sd < 115) s_threatened[i] = true;
-            if (sd >= 70 && sd < 180 && f->goal.id != GOAL_FLEE_SHADOW) {
-                s_shrug_t[i] += dt;
-                if (s_shrug_t[i] > 3.0f) set_ms(f, MS_FIRST_SHRUG);   /* in view, chose not to flee */
-            } else s_shrug_t[i] = 0;
-        } else {
-            if (s_threatened[i]) { set_ms(f, MS_FIRST_SHADOW_SURVIVED); s_threatened[i] = false; }
-            s_shrug_t[i] = 0;
-        }
         if (f->goal.id == GOAL_REST) n_rest++;
         if (f->goal.id == GOAL_DART_PLAY) n_dart++;
     }

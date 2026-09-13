@@ -87,7 +87,9 @@ layer only ever *performs* what the model chose, or stages presentations
 
 Eight goals, from the browser prototype this project distills from:
 `seek_food`, `flee_shadow`, `follow_friend`, `inspect_reef`, `visit_bubbles`,
-`explore`, `rest`, `dart_play`. Each fish has four drives (hunger, energy,
+`explore`, `rest`, `dart_play`. (The roaming shadow that `flee_shadow` answered
+was removed from the tank in September 2026; the token stays in the frozen
+schema and the state line always reads `shadow none`.) Each fish has four drives (hunger, energy,
 stress, curiosity), three personality traits (bold, sociable, lazy), a
 trust score toward you, and a life stage. All of it is in the state line, so
 a bold fish and a shy one answer the same situation differently, and the
@@ -138,14 +140,13 @@ holds off feeding itself while they beg, so the first meal is yours.
 the surface. A sideways stroke that starts on the grass cuts exactly the
 fronds it crosses at the height of your finger; a sweep along the floor mows
 a bed down to nubs. Algae films the glass over hours and a drag across it
-squeegees it clean. Fish like cover: grass calms them, a hidden fish barely
-notices a shadow, and only a tank truly smothered by two beds at the ceiling
-stresses them.
+squeegees it clean. Fish like cover: grass calms them, and only a tank truly
+smothered by two beds at the ceiling stresses them.
 
 **Milestones.** First meal from you, first hold-approach, first dart, first
-shadow survived, first follow, first quiet night, first play session, first
-trimming, first glass cleaning, and more. Tap the open stats card to see the
-milestones page; tap again to close it.
+follow, first quiet night, first play session, first trimming, first glass
+cleaning, and more. Tap the open stats card to see the milestones page; tap
+again to close it.
 
 ![The milestones page](docs/media/sim-milestones.png)
 
@@ -185,7 +186,7 @@ from the top edge to feed, click a fish for its stats card, click the card
 for milestones, hold the button to rest a finger on the glass, three quick
 clicks to startle, two to toggle the light, drag across the glass to wipe
 algae, and stroke sideways through a bed to trim it. Keys: **F** feed at the
-mouse, **S** cast a shadow, **N** light, **A** auto light, **L** switch
+mouse, **N** light, **A** auto light, **L** switch
 between the rule stub and the LLM brain, **U** overlays, **M** milestones,
 **X** the reset prompt, **R** force an arrival, **Z** jump through seven
 hours of sleep, **G** grow the grass and algae now, **Q** quit.

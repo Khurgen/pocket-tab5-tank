@@ -24,4 +24,5 @@ bool touch_port_confirm_up(void);
 float touch_port_confirm_frac(void);           /* time left before it gives up, 1 -> 0 */
 int  touch_port_confirm_take(void);            /* +1 / -1 once, then 0 */
 bool touch_port_pressed_since(int64_t us);     /* a finger is down and landed after `us` */
+bool touch_port_take_brightness_tap(void);     /* one-shot: the milestones page's brightness row was tapped */
 #endif

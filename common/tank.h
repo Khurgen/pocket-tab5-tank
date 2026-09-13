@@ -39,7 +39,7 @@
  * Vegetation is a comfort system (2026-09-04 rework): growth IS height - a
  * bed at growth g stands g of the way from the floor to the surface, so only
  * the tank ceiling limits it. Fish like cover: any canopy calms them (more
- * inside it - a hiding place halves a shadow's press), and NO cover anywhere
+ * inside it), and NO cover anywhere
  * (every bed scalped) is a mild unease. Only a tank being truly smothered
  * presses back: two or more beds past VEG_SMOTHER height. Stress is already
  * in the advisor's schema, so the model reacts without any schema change. */
@@ -94,10 +94,14 @@ typedef struct {
 enum {
     MS_ARRIVED = 1u << 0,  MS_FIRST_MEAL_FROM_YOU = 1u << 1, MS_FIRST_HOLD_APPROACH = 1u << 2,
     MS_FIRST_DART = 1u << 3, MS_FIRST_BUBBLES = 1u << 4, MS_FIRST_REEF = 1u << 5,
-    MS_FIRST_SHADOW_SURVIVED = 1u << 6, MS_FIRST_SHRUG = 1u << 7, MS_FIRST_FOLLOW = 1u << 8,
+    /* bits 6 and 7 were the shadow milestones (survived / shrugged off);
+     * the shadow was removed 2026-09-13 and the bits stay reserved so old
+     * saves keep their layout - cleared on load, never set, never shown */
+    MS_RETIRED_6 = 1u << 6, MS_RETIRED_7 = 1u << 7, MS_FIRST_FOLLOW = 1u << 8,
     MS_REACHED_JUV = 1u << 9, MS_REACHED_ADULT = 1u << 10, MS_REACHED_ELDER = 1u << 11,
     MS_FISH_COUNT = 12
 };
+#define MS_RETIRED_MASK (MS_RETIRED_6 | MS_RETIRED_7)
 /* tank-level milestone bits */
 enum {
     TMS_PAIR = 1u << 0, TMS_TRIO = 1u << 1, TMS_QUARTET = 1u << 2, TMS_QUINTET = 1u << 3,
@@ -144,17 +148,11 @@ typedef struct {
 typedef struct { float x, y, age; bool alive, from_player; } food_t;
 typedef struct { float x, y, vy, wobble; bool column; } bubble_t;
 
-typedef struct {
-    bool  active;
-    float x, y, heading, speed, size, ttl, cool;
-} shadow_t;
-
 typedef struct tank {
     fish_t   fish[N_FISH_MAX];
     int      n_fish;               /* live fish = fish[0..n_fish-1] */
     food_t   food[MAX_FOOD];
     bubble_t bubble[MAX_BUBBLE];
-    shadow_t shadow;
     float    bubble_x, bubble_y;   /* bubble column anchor */
     float    reef_x, reef_y;
     float    clock;                /* seconds since start */
@@ -234,13 +232,19 @@ typedef struct tank {
  * Called EVERY frame for every live fish. `request` is true when the tank
  * wants a (re)decision: the fish's coarse state signature changed and the
  * minimum interval passed, it hit the idle ceiling, or something urgent
- * happened (shadow closing in, starving with food in view). When false it's
+ * happened (starving with food in view). When false it's
  * a poll: an async advisor returns a completed decision the moment it's
  * ready; otherwise return the fish's current goal unchanged. */
 typedef goal_t (*advisor_fn)(const tank_t *t, int fish_idx, bool request);
 
 #define ADVISOR_MIN_INTERVAL 2.0f   /* s between asks for one fish (signature changed) */
-#define ADVISOR_IDLE_CEILING 9.0f   /* s: re-ask even if nothing changed */
+/* s: re-ask even if nothing changed. 9 s kept the device's LLM core saturated
+ * (a decision every 3.65 s back to back, even with two fish) for answers that
+ * repeat the standing goal ~90% of the time; 45 s (with the calmer signature
+ * in state_signature) leaves the core idle most of the time on battery.
+ * Reactions still come through the 2 s change path - hunger band, food
+ * appearing, night - and the urgent path (2026-09-11). */
+#define ADVISOR_IDLE_CEILING 45.0f   /* 5 fish x 3.65 s per decision at 25 s would still be 70% busy */
 
 void  tank_init(tank_t *t, uint32_t seed);
 /* Population. tank_init leaves the tank empty (n_fish = 0); the progression
@@ -297,7 +301,6 @@ void  tank_feed(tank_t *t, float x, int n);
  * Never alters behavior - the advisor owns every decision. */
 extern int tank_reflex_overrides;
 void  tank_scatter_food(tank_t *t, int n);      /* the tank's own trickle (random x) */
-void  tank_start_shadow(tank_t *t);
 /* upkeep hooks. tank_veg_bed gives bed b's canopy geometry - x span, top y
  * of its tallest frond, frond count - and tank_veg_frond one frond's spine x
  * and segment count, shared by render (what you see) and tank.c physics

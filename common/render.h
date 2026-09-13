@@ -83,4 +83,11 @@ void render_milestones(const tank_t *t, uint16_t *fb, int stride);
 void render_confirm_reset(uint16_t *fb, int stride, float frac);
 int  render_confirm_hit(float x, float y);
 
+/* Brightness row (2026-09-11) at the foot of the milestones page: a caption,
+ * three rising bars and the percentage. The device's panel level (100 / 60 /
+ * 30 %) - a tap on the row cycles it instead of closing the page
+ * (render_brightness_row_hit). The sim draws it too, for parity. */
+void render_brightness_row(uint16_t *fb, int stride, int pct);
+bool render_brightness_row_hit(float x, float y);
+
 #endif

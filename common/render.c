@@ -1,12 +1,13 @@
 /* render.c — porthole look: deep gradient water, AMOLED-black floor, procedural
  * fish (body polygon + animated tail + earned markings), bubbles, reef fronds
- * that grow with the tank's milestones, roaming shadow. Everything is drawn
+ * that grow with the tank's milestones. Everything is drawn
  * into a bare RGB565 buffer; night dims the palette. */
 #include "render.h"
 #include "icons.h"
 #include "progression.h"
 #include <math.h>
 #include <string.h>
+#include <stdio.h>
 
 #define TAU 6.2831853f
 
@@ -177,7 +178,6 @@ static float g_roll[N_FISH_MAX] = { 1, 1, 1, 1, 1, 1 };
 
 /* The fish's body is a ledger of its life: stage sets size (tank.c) and fin
  * elaboration, hunger drains saturation, and earned markings stay:
- *   shadow survived -> an extra stripe; shrugged a shadow off -> a brow mark;
  *   elder -> a longer tail and a dorsal crest. All procedural, zero flash. */
 static void draw_fish(ctx_t *c, const tank_t *t, const fish_t *f, int idx) {
     float tail = sinf(t->clock * (8 + f->speed * 0.055f) + f->wander) *
@@ -218,16 +218,11 @@ static void draw_fish(ctx_t *c, const tank_t *t, const fish_t *f, int idx) {
         for (int i = 0; i < 10; i++) { xs[i] = TX(blx[i], bly[i]); ys[i] = TY(blx[i], bly[i]); }
         fill_poly(c, xs, ys, 10, body);
     }
-    /* accent stripes (height tracks the roll so they flatten with the body);
-       a fourth stripe is the mark of a shadow survived */
+    /* accent stripes (height tracks the roll so they flatten with the body) */
     float rmag = roll < 0 ? -roll : roll;
-    int first = (f->ms_bits & MS_FIRST_SHADOW_SURVIVED) ? -2 : -1;
-    for (int i = first; i <= 1; i++)
+    for (int i = -1; i <= 1; i++)
         fill_ellipse(c, TX(-3 + i * 6, 0), TY(-3 + i * 6, 0),
                      2, 1.5f + 3.5f * rmag, f->accent, 150);
-    /* brow mark: shrugged off a shadow */
-    if (f->ms_bits & MS_FIRST_SHRUG)
-        fill_ellipse(c, TX(9, -6.5f), TY(9, -6.5f), 2.4f, 1.0f, f->accent, 200);
     /* eye — closed to a lid line when asleep (resting at night) */
     if (t->night && f->goal.id == GOAL_REST) {
         fill_ellipse(c, TX(9, -3), TY(9, -3), 2.2f, 0.7f, 0x9fb4b8, 200);
@@ -559,15 +554,6 @@ void render_tank(const tank_t *t, uint16_t *fb, int stride) {
        own vignette and untags itself, so the fish rects below skip it) */
     for (int b = 0; b < VEG_BEDS; b++)
         draw_veg(&c, t, b, veg_seed[b], 1, cached);
-    /* shadow overlay */
-    if (t->shadow.active) {
-        float fade = t->shadow.ttl < 2.2f ? t->shadow.ttl / 2.2f : 1.0f;
-        fill_ellipse(&c, t->shadow.x, t->shadow.y,
-                     t->shadow.size, t->shadow.size * 0.34f, 0x00070a,
-                     (int)(120 * fade));
-        DYN_RECT((int)(t->shadow.x - t->shadow.size) - 2, (int)(t->shadow.y - t->shadow.size * 0.34f) - 2,
-                 (int)(t->shadow.x + t->shadow.size) + 2, (int)(t->shadow.y + t->shadow.size * 0.34f) + 2);
-    }
     PROF_ADD(4, p0);
     /* porthole vignette: darken corners toward AMOLED black. With a scene
        cache the full-frame pass is baked into the scene and only the dynamic
@@ -789,7 +775,7 @@ static void card_draw(ctx_t c, const tank_t *t, int fish_idx) {
 
     /* who they are: spectrum sliders, revealed by behaviour you have seen
        this fish do (docs/progression.md habits) */
-    bool saw_bold = f->ms_bits & (MS_FIRST_DART | MS_FIRST_SHRUG);
+    bool saw_bold = f->ms_bits & MS_FIRST_DART;
     bool saw_social = f->ms_bits & MS_FIRST_FOLLOW;
     bool saw_curious = f->ms_bits & (MS_FIRST_REEF | MS_FIRST_BUBBLES);
     slider(&c, X + 8, Y + 152, W - 16, f->bold,             0xffffff, &icon_shy,      &icon_bold,    saw_bold);
@@ -843,9 +829,10 @@ void render_milestones(const tank_t *t, uint16_t *fb, int stride) {
         fill_ellipse(&c, X0 - 18, y, 7, 7, f->color, 255);               /* identity swatch */
         for (int s = 0; s <= (int)f->stage; s++)                          /* stage pips under it */
             fill_ellipse(&c, X0 - 27 + s * 6, y + 12, 1.8f, 1.8f, f->accent, 255);
-        for (int m = 0; m < MS_FISH_COUNT; m++) {
+        for (int m = 0, col = 0; m < MS_FISH_COUNT; m++) {
+            if (MS_RETIRED_MASK & (1u << m)) continue;   /* the shadow's two, no column */
             bool on = f->ms_bits & (1u << m);
-            int x = X0 + 10 + m * PIP;
+            int x = X0 + 10 + col++ * PIP;
             if (on) { fill_ellipse(&c, x, y, 7, 7, f->color, 255); fill_ellipse(&c, x, y, 3, 3, f->accent, 255); }
             else ring(&c, x, y, 6, 0x2a3f45);
         }
@@ -915,8 +902,9 @@ static const uint8_t FONT5X7[][7] = {
     { 0x0c, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00 }, /* ' */
     { 0x01, 0x02, 0x02, 0x04, 0x08, 0x08, 0x10 }, /* / */
     { 0x00, 0x04, 0x04, 0x1f, 0x04, 0x04, 0x00 }, /* + */
+    { 0x19, 0x1a, 0x02, 0x04, 0x08, 0x0b, 0x13 }, /* % */
 };
-static const char FONT_CHARS[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789?!.,-:'/+";
+static const char FONT_CHARS[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789?!.,-:'/+%";
 static const uint8_t *glyph(char ch) {
     if (ch >= 'a' && ch <= 'z') ch -= 'a' - 'A';
     const char *p = ch ? strchr(FONT_CHARS, ch) : NULL;
@@ -983,4 +971,28 @@ int render_confirm_hit(float x, float y) {
     if (x >= RENDER_CONFIRM_NO_X - m  && x < RENDER_CONFIRM_NO_X  + RENDER_CONFIRM_BTN_W + m) return -1;
     if (x >= RENDER_CONFIRM_YES_X - m && x < RENDER_CONFIRM_YES_X + RENDER_CONFIRM_BTN_W + m) return 1;
     return 0;
+}
+
+/* ---- brightness row (milestones page foot) ---- */
+#define BRIGHT_ROW_Y 326
+void render_brightness_row(uint16_t *fb, int stride, int pct) {
+    ctx_t c = ctx_full(fb, stride, 1.0f);
+    const char *label = "BRIGHTNESS";
+    draw_text(&c, 40, BRIGHT_ROW_Y, 2, 0x9fd8e2, label);
+    int x = 40 + text_w(label, 2) + 26;
+    static const int lv[3] = { 30, 60, 100 };
+    for (int i = 0; i < 3; i++) {                     /* three rising bars, lit up to the level */
+        int h = 6 + i * 4;
+        rect_fill(&c, x + i * 30, BRIGHT_ROW_Y + 14 - h, 22, h, pct >= lv[i] ? 0x9fd8e2 : 0x2a3f45);
+    }
+    char buf[8]; snprintf(buf, sizeof buf, "%d%%", pct);
+    draw_text(&c, x + 3 * 30 + 12, BRIGHT_ROW_Y, 2, 0xffffff, buf);
+}
+bool render_brightness_row_hit(float x, float y) {
+    /* the row's x span (caption, bars, number: 40..~330, with slop) and the
+       whole strip below the tank's milestone row down to the glass edge -
+       the row sits where the bezel curves and finger reports drift there.
+       NOT the full width: a tap low on the RIGHT still closes the page (a
+       first version took the whole band and a closing tap cycled the level). */
+    return x >= 24 && x < 340 && y >= 296;
 }

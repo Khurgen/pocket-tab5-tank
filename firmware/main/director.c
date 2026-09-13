@@ -12,6 +12,11 @@
 #include "progression.h"
 #include "director.h"
 #include "touch_port.h"
+#include "battery_port.h"
+#include "display_port.h"
+#include "brightness.h"
+#include "batlog.h"
+#include "codec_port.h"
 #include "esp_timer.h"
 #include "nvs.h"
 #if CONFIG_SOC_USB_SERIAL_JTAG_SUPPORTED
@@ -106,27 +111,33 @@ static void show_state(const tank_t *t) {
     int pellets = 0, cells = 0;
     for (int i = 0; i < MAX_FOOD; i++) pellets += t->food[i].alive;
     for (int i = 0; i < ALGAE_CELLS; i++) cells += t->algae[i] > 0;
-    ESP_LOGI(TAG, "pellets %d | trickle %s | ravenous %d | %s%s | veg %.2f %.2f %.2f | algae cells %d/%d | shadow %d | courting %s%s%s%s | arrival %s",
+    ESP_LOGI(TAG, "pellets %d | trickle %s | ravenous %d | %s%s | veg %.2f %.2f %.2f | algae cells %d/%d | courting %s%s%s%s | arrival %s",
              pellets, t->trickle_off ? "OFF" : "on", (int)t->ravenous,
              t->night ? "night" : "day", t->light_override ? " (manual)" : "",
              t->veg_growth[0], t->veg_growth[1], t->veg_growth[2], cells, ALGAE_CELLS,
-             (int)t->shadow.active,
              t->courting ? t->fish[t->court_a].name : "no", t->courting ? "+" : "",
              t->courting ? t->fish[t->court_b].name : "", t->court_active > 0 ? " (circling)" : "",
              progression_arrival_pending() ? "staged" : "-");
     ESP_LOGI(TAG, "nursery bed %d (a bed >= %.2f) | parked real tank: %s", tank_nursery_bed(t), (double)VEG_NURSERY,
              nvs_has("bk") ? "YES (restore)" : "no (this IS the real tank)");
+    float bf; bool chg;
+    if (battery_port_read(&bf, &chg))
+        ESP_LOGI(TAG, "battery %.0f%% %s, VBAT %d mV | brightness %d/255 (level %d%%)", bf * 100, chg ? "charging" : "on battery",
+                 battery_port_vbat_mv(), display_port_brightness(), brightness_level());
 }
 
 static void help(void) {
     ESP_LOGI(TAG, "help | state | hungry [N] [level=9] (N fish starving, water cleared, trickle held)");
     ESP_LOGI(TAG, "fed [level=1] (everyone full, trickle back on) | set <hunger|energy|stress|curiosity|trust> <0-10> [fish name|idx]");
     ESP_LOGI(TAG, "feed [n=3] [x] (keeper drops pellets; trickle back on) | trickle on|off | pellets clear");
-    ESP_LOGI(TAG, "shadow | algae <steps|clear> | veg <bed 0-2|all> <0.03-1> | light (toggle) | auto | sleep <hours> | save");
+    ESP_LOGI(TAG, "algae <steps|clear> | veg <bed 0-2|all> <0.03-1> | light (toggle) | auto | sleep <hours> | save");
     ESP_LOGI(TAG, "STAGED TANKS (the real one is parked first): fresh (new tank, two fry) | stages (fry juv adult elder) | stage <fish|all> <fry|juv|adult|elder>");
     ESP_LOGI(TAG, "stash (park the real tank now) | restore (bring it back) | age <fish> <hours>");
     ESP_LOGI(TAG, "milestones [off] (the page, on cue; on the device: tap the open stats card)");
     ESP_LOGI(TAG, "reset (the keeper's confirm prompt, as BOOT + tap opens it) | reset yes|no (answer it here) - YES WIPES EVERY SAVE, a parked tank too");
+    ESP_LOGI(TAG, "pmic (AXP2101 dump) | pmic on|off <aldo1|aldo2..4|bldo1|bldo2|cpusldo|dcdc2..5|dldo1|dldo2> (experiments; boot trims the unused ones) | pmic trim");
+    ESP_LOGI(TAG, "bright <0-255> (panel now; not saved) | level 100|60|30 (the keeper's setting, saved)");
+    ESP_LOGI(TAG, "batlog [clear] (the tank's own battery log: SoC/VBAT every 5 min awake, 30 min asleep, mA derived - read it after a night on battery) | codec (ES8311 registers)");
     ESP_LOGI(TAG, "overgrown (grass to the ceiling + fouled glass; fish stress climbs) | court (pair circles the reef now and every ~minute; fry at the next light-on) | arrive (the fry, now)");
 }
 
@@ -175,8 +186,6 @@ static void run(tank_t *t, char *line) {
         ESP_LOGI(TAG, "trickle %s", t->trickle_off ? "OFF" : "on");
     } else if (!strcmp(c, "pellets")) {
         clear_pellets(t); ESP_LOGI(TAG, "pellets cleared");
-    } else if (!strcmp(c, "shadow")) {
-        tank_start_shadow(t); ESP_LOGI(TAG, "shadow launched");
     } else if (!strcmp(c, "algae") && argc > 1) {
         if (!strcmp(argv[1], "clear")) { memset(t->algae, 0, sizeof t->algae); ESP_LOGI(TAG, "glass clean"); }
         else { int s = atoi(argv[1]); tank_grow_algae(t, s); ESP_LOGI(TAG, "algae +%d steps", s); }
@@ -197,6 +206,22 @@ static void run(tank_t *t, char *line) {
     } else if (!strcmp(c, "milestones")) {
         bool on = argc < 2 || strcmp(argv[1], "off");
         touch_port_show_milestones(on); ESP_LOGI(TAG, "milestones page %s", on ? "up (a tap closes it)" : "closed");
+    } else if (!strcmp(c, "pmic")) {
+        if (argc > 2 && (!strcmp(argv[1], "on") || !strcmp(argv[1], "off")))
+            ESP_LOGI(TAG, "rail %s %s: %s", argv[2], argv[1], battery_port_set_rail(argv[2], !strcmp(argv[1], "on")) ? "ok" : "REFUSED");
+        else if (argc > 1 && !strcmp(argv[1], "trim")) battery_port_trim_rails();
+        else battery_port_dump();
+    } else if (!strcmp(c, "bright") && argc > 1) {
+        int v = atoi(argv[1]); if (v < 0) v = 0; if (v > 255) v = 255;
+        display_port_set_brightness((uint8_t)v);
+        ESP_LOGI(TAG, "brightness %d/255", v);
+    } else if (!strcmp(c, "codec")) {
+        codec_port_dump();
+    } else if (!strcmp(c, "batlog")) {
+        if (argc > 1 && !strcmp(argv[1], "clear")) { batlog_clear(); ESP_LOGI(TAG, "battery log cleared"); }
+        else batlog_print();
+    } else if (!strcmp(c, "level") && argc > 1) {
+        if (!brightness_set_level(atoi(argv[1]))) ESP_LOGW(TAG, "level is 100, 60 or 30");
     } else if (!strcmp(c, "reset")) {
         if (argc < 2) { touch_port_confirm_open(); return; }
         int ans = !strcasecmp(argv[1], "yes") ? 1 : !strcasecmp(argv[1], "no") ? -1 : 0;

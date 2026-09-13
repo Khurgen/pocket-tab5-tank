@@ -165,7 +165,6 @@ void tank_init(tank_t *t, uint32_t seed) {
         b->vy = tank_randf(t, 14, 30);
         b->wobble = tank_randf(t, 0, TAU);
     }
-    t->shadow.active = false; t->shadow.cool = 15;
     t->bubble_x = TANK_W * 0.8f;  t->bubble_y = TANK_H * 0.5f;   /* matches gen_traces.py */
     t->reef_x   = TANK_W * 0.15f; t->reef_y   = TANK_H * 0.85f;
     t->clock = 0; t->day_phase = 0; t->night = false;
@@ -607,7 +606,7 @@ void tank_tick_sleep(tank_t *t, float seconds) {
      * canopy and film on the glass is the morning chore */
     veg_grow(t, seconds / VEG_GROW_SLEEP_S);
     /* film steps go through the same accumulator the awake tick uses: the
-     * device drowses in 30 s slices (firmware DROWSE_TICK_US) and
+     * device drowses in 60 s slices (firmware DROWSE_TICK_US) and
      * (int)(30 / 120) is 0 - the truncation that had quietly stopped every
      * bit of algae from forming overnight (2026-09-04). */
     t->algae_acc += seconds;
@@ -615,19 +614,6 @@ void tank_tick_sleep(tank_t *t, float seconds) {
     if (steps > 600) steps = 600;                       /* bounded; the cap rules anyway */
     t->algae_acc -= steps * ALGAE_STEP_SLEEP_S;
     tank_grow_algae(t, steps);
-}
-
-void tank_start_shadow(tank_t *t) {
-    shadow_t *s = &t->shadow;
-    s->active = true;
-    s->size  = tank_randf(t, 77, 127);
-    s->speed = tank_randf(t, 34, 65);
-    s->ttl   = tank_randf(t, 8, 15);
-    int side = (int)tank_randf(t, 0, 3.999f);
-    if (side == 0) { s->x = -100; s->y = tank_randf(t, 40, TANK_H * 0.6f); s->heading = tank_randf(t, -0.16f, 0.26f); }
-    if (side == 1) { s->x = TANK_W + 100; s->y = tank_randf(t, 40, TANK_H * 0.6f); s->heading = 3.14159f + tank_randf(t, -0.26f, 0.16f); }
-    if (side == 2) { s->x = tank_randf(t, 50, TANK_W - 50); s->y = -80; s->heading = 1.5708f + tank_randf(t, -0.32f, 0.32f); }
-    if (side == 3) { s->x = tank_randf(t, 50, TANK_W - 50); s->y = TANK_H + 80; s->heading = -1.5708f + tank_randf(t, -0.32f, 0.32f); }
 }
 
 /* ---- goal → target point + cruise speed (prototype targetForGoal, x0.55) ---- */
@@ -660,8 +646,11 @@ static target_t target_for_goal(tank_t *t, int idx, goal_id_t goal, bool glance)
         break;
     }
     case GOAL_FLEE_SHADOW: {
-        float sx = t->shadow.active ? t->shadow.x : TANK_W * 0.5f;
-        float sy = t->shadow.active ? t->shadow.y : -60;
+        /* the roaming shadow was removed 2026-09-13; the token stays in the
+         * frozen schema (the state line always reads `shadow none`, which the
+         * model was trained on). If it still says flee, the fish bolts away
+         * from the surface centre - the old no-shadow fallback. */
+        float sx = TANK_W * 0.5f, sy = -60;
         float away = atan2f(f->y - sy, f->x - sx);
         tg.x = f->x + cosf(away) * 105; tg.y = f->y + sinf(away) * 83;
         tg.speed = lerpf(51, 83, f->bold);
@@ -774,15 +763,10 @@ static void update_fish(tank_t *t, int idx, float dt) {
      * fish cruises ~10 min on a full tank and a rest refills it in ~35 s. */
     f->energy    = clampf(f->energy + dt * (f->goal.id == GOAL_REST ? 0.30f
                           : -0.012f - f->speed / 4000.0f), 0, 10);
-    /* a canopy is a place to hide: a fish inside one feels a shadow at half
-     * the press, and calms faster (below) */
+    /* a canopy is a place to hide: a fish inside one calms faster (below) */
     bool hidden = false;
     for (int b = 0; b < VEG_BEDS && !hidden; b++)
         hidden = t->veg_growth[b] >= VEG_BARE && veg_inside(t, b, f->x, f->y);
-    if (t->shadow.active) {
-        float sd = tank_dist(f->x, f->y, t->shadow.x, t->shadow.y);
-        if (sd < 115) f->stress = clampf(f->stress + dt * 1.7f * (1 - sd / 126) * (hidden ? 0.5f : 1.0f), 0, 10);
-    }
     /* vegetation comfort (2026-09-04 rework: fish LIKE cover). Three regimes,
      * each seeking its own equilibrium against the natural decay above:
      *  - SMOTHERED: the second-tallest bed past VEG_SMOTHER (85% of the way to
@@ -958,15 +942,26 @@ static void update_fish(tank_t *t, int idx, float dt) {
  * drives plus bucketed sightings. Excludes clock bearings and exact drive
  * digits, which only steer - a change here is a reason to re-decide. */
 static int band3(float v) { return v < 3.5f ? 0 : v < 7 ? 1 : 2; }
-static int dbucket(float d) { return d < 70 ? 0 : d < 180 ? 1 : d < 380 ? 2 : 3; }
 static uint32_t state_signature(const tank_t *t, int idx) {
     const fish_t *f = &t->fish[idx];
-    float fd = 1e9f; tank_nearest_food(t, f, &fd);
-    float sd = t->shadow.active ? tank_dist(f->x, f->y, t->shadow.x, t->shadow.y) : 1e9f;
-    int wall = f->x < 70 || f->x > TANK_W - 70 || f->y < 70 || f->y > TANK_H - 70;
+    /* 2026-09-11 (the battery pass): the device's LLM core was saturated by
+     * this gate, not by the idle ceiling - measured in the sim at 25 fps,
+     * 2 fish: food distance flipped 6.3x per fish-minute (every bucket a
+     * sinking pellet crossed), the (since removed) roaming shadow's distance
+     * 5.8x, the wall flag 4x, against 0.4 for hunger. So the twitchy fields
+     * are now events:
+     *  food   - only for a fish that could want it (not full): none / in the
+     *           tank / within reach. A pellet appearing, or coming close, is a
+     *           reason to re-decide; its every metre of sinking is not.
+     *  wall   - dropped: it is steering, and the state line still says
+     *           near/clear whenever a decision is made for another reason.
+     * The model sees the exact distances in its state line either way; this
+     * only decides WHEN it is asked. */
+    float fd = 1e9f; int fi = tank_nearest_food(t, f, &fd);
+    int food = (fi < 0 || band3(f->hunger) == 0) ? 0 : fd < 70 ? 2 : 1;
     return (uint32_t)band3(f->hunger) | (uint32_t)band3(f->energy) << 2 | (uint32_t)band3(f->stress) << 4
-         | (uint32_t)dbucket(fd) << 6 | (uint32_t)dbucket(sd) << 8 | (uint32_t)wall << 10
-         | (uint32_t)t->night << 11 | (uint32_t)band3(f->curiosity) << 12;
+         | (uint32_t)food << 6
+         | (uint32_t)t->night << 10 | (uint32_t)band3(f->curiosity) << 11;
 }
 
 void tank_tick(tank_t *t, float dt, advisor_fn advise) {
@@ -1029,26 +1024,11 @@ void tank_tick(tank_t *t, float dt, advisor_fn advise) {
         }
     }
 
-    /* shadow roams / respawns */
-    shadow_t *s = &t->shadow;
-    if (s->active) {
-        s->ttl -= dt;
-        s->x += cosf(s->heading) * s->speed * dt;
-        s->y += sinf(s->heading) * s->speed * dt;
-        if (s->ttl <= 0 || s->x < -150 || s->x > TANK_W + 150 || s->y < -130 || s->y > TANK_H + 130) {
-            s->active = false;
-            s->cool = tank_randf(t, 24, 48);
-        }
-    } else {
-        s->cool -= dt;
-        if (s->cool <= 0) tank_start_shadow(t);
-    }
-
     /* advisor: polled every frame (async decisions land the moment they're
      * ready). A (re)decision is REQUESTED need-based, not on a fixed cadence:
      * the coarse signature changed and ADVISOR_MIN_INTERVAL passed, or the
-     * idle ceiling hit, or something urgent (shadow closing, starving with
-     * food in view). Effective cadence therefore scales with how much is
+     * idle ceiling hit, or something urgent (starving with food in view).
+     * Effective cadence therefore scales with how much is
      * happening, not with how many fish live here. The start index rotates
      * so no slot is structurally favoured when several fish ask at once. */
     if (advise && t->n_fish > 0) {
@@ -1056,12 +1036,10 @@ void tank_tick(tank_t *t, float dt, advisor_fn advise) {
             int i = (t->ask_rr + k) % t->n_fish;
             fish_t *f = &t->fish[i];
             uint32_t sig = state_signature(t, i);
-            bool urgent = (s->active && f->goal.id != GOAL_FLEE_SHADOW &&
-                           tank_dist(f->x, f->y, s->x, s->y) < 90 && f->goal_age > 0.5f)
-                          /* prototype's urgent path: starving with food in view
-                           * gets asked NOW instead of waiting its turn */
-                          || (f->hunger > 8.0f && f->goal.id != GOAL_SEEK_FOOD &&
-                              f->goal_age > 0.8f && tank_nearest_food(t, f, 0) >= 0);
+            /* prototype's urgent path: starving with food in view gets
+             * asked NOW instead of waiting its turn */
+            bool urgent = f->hunger > 8.0f && f->goal.id != GOAL_SEEK_FOOD &&
+                          f->goal_age > 0.8f && tank_nearest_food(t, f, 0) >= 0;
             bool changed = sig != f->sig && f->ask_age > ADVISOR_MIN_INTERVAL;
             bool idle = f->ask_age > ADVISOR_IDLE_CEILING;
             bool want = changed || idle || (urgent && f->ask_age > 0.5f);

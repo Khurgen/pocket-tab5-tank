@@ -2,7 +2,7 @@
  * ESP32 AMOLED (landscape). This is the only platform-specific file; tank.c,
  * advisor.c and render.c compile unchanged for firmware.
  *
- *   ./fishsim              run the tank (keys: F feed at the mouse x, S shadow,
+ *   ./fishsim              run the tank (keys: F feed at the mouse x,
  *                          N light, L brain, U overlays, M milestones view,
  *                          X reset prompt (device: hold BOOT + tap the glass),
  *                          R force an arrival (debug), A auto-light, Q quit;
@@ -75,7 +75,7 @@ static int selftest(void) {
     render_set_scene_cache(scene);
     render_tank(&tank, fb, TANK_W);               /* renderer must not crash */
     render_stats_card(&tank, 0, fb, TANK_W);
-    render_milestones(&tank, fb, TANK_W);
+    render_milestones(&tank, fb, TANK_W); render_brightness_row(fb, TANK_W, 100);
     render_confirm_reset(fb, TANK_W, 0.5f);
     int eaten = 0, distinct = 0;
     for (int i = 0; i < tank.n_fish; i++) eaten += tank.fish[i].eaten;
@@ -191,7 +191,6 @@ static int selftest_sleep(void) {
     for (int step = 1; step <= 600; step++) {      /* 10 s awake */
         tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
         progression_tick(&tank, 1.0f / 60.0f);
-        tank.shadow.active = false; tank.shadow.cool = 999;   /* deterministic test */
         if (step == 120 && !tank.ravenous) { printf("FAIL: not ravenous after starving sleep\n"); return 1; }
     }
     float avg_y = 0; int food_n = 0;
@@ -209,7 +208,6 @@ static int selftest_sleep(void) {
                                                                      then serves the other */
         tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
         progression_tick(&tank, 1.0f / 60.0f);
-        tank.shadow.active = false; tank.shadow.cool = 999;
         if (step <= 30)                               /* within 0.5 s of the drop */
             for (int i = 0; i < tank.n_fish; i++)
                 if (tank.fish[i].hunger > 6.5f && tank.fish[i].target_speed > dash_speed)
@@ -351,27 +349,24 @@ static int selftest_tend(void) {
         }
     }
     if (tank.startled) { printf("FAIL: trimming spooked the tank\n"); return 1; }
-    /* the canopy comfort band, all three regimes (shadow held off) */
+    /* the canopy comfort band, all three regimes */
     fish_t *cf = &tank.fish[0];
     for (int b = 0; b < VEG_BEDS; b++) tank_veg_set(&tank, b, 1.0f);      /* jungle */
     cf->stress = 0;
     for (int i = 0; i < 60 * 30; i++) {
         tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
-        tank.shadow.active = false; tank.shadow.cool = 9999;
     }
     float s_jungle = cf->stress;
     for (int b = 0; b < VEG_BEDS; b++) tank_veg_set(&tank, b, VEG_NUB);   /* scalped bare */
     cf->stress = 0;
     for (int i = 0; i < 60 * 60; i++) {
         tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
-        tank.shadow.active = false; tank.shadow.cool = 9999;
     }
     float s_bare = cf->stress;
     for (int b = 0; b < VEG_BEDS; b++) tank_veg_set(&tank, b, 0.40f);     /* comfortable */
     cf->stress = 5;
     for (int i = 0; i < 60 * 30; i++) {
         tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
-        tank.shadow.active = false; tank.shadow.cool = 9999;
     }
     float s_comfy = cf->stress;
     /* the smother threshold (2026-09-04): TWO beds at 90% is smothered ... */
@@ -379,7 +374,6 @@ static int selftest_tend(void) {
     cf->stress = 0;
     for (int i = 0; i < 60 * 60; i++) {
         tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
-        tank.shadow.active = false; tank.shadow.cool = 9999;
     }
     float s_two = cf->stress;
     /* ... but ONE bed at the ceiling with the others tall (under 85%) is
@@ -388,7 +382,6 @@ static int selftest_tend(void) {
     cf->stress = 5; cf->x = TANK_W * 0.5f; cf->y = 60;   /* open water, not hidden */
     for (int i = 0; i < 60 * 8; i++) {
         tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
-        tank.shadow.active = false; tank.shadow.cool = 9999;
         cf->x = TANK_W * 0.5f; cf->y = 60; cf->goal.id = GOAL_EXPLORE;   /* not resting: base decay only */
     }
     float s_one = cf->stress;
@@ -396,7 +389,6 @@ static int selftest_tend(void) {
     cf->stress = 5;
     for (int i = 0; i < 60 * 8; i++) {
         tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
-        tank.shadow.active = false; tank.shadow.cool = 9999;
         cf->x = TANK_W * 0.5f; cf->y = 60; cf->goal.id = GOAL_EXPLORE;
     }
     float s_open = cf->stress;
@@ -442,13 +434,11 @@ static int selftest_tend(void) {
     f->trust = 9; f->hunger = 1; f->energy = 10; f->stress = 0;
     f->goal.id = GOAL_EXPLORE; f->goal.urgency = 2;
     tank.ravenous = false;              /* isolate the hold reflex (no progression_tick here) */
-    tank.shadow.active = false; tank.shadow.cool = 9999;
     f->x = 200; f->y = 200; float hx = 290, hy = 200;
     float d_early = -1, d_late = -1;
     for (int step = 1; step <= 60 * 8; step++) {
         tank_touch_hold(&tank, hx, hy);
         tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
-        tank.shadow.active = false; tank.shadow.cool = 9999;
         f->hunger = 1;                                  /* keep the veto out of this leg */
         if (step == 60 * 2) d_early = tank_dist(f->x, f->y, hx, hy);
         if (step == 60 * 8) d_late = tank_dist(f->x, f->y, hx, hy);
@@ -462,7 +452,6 @@ static int selftest_tend(void) {
     for (int step = 1; step <= 60 * 8; step++) {
         tank_touch_hold(&tank, hx, hy);
         tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
-        tank.shadow.active = false; tank.shadow.cool = 9999;
         f->hunger = 9.4f;
         for (int i = 0; i < MAX_FOOD; i++) tank.food[i].alive = false;
     }
@@ -491,6 +480,7 @@ static int  selected_fish = -1;      /* click a fish for its stat card */
 static bool ui_visible = true;       /* U toggles all overlays */
 static bool milestones_view = false; /* M toggles the milestones screen */
 static bool confirm_view = false;    /* X: the reset prompt (YES wipes the save) */
+static int  sim_bright = 100;        /* the milestones page's brightness row (device setting; cosmetic here) */
 static uint32_t confirm_ms;          /* when it opened; it gives up after CONFIRM_MS */
 #define CONFIRM_MS 20000
 
@@ -512,7 +502,7 @@ static void frame_cb(lv_timer_t *timer) {
     if (dt > 0.1f) dt = 0.1f;                     /* window drag pause */
     tank_tick(&tank, dt, llm_active ? advisor_llm : advisor_rules);
     progression_tick(&tank, dt);
-    if (milestones_view) render_milestones(&tank, canvas_buf, TANK_W);
+    if (milestones_view) { render_milestones(&tank, canvas_buf, TANK_W); render_brightness_row(canvas_buf, TANK_W, sim_bright); }
     else {
         render_tank(&tank, canvas_buf, TANK_W);
         if (ui_visible) {
@@ -625,7 +615,6 @@ static int snapshot(const char *prefix, int seconds) {
     for (int i = 0; i < seconds * 60; i++) {
         tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
         if (i % 400 == 0) tank_feed(&tank, 220, 3);
-        if (i == seconds * 30) tank_start_shadow(&tank);
     }
     /* show the upkeep systems: one overgrown bed, one mid, one trimmed to
      * nubs, and a patchy algae film; park a fish inside the reef canopy so
@@ -646,7 +635,7 @@ static int snapshot(const char *prefix, int seconds) {
     snprintf(path, sizeof path, "%s_card.ppm", prefix); write_ppm(path, fb);
     render_tank(&tank, fb, TANK_W); render_stats_card(&tank, 1, fb, TANK_W);
     snprintf(path, sizeof path, "%s_card1.ppm", prefix); write_ppm(path, fb);   /* partly unrevealed */
-    render_milestones(&tank, fb, TANK_W);
+    render_milestones(&tank, fb, TANK_W); render_brightness_row(fb, TANK_W, 60);
     snprintf(path, sizeof path, "%s_milestones.ppm", prefix); write_ppm(path, fb);
     render_tank(&tank, fb, TANK_W); render_confirm_reset(fb, TANK_W, 0.7f);
     snprintf(path, sizeof path, "%s_confirm.ppm", prefix); write_ppm(path, fb);
@@ -695,14 +684,21 @@ static int selftest_hunger(void) {
     if (mean > 7.0f)    { printf("FAIL: mean hunger %.1f - the school lives hungry\n", mean); return 1; }
     if (mean < 2.5f)    { printf("FAIL: mean hunger %.1f - the trickle feeds them for you\n", mean); return 1; }
     if (peck > 40.0f)   { printf("FAIL: fish are hungry %.0f%% of the time\n", peck); return 1; }
-    /* the keeper feeds: pellets land, the nearest fish should end up full */
-    float before = 0; for (int k = 0; k < tank.n_fish; k++) before += tank.fish[k].hunger / tank.n_fish;
+    /* the keeper feeds a HUNGRY fish: pellets land, it goes and eats (4.3
+       hunger per pellet) and is comfortably fed a minute later. Judged on
+       that fish, not the school's mean: the well-fed rest only ever met a
+       pellet by wandering into one, which depended on how often the rule
+       stub re-rolled their goals - and flipped when the idle re-ask ceiling
+       went 9 -> 25 s in the battery pass (a full fish not eating is right). */
+    tank.fish[0].hunger = 8.0f;
+    float before = tank.fish[0].hunger; int eaten0 = tank.fish[0].eaten;
     tank_feed(&tank, 220, 3); tank_feed(&tank, 260, 3);
     for (int i = 0; i < (int)(60 / dt); i++) { tank_tick(&tank, dt, advisor_rules); progression_tick(&tank, dt); }
-    float after = 0, hmin = 10;
-    for (int k = 0; k < tank.n_fish; k++) { after += tank.fish[k].hunger / tank.n_fish; if (tank.fish[k].hunger < hmin) hmin = tank.fish[k].hunger; }
-    printf("hunger: keeper drops 6 pellets: mean %.1f -> %.1f a minute later (fullest fish %.1f)\n", before, after, hmin);
-    if (after >= before || hmin > 3.0f) { printf("FAIL: the keeper's feeding didn't fill anyone\n"); return 1; }
+    float after = tank.fish[0].hunger, hmin = 10;
+    for (int k = 0; k < tank.n_fish; k++) if (tank.fish[k].hunger < hmin) hmin = tank.fish[k].hunger;
+    printf("hunger: keeper drops 6 pellets for hungry %s: %d eaten within a minute, hunger %.1f -> %.1f (fullest fish %.1f)\n",
+           tank.fish[0].name, tank.fish[0].eaten - eaten0, before, after, hmin);
+    if (tank.fish[0].eaten - eaten0 < 1 || after >= 5.0f) { printf("FAIL: the keeper's feeding didn't fill the hungry fish\n"); return 1; }
     /* a meal should LAST: the fullest fish stays under 7 for at least 4 minutes */
     int idx = 0; for (int k = 0; k < tank.n_fish; k++) if (tank.fish[k].hunger < tank.fish[idx].hunger) idx = k;
     for (int i = 0; i < (int)(4 * 60 / dt); i++) { tank_tick(&tank, dt, advisor_rules); progression_tick(&tank, dt); }
@@ -819,7 +815,7 @@ int main(int argc, char **argv) {
     last_ms = SDL_GetTicks();
     lv_timer_create(frame_cb, 16, NULL);
 
-    bool fdown = false, sdown = false, ndown = false, ldown = false;
+    bool fdown = false, ndown = false, ldown = false;
     bool udown = false, mdown = false, mkdown = false, rdown = false, zdown = false, gdown = false, xdown = false;
     uint32_t press_ms = 0; int press_x = 0, press_y = 0;
     float press_fx[N_FISH_MAX] = {0}, press_fy[N_FISH_MAX] = {0};
@@ -852,7 +848,11 @@ int main(int argc, char **argv) {
                     else printf("reset prompt: NO, tank kept\n");
                 }
             }
-            else if (milestones_view) { milestones_view = false; }
+            else if (milestones_view) {
+                if (render_brightness_row_hit((float)press_x, (float)press_y))
+                    sim_bright = sim_bright == 100 ? 60 : sim_bright == 60 ? 30 : 100;   /* the row cycles, the page stays */
+                else milestones_view = false;
+            }
             else if (now_ms - press_ms < 350 && dx * dx + dy * dy < 24 * 24) {
                 /* same hit test as the device: 38 px against the press-time
                    fish snapshot AND the current position, whichever is closer */
@@ -900,14 +900,13 @@ int main(int argc, char **argv) {
         gdown = k[SDL_SCANCODE_G];
         if (k[SDL_SCANCODE_Q] || k[SDL_SCANCODE_ESCAPE]) { progression_save(&tank); break; }
         if (k[SDL_SCANCODE_F] && !fdown) tank_feed(&tank, (float)mx, 3);
-        if (k[SDL_SCANCODE_S] && !sdown && !tank.shadow.active) tank_start_shadow(&tank);
         if (k[SDL_SCANCODE_N] && !ndown) tank_toggle_light(&tank);
         if (k[SDL_SCANCODE_A]) tank_light_auto(&tank);
         if (k[SDL_SCANCODE_L] && !ldown && llm_available) {
             llm_active = !llm_active;
             printf("brain: %s\n", llm_active ? "LLM (14M student)" : "rules");
         }
-        fdown = k[SDL_SCANCODE_F]; sdown = k[SDL_SCANCODE_S]; ndown = k[SDL_SCANCODE_N];
+        fdown = k[SDL_SCANCODE_F]; ndown = k[SDL_SCANCODE_N];
         ldown = k[SDL_SCANCODE_L];
         SDL_Delay(wait < 5 ? 5 : (wait > 16 ? 16 : wait));
     }

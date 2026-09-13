@@ -24,6 +24,9 @@
 #include "battery_port.h"
 #include "imu_port.h"
 #include "director.h"
+#include "brightness.h"
+#include "batlog.h"
+#include "codec_port.h"
 #include "progression.h"
 #include "nvs_flash.h"
 #include "rtc_port.h"
@@ -85,17 +88,22 @@ static bool s_btn_armed; static int64_t s_btn_low_since;   /* sleep_button_poll 
 static bool s_btn_used;   /* this press opened the reset prompt: no drowse, no power-off from it */
 
 /* Sleep = drowse (docs/HANDOFF.md): the tank keeps living, slowly. Screen and
- * touch rails cut, then duty-cycled LIGHT sleep - wake ~0.1 s every 30 s to
+ * touch rails cut, then duty-cycled LIGHT sleep - a brief wake every 5 min to
  * advance the fish's slow physiology (tank_tick_sleep: hunger up, energy back,
  * nothing eats), RAM alive throughout, so a BOOT press RESUMES in place
  * instead of rebooting. Waking a tank slept past starving lands in the
  * ravenous begging state until the keeper feeds. The wake press must be a
  * fresh one (never listen while the entry press is still held), and a wake
  * press held >= the long-press threshold goes straight to power-off. */
-#define DROWSE_TICK_US (30LL * 1000000)
+#define DROWSE_TICK_US (300LL * 1000000)  /* was 30 s, then 60; the sleep math takes any slice */
 #define DROWSE_SAVE_US (30LL * 60 * 1000000)
+static int battery_pct(void) { float f; bool c; return battery_port_read(&f, &c) ? (int)(f * 100 + 0.5f) : -1; }
+
+/* panel brightness policy: brightness.c */
 static void enter_sleep(void) {
-    ESP_LOGI(TAG, "sleep: save, panel off, drowse (slow metabolism; BOOT wakes)");
+    int pct0 = battery_pct(), mv0 = battery_port_vbat_mv();
+    ESP_LOGI(TAG, "sleep: save, panel off, drowse (slow metabolism; BOOT wakes) | battery %d%% %d mV", pct0, mv0);
+    batlog_add(pct0, mv0, display_port_brightness(), true, "sleep");
     touch_port_confirm_answer(-1);              /* an open reset prompt is a NO */
     progression_save(&tank);
     imu_port_sleep();          /* quiesce BEFORE the rails cycle (latch-up guard) */
@@ -112,7 +120,10 @@ static void enter_sleep(void) {
         tank_tick_sleep(&tank, (now - last) / 1e6f);
         last = now;
         if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_GPIO) break;
-        if (now - last_save > DROWSE_SAVE_US) { progression_save(&tank); last_save = now; }
+        if (now - last_save > DROWSE_SAVE_US) {
+            progression_save(&tank); last_save = now;
+            batlog_add(battery_pct(), battery_port_vbat_mv(), 0, true, "drowse");   /* the gauge is on an always-on rail */
+        }
     }
     gpio_wakeup_disable(BTN_SLEEP);
     int64_t held0 = esp_timer_get_time();
@@ -120,8 +131,10 @@ static void enter_sleep(void) {
         if (esp_timer_get_time() - held0 >= 1500000) { enter_poweroff(); break; }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
-    ESP_LOGI(TAG, "wake: slept %.0f s, hunger[0] %.1f", (esp_timer_get_time() - t0) / 1e6,
-             tank.n_fish ? tank.fish[0].hunger : 0.0f);
+    ESP_LOGI(TAG, "wake: slept %.0f s, hunger[0] %.1f | battery %d%% -> %d%%, %d -> %d mV",
+             (esp_timer_get_time() - t0) / 1e6, tank.n_fish ? tank.fish[0].hunger : 0.0f,
+             pct0, battery_pct(), mv0, battery_port_vbat_mv());
+    batlog_add(battery_pct(), battery_port_vbat_mv(), 0, true, "wake");
     display_port_wake();
     imu_port_wake();           /* soft reset + reconfig: never resume on trust */
     progression_save(&tank);
@@ -172,6 +185,7 @@ static void sleep_button_poll(int64_t now) {
 static void reset_tank(void) {
     ESP_LOGW(TAG, "RESET: wiping the tank (%d fish) for a fresh one", tank.n_fish);
     progression_reset(&tank, (uint32_t)esp_timer_get_time() ^ 0xC0FFEEu);
+    brightness_save();                          /* the erase took the setting with it */
     ESP_LOGI(TAG, "fresh tank: %s + %s, both fry", tank.fish[0].name, tank.fish[1].name);
 }
 
@@ -193,6 +207,10 @@ static void tank_task(void *arg) {
         int ans = touch_port_confirm_take();
         if (ans > 0) reset_tank();
         else if (ans < 0) ESP_LOGI(TAG, "reset prompt: tank kept");
+        if (touch_port_take_brightness_tap()) brightness_cycle();
+        brightness_apply(tank.night);
+        { static int64_t last_bat; if (now - last_bat > 5LL * 60 * 1000000) {   /* battery log: awake sample every 5 min */
+            batlog_add(battery_pct(), battery_port_vbat_mv(), display_port_brightness(), false, last_bat ? "" : "boot"); last_bat = now; } }
         tank_tick(&tank, dt, llm_ok ? advisor_llm_esp : advisor_rules);
         progression_tick(&tank, dt);
         if (fb[cur]) {
@@ -211,6 +229,7 @@ static void tank_task(void *arg) {
             int64_t tc = esp_timer_get_time();
             if (touch_port_milestones()) {       /* milestones page: covers the tank until a tap */
                 render_milestones(&tank, fb[cur], TANK_W);
+                render_brightness_row(fb[cur], TANK_W, brightness_level());
                 sel = -1;
             }
             if (sel >= 0) {                      /* tapped fish: stats card + battery */
@@ -259,11 +278,12 @@ static void tank_task(void *arg) {
             char goals[N_FISH_MAX * 16] = ""; size_t gl = 0;
             for (int i = 0; i < tank.n_fish && gl + 16 < sizeof goals; i++)
                 gl += snprintf(goals + gl, sizeof goals - gl, "%s%s", i ? " " : "", GOAL_NAMES[tank.fish[i].goal.id]);
-            ESP_LOGI(TAG, "t=%.0fs %d fish goals: %s | asks %lu decisions %lu last %lu ms %.1f tok/s | starve-ignored %d | heap int %u KB psram %u KB",
+            ESP_LOGI(TAG, "t=%.0fs %d fish goals: %s | asks %lu decisions %lu last %lu ms %.1f tok/s | starve-ignored %d | heap int %u KB psram %u KB | battery %d%% %d mV bright %d",
                      tank.clock, tank.n_fish, goals, (unsigned long)tank.advisor_asks,
                      (unsigned long)d, (unsigned long)ms, tps, tank_reflex_overrides,
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024,
-                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024);
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024,
+                     battery_pct(), battery_port_vbat_mv(), display_port_brightness());
             last_log = now;
         }
         int spent_ms = (int)((esp_timer_get_time() - now) / 1000);
@@ -279,6 +299,7 @@ void app_main(void) {
                           .pull_up_en = GPIO_PULLUP_ENABLE };
     gpio_config(&btn);
     if (nvs_flash_init() != ESP_OK) { nvs_flash_erase(); nvs_flash_init(); }
+    brightness_init();
     assert_plan();
     for (int i = 0; i < PLAN_FB_COUNT; i++) {
         fb[i] = heap_caps_aligned_alloc(64, PLAN_FB_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -318,6 +339,8 @@ void app_main(void) {
     display_port_init();
     touch_port_init();
     battery_port_init(board_i2c_bus());
+    battery_port_trim_rails();        /* the schematic's unused outputs off (docs/HANDOFF.md, the battery pass) */
+    codec_port_init(board_i2c_bus());  /* the unused ES8311 fully down (its digital side shares VCC3V3) */
     imu_port_init(board_i2c_bus());   /* screen auto-flip; absent IMU = always upright */
     director_init();                  /* serial scenario console (filming / bench) */
     /* scene-prefetch DMA: installed only AFTER the display grabbed its SPI DMA

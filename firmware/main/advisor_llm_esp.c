@@ -88,8 +88,7 @@ static int pick_next(const tank_t *t) {
         int i = (g_next + k) % t->n_fish;
         if (!g_pending[i]) continue;
         const fish_t *f = &t->fish[i];
-        if ((t->shadow.active && tank_dist(f->x, f->y, t->shadow.x, t->shadow.y) < 90) ||
-            (f->hunger > 8.0f && f->goal.id != GOAL_SEEK_FOOD)) return i;
+        if (f->hunger > 8.0f && f->goal.id != GOAL_SEEK_FOOD) return i;
     }
     for (int k = 0; k < t->n_fish; k++) {
         int i = (g_next + k) % t->n_fish;

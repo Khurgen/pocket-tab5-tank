@@ -100,15 +100,14 @@ void advisor_llm_debug(const tank_t *t, int fish_idx) {
     printf("\n");
 }
 
-/* who goes next: an urgent pending fish (shadow closing / starving) first,
+/* who goes next: an urgent pending fish (starving) first,
  * otherwise rotation from g_next */
 static int pick_next(const tank_t *t) {
     for (int k = 0; k < t->n_fish; k++) {
         int i = (g_next + k) % t->n_fish;
         if (!g_pending[i]) continue;
         const fish_t *f = &t->fish[i];
-        bool urgent = (t->shadow.active && tank_dist(f->x, f->y, t->shadow.x, t->shadow.y) < 90) ||
-                      (f->hunger > 8.0f && f->goal.id != GOAL_SEEK_FOOD);
+        bool urgent = f->hunger > 8.0f && f->goal.id != GOAL_SEEK_FOOD;
         if (urgent) return i;
     }
     for (int k = 0; k < t->n_fish; k++) {

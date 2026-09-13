@@ -46,7 +46,10 @@ void advisor_core_encode(const tank_t *t, int idx, char *out, size_t n) {
     char food_s[24], shadow_s[24], friend_s[40], bubble_s[24], reef_s[24], wall_s[24], frs[24];
     float fd; int fi = tank_nearest_food(t, f, &fd);
     sighting(f, fi >= 0 ? t->food[fi].x : 0, fi >= 0 ? t->food[fi].y : 0, fi >= 0, food_s, sizeof food_s);
-    sighting(f, t->shadow.x, t->shadow.y, t->shadow.active, shadow_s, sizeof shadow_s);
+    /* the shadow was removed from the game (2026-09-13); the field stays in
+     * the frozen schema and always reads `none` (the model was trained on
+     * plenty of shadow-none states) */
+    snprintf(shadow_s, sizeof shadow_s, "none");
     int fr = tank_nearest_friend(t, idx, NULL);
     sighting(f, fr >= 0 ? t->fish[fr].x : 0, fr >= 0 ? t->fish[fr].y : 0, fr >= 0, frs, sizeof frs);
     if (strcmp(frs, "none") == 0) snprintf(friend_s, sizeof friend_s, "none");

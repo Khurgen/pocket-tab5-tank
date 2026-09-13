@@ -21,6 +21,8 @@ static const char *TAG = "sh8601";
 #define STRIPE_ROWS 32                         /* panel rows per DMA transfer */
 
 static esp_lcd_panel_handle_t s_panel;
+static esp_lcd_panel_io_handle_t s_io;          /* kept for DCS writes after init (brightness) */
+static uint8_t s_brightness = 0xFF;             /* what init_cmds' 0x51 sets */
 static uint16_t *s_stripe[2];                   /* PANEL_W x STRIPE_ROWS, DMA-capable; ping-pong */
 static SemaphoreHandle_t s_stripe_free;         /* counts stripe buffers not in DMA flight */
 static i2c_master_bus_handle_t s_i2c;
@@ -87,6 +89,7 @@ bool display_port_init(void) {
     esp_lcd_panel_io_spi_config_t io_cfg = SH8601_PANEL_IO_QSPI_CONFIG(PIN_LCD_CS, on_trans_done, NULL);
     io_cfg.pclk_hz = 80 * 1000 * 1000;
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &io));
+    s_io = io;
     const sh8601_vendor_config_t vendor = { .init_cmds = init_cmds, .init_cmds_size = sizeof init_cmds / sizeof init_cmds[0],
                                             .flags.use_qspi_interface = 1 };
     const esp_lcd_panel_dev_config_t pcfg = { .reset_gpio_num = -1, .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
@@ -122,8 +125,19 @@ void display_port_wake(void) {
     esp_lcd_panel_reset(s_panel);
     esp_lcd_panel_init(s_panel);
     esp_lcd_panel_set_gap(s_panel, s_v2 ? V2_PANEL_X_GAP : 0, 0);
+    display_port_set_brightness(s_brightness);      /* init_cmds put it back at 255 */
     esp_lcd_panel_disp_on_off(s_panel, true);
 }
+
+/* DCS 0x51 WRDISBV over the QSPI link: the sh8601 driver frames a command as
+ * <write opcode 0x02><cmd><00> in a 32-bit word, so we do the same here */
+void display_port_set_brightness(uint8_t level) {
+    s_brightness = level;
+    if (!s_io) return;
+    int cmd = (0x02 << 24) | (0x51 << 8);
+    esp_lcd_panel_io_tx_param(s_io, cmd, &level, 1);
+}
+uint8_t display_port_brightness(void) { return s_brightness; }
 
 /* landscape fb[y][x] (TANK_W x TANK_H) -> portrait panel: px = y, py = TANK_W-1-x.
  * Colors are byte-swapped for the panel (big-endian RGB565 over SPI).

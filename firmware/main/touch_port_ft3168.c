@@ -29,6 +29,7 @@ static float s_fx[N_FISH_MAX], s_fy[N_FISH_MAX];  /* fish positions at press tim
 static int s_sel = -1; static int64_t s_sel_us;   /* tapped fish -> stats card */
 static bool s_ms;                                 /* milestones page up (tap to close) */
 static bool s_cf; static int64_t s_cf_us; static int s_cf_ans;   /* reset confirm prompt */
+static bool s_bright_tap;                         /* milestones page: brightness row tapped */
 #define CONFIRM_TIMEOUT_US (20LL * 1000000)
 static bool s_inverted;                           /* screen 180-flipped: mirror into tank space */
 
@@ -85,7 +86,13 @@ void touch_port_poll(tank_t *t) {
             goto released;
         }
         if (now - s_press_us < 350000 && dx * dx + dy * dy < 24 * 24) {
-            if (s_ms) { s_ms = false; s_sel = -1; goto released; }   /* the page closes on any tap, card too */
+            if (s_ms) {                                             /* the page closes on any tap, card too -
+                                                                       except its brightness row, which cycles */
+                bool row = render_brightness_row_hit(s_px, s_py);
+                ESP_LOGI(TAG, "page tap at %.0f,%.0f (release %.0f,%.0f) -> %s", s_px, s_py, s_lx, s_ly, row ? "brightness row" : "close");
+                if (row) { s_bright_tap = true; goto released; }
+                s_ms = false; s_sel = -1; goto released;
+            }
             if (s_sel >= 0 && s_px >= RENDER_CARD_X && s_px < RENDER_CARD_X + RENDER_CARD_W &&
                 s_py >= RENDER_CARD_Y && s_py < RENDER_CARD_Y + RENDER_CARD_H) {
                 s_ms = true; goto released;                          /* a tap ON the card = milestones page */
@@ -139,3 +146,4 @@ float touch_port_confirm_frac(void) {
 }
 int  touch_port_confirm_take(void)  { int a = s_cf_ans; s_cf_ans = 0; return a; }
 bool touch_port_pressed_since(int64_t us) { return s_down && s_press_us > us; }
+bool touch_port_take_brightness_tap(void) { bool b = s_bright_tap; s_bright_tap = false; return b; }

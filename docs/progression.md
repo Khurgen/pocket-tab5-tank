@@ -98,7 +98,7 @@ machine.*
   floor to the surface — only the tank ceiling limits it, every bed alike.
   Comfort band (2026-09-04 rework — fish LIKE cover): any canopy calms
   (stress decays faster with more grass, faster again for a fish tucked
-  inside one, and a hidden fish feels a shadow at half the press); a fully
+  inside one); a fully
   scalped tank (no bed past `VEG_BARE`) is a **mild** unease that lifts the
   moment one tuft regrows; only a tank being **smothered** presses back —
   the second-tallest bed past `VEG_SMOTHER` (85% of the way to the surface,
