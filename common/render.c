@@ -983,14 +983,14 @@ void render_brightness_row(uint16_t *fb, int stride, int pct) {
     ctx_t c = ctx_full(fb, stride, 1.0f);
     const char *label = "BRIGHTNESS";
     draw_text(&c, 40, BRIGHT_ROW_Y, 2, 0x9fd8e2, label);
-    int x = 40 + text_w(label, 2) + 26;
+    int x = 40 + text_w(label, 2) + 16;
     static const int lv[3] = { 30, 60, 100 };
     for (int i = 0; i < 3; i++) {                     /* three rising bars, lit up to the level */
         int h = 6 + i * 4;
         rect_fill(&c, x + i * 30, BRIGHT_ROW_Y + 14 - h, 22, h, pct >= lv[i] ? 0x9fd8e2 : 0x2a3f45);
     }
     char buf[8]; snprintf(buf, sizeof buf, "%d%%", pct);
-    draw_text(&c, x + 3 * 30 + 12, BRIGHT_ROW_Y, 2, 0xffffff, buf);
+    draw_text(&c, x + 3 * 30 + 8, BRIGHT_ROW_Y, 2, 0xffffff, buf);
 }
 bool render_brightness_row_hit(float x, float y) {
     /* the row's x span (caption, bars, number: 40..~330, with slop) and the
@@ -998,7 +998,7 @@ bool render_brightness_row_hit(float x, float y) {
        the row sits where the bezel curves and finger reports drift there.
        NOT the full width: a tap low on the RIGHT still closes the page (a
        first version took the whole band and a closing tap cycled the level). */
-    return x >= 24 && x < 340 && y >= 318;   /* below the caption line; the tank row's badges sit above */
+    return x >= 24 && x < 314 && y >= 318;   /* the row's own span; the CLOSE button owns the right */
 }
 
 /* ---- milestones page (2026-09-13 redesign: an achievement wall) ----
@@ -1016,6 +1016,10 @@ bool render_brightness_row_hit(float x, float y) {
 #define MSP_BADGE_X0  176
 #define MSP_BADGE_DX  40
 #define MSP_ICON      32
+#define MSP_CLOSE_X   324               /* the CLOSE button, bottom right, inside the bezel curve; clear of the brightness row's number */
+#define MSP_CLOSE_Y   312
+#define MSP_CLOSE_W   92
+#define MSP_CLOSE_H   30
 #define MSP_MODAL_X   56
 #define MSP_MODAL_Y   100
 #define MSP_MODAL_W   336
@@ -1116,6 +1120,9 @@ void render_milestones(const tank_t *t, uint16_t *fb, int stride) {
         badge(&c, MSP_BADGE_X0 + k * MSP_BADGE_DX, MSP_TANK_Y + 4, TANK_BADGES[k].icon,
               (t->tank_ms_bits & bit) != 0, (t->tank_ms_seen & bit) == 0);
     }
+    /* the way out: a CLOSE button in the prompt's calm dress (a tap anywhere
+       else never drops the page - too much to tap for that) */
+    button(&c, MSP_CLOSE_X, MSP_CLOSE_Y, MSP_CLOSE_W, MSP_CLOSE_H, 0x1c2f36, MSP_TEAL, "CLOSE", 2);
     /* the detail modal, in the reset prompt's dress: the art at 2x, a title
        (the fish's name / TANK, or NOT YET), the milestone's words */
     if (g_ms_caption[0]) {
@@ -1132,21 +1139,23 @@ void render_milestones(const tank_t *t, uint16_t *fb, int stride) {
     }
 }
 
-bool render_milestones_tap(const tank_t *t, float x, float y) {
-    if (g_ms_caption[0]) { render_milestones_leave(); return true; }   /* any tap: back to the page */
+int render_milestones_tap(const tank_t *t, float x, float y) {
+    if (g_ms_caption[0]) { render_milestones_leave(); return MS_TAP_KEPT; }   /* any tap: back to the page */
+    if (x >= MSP_CLOSE_X - 8 && y >= MSP_CLOSE_Y - 4) return MS_TAP_CLOSE;      /* slop out to the glass edge */
     int row = -1; bool tank_row = false;
     if (y >= MSP_ROW_Y0 - 2 && y < MSP_ROW_Y0 + N_FISH_MAX * MSP_ROW_H) {
         row = (int)((y - MSP_ROW_Y0) / MSP_ROW_H);
         if (row < 0) row = 0;
-        if (row >= t->n_fish) return false;          /* an empty row */
-    } else if (y >= MSP_TANK_Y - 4 && y < MSP_TANK_Y + MSP_ROW_H) tank_row = true;
-    else return false;
+        if (row >= t->n_fish) return MS_TAP_NONE;    /* an empty row */
+    } else if (y >= MSP_TANK_Y - 6 && y < 318) tank_row = true;   /* down to the brightness strip: fingers near the
+                                                                   bottom bezel report LOW (see render_brightness_row_hit) */
+    else return MS_TAP_NONE;
     int k;                                           /* badge column, or -1 for the name / strip cluster */
     if (x >= MSP_BADGE_X0 - 4 && x < MSP_BADGE_X0 + 6 * MSP_BADGE_DX) {
         k = (int)((x - MSP_BADGE_X0 + 4) / MSP_BADGE_DX);
         if (k > 5) k = 5;
     } else if (x >= 20 && x < MSP_BADGE_X0 - 4) k = -1;
-    else return false;
+    else return MS_TAP_NONE;
     if (tank_row) {
         if (k < 0) {
             snprintf(g_ms_title, sizeof g_ms_title, "TANK");
@@ -1171,6 +1180,6 @@ bool render_milestones_tap(const tank_t *t, float x, float y) {
             g_ms_lit = on; g_ms_icon = FISH_BADGES[k].icon; g_ms_fish = -1;
         }
     }
-    return true;
+    return MS_TAP_KEPT;
 }
 void render_milestones_leave(void) { g_ms_caption[0] = 0; g_ms_title[0] = 0; g_ms_icon = NULL; g_ms_fish = -1; }

@@ -66,12 +66,19 @@ void render_battery(uint16_t *fb, int stride, float frac, bool charging);
  * badge is the same picture as a grey silhouette; one earned since the
  * keeper last closed the page wears a ring. render_milestones_tap maps a
  * tap: a badge, a name or a strip opens a small detail modal (the art at
- * 2x, a title, the words) and returns true; while the modal is up ANY tap
- * closes it and returns true (the page stays). Otherwise it returns false
- * and the caller closes the page, then progression_ack_milestones +
- * render_milestones_leave. Callers try it BEFORE the brightness row. */
+ * 2x, a title, the words); while the modal is up ANY tap closes it. A
+ * CLOSE button at the bottom right leaves the page. Callers try it BEFORE
+ * the brightness row. */
 void render_milestones(const tank_t *t, uint16_t *fb, int stride);
-bool render_milestones_tap(const tank_t *t, float x, float y);
+/* a tap on the page (2026-09-13, Strato: with this much to tap, a stray tap
+ * must not drop the whole page): MS_TAP_CLOSE = the CLOSE button, bottom
+ * right - the ONLY way out by touch (caller closes the page, then
+ * progression_ack_milestones + render_milestones_leave); MS_TAP_KEPT = a
+ * badge / name / strip opened the detail modal, or the modal was up and
+ * this tap closed it; MS_TAP_NONE = nothing here (the caller may try the
+ * brightness row). */
+enum { MS_TAP_NONE = 0, MS_TAP_KEPT = 1, MS_TAP_CLOSE = 2 };
+int  render_milestones_tap(const tank_t *t, float x, float y);
 void render_milestones_leave(void);
 
 /* Reset confirm (2026-09-11): a modal panel over the live tank - "RESET

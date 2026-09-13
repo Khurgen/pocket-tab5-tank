@@ -979,10 +979,11 @@ int main(int argc, char **argv) {
             }
             else if (setup_up) { /* the setup owns the glass: setup_touch took it */ }
             else if (milestones_view) {
-                if (render_milestones_tap(&tank, (float)press_x, (float)press_y)) { /* a badge / name: detail modal; or the modal closing */ }
-                else if (render_brightness_row_hit((float)press_x, (float)press_y))
+                int r = render_milestones_tap(&tank, (float)press_x, (float)press_y);
+                if (r == MS_TAP_CLOSE) { milestones_view = false; progression_ack_milestones(&tank); render_milestones_leave(); }
+                else if (r == MS_TAP_NONE && render_brightness_row_hit((float)press_x, (float)press_y))
                     sim_bright = sim_bright == 100 ? 60 : sim_bright == 60 ? 30 : 100;   /* the row cycles, the page stays */
-                else { milestones_view = false; progression_ack_milestones(&tank); render_milestones_leave(); }
+                /* MS_TAP_KEPT: a badge / name opened the detail modal, or the modal closed; anything else: nothing */
             }
             else if (now_ms - press_ms < 350 && dx * dx + dy * dy < 24 * 24) {
                 /* same hit test as the device: 38 px against the press-time

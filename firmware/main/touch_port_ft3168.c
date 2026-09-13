@@ -29,7 +29,7 @@ static bool s_down; static int64_t s_press_us; static float s_px, s_py;
 static float s_lx, s_ly;                          /* LAST touched position (release classification) */
 static float s_fx[N_FISH_MAX], s_fy[N_FISH_MAX];  /* fish positions at press time */
 static int s_sel = -1; static int64_t s_sel_us;   /* tapped fish -> stats card */
-static bool s_ms;                                 /* milestones page up (tap to close) */
+static bool s_ms;                                 /* milestones page up (its CLOSE button ends it) */
 static bool s_cf; static int64_t s_cf_us; static int s_cf_ans;   /* reset confirm prompt */
 static bool s_bright_tap;                         /* milestones page: brightness row tapped */
 #define CONFIRM_TIMEOUT_US (20LL * 1000000)
@@ -110,14 +110,14 @@ void touch_port_poll(tank_t *t) {
             s_sel = -1; goto released;
         }
         if (now - s_press_us < 350000 && dx * dx + dy * dy < 24 * 24) {
-            if (s_ms) {                                             /* the page closes on any tap, card too -
-                                                                       except its brightness row, which cycles */
-                bool kept = render_milestones_tap(t, s_px, s_py);   /* a badge / name: detail modal (or the modal closing) - page stays */
-                bool row = !kept && render_brightness_row_hit(s_px, s_py);
+            if (s_ms) {                                             /* the page: badges open a modal, the CLOSE
+                                                                       button ends it, the brightness row cycles */
+                int r = render_milestones_tap(t, s_px, s_py);     /* CLOSE button / detail modal / nothing */
+                bool row = r == MS_TAP_NONE && render_brightness_row_hit(s_px, s_py);
                 ESP_LOGI(TAG, "page tap at %.0f,%.0f (release %.0f,%.0f) -> %s", s_px, s_py, s_lx, s_ly,
-                         kept ? "detail" : row ? "brightness row" : "close");
-                if (kept) goto released;
+                         r == MS_TAP_CLOSE ? "CLOSE" : r == MS_TAP_KEPT ? "detail" : row ? "brightness row" : "nothing");
                 if (row) { s_bright_tap = true; goto released; }
+                if (r != MS_TAP_CLOSE) goto released;              /* only the button leaves the page */
                 s_ms = false; s_sel = -1;
                 progression_ack_milestones(t); render_milestones_leave();   /* everything shown is now "seen" */
                 goto released;
