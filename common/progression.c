@@ -196,11 +196,11 @@ static void arrival_conditions(const tank_t *t, int *met, int *total) {
 
 /* how each gate is moved - the words behind the HOW? button */
 static const char *const TIP_TRUST[]  = { "REST A FINGER ON THE GLASS", "AND KEEP IT STILL. EVERY", "FISH EARNS TRUST WHILE IT", "RESTS THERE. 3 QUICK TAPS", "SCARE THEM AND COST TRUST.", NULL };
-static const char *const TIP_FEED[]   = { "TAP THE WATER AT THE VERY", "TOP OF THE TANK TO DROP", "FOOD. EVERY TAP THERE IS", "ONE MEAL. HUNGRY FISH RUSH", "TO IT, FULL ONES DRIFT BY.", NULL };
+static const char *const TIP_FEED[]   = { "TAP THE WATER AT THE TOP", "OF THE TANK TO DROP FOOD.", "A FEEDING COUNTS AS A MEAL", "ONCE A FISH EATS FROM IT.", NULL };
 static const char *const TIP_HOLD[]   = { "REST A FINGER ON THE GLASS", "FOR A FEW SECONDS. A FISH", "THAT TRUSTS YOU SWIMS OVER", "AND STAYS. FEED FIRST: A", "HUNGRY FISH WON'T COME.", NULL };
-static const char *const TIP_GROW[]   = { "FISH GROW ONLY WHILE THE", "LIGHT IS ON: JUVENILE AT", "30 MINUTES, ADULT AT 3", "HOURS, ELDER AT A DAY. TWO", "TAPS TOGGLE THE LIGHT.", NULL };
+static const char *const TIP_GROW[]   = { "FISH GROW WITH TIME,", "SLOWER WHEN THE TANK IS", "IN SLEEP MODE.", NULL };
 static const char *const TIP_CHANGE[] = { "A CALM, WELL-FED FISH GETS", "BOLDER. ONE THAT SHADOWS A", "FRIEND GETS MORE SOCIAL.", "THAT TAKES A FEW LIT HOURS", "OR JUST KEEP FEEDING.", NULL };
-static const char *const TIP_GRASS[]  = { "GRASS REGROWS ON ITS OWN,", "FASTEST WHILE THE TANK", "SLEEPS. LEAVE ONE BED", "UNTRIMMED AND IT WILL BE", "TALL ENOUGH IN A FEW HOURS", NULL };
+static const char *const TIP_GRASS[]  = { "GRASS REGROWS ON ITS OWN,", "FASTEST WHILE THE TANK", "SLEEPS.", NULL };
 const char *const *progression_fry_tip(int kind) {
     switch (kind) {
     case FRY_REQ_TRUST:  return TIP_TRUST;
@@ -408,6 +408,10 @@ float progression_wake(tank_t *t, int64_t now_unix) {
         int64_t span = now_unix - saved_unix;
         if (span > PROGRESSION_SLEEP_CAP_S) span = PROGRESSION_SLEEP_CAP_S;
         tank_tick_sleep(t, (float)span);
+        for (int i = 0; i < t->n_fish; i++) {     /* and they grew, slowly, in the dark */
+            s_age[i] += (float)span * SLEEP_GROWTH_FRAC;
+            apply_stage(&t->fish[i], s_age[i]); apply_growth(&t->fish[i]);
+        }
         slept = span / 3600.0f;
         mark_dirty();
     }
@@ -417,11 +421,12 @@ float progression_wake(tank_t *t, int64_t now_unix) {
 
 void progression_tick(tank_t *t, float dt) {
     if (!s_booted) return;
-    float tended = t->night ? 0 : dt * progression_time_scale;   /* lights off = paused */
+    float aged = dt * progression_time_scale;                    /* growth: every awake second, lit or not */
+    float tended = t->night ? 0 : aged;                          /* drift: pressure only while lit and lived-in */
     int n_rest = 0, n_dart = 0; bool changed_someone = false;
     for (int i = 0; i < t->n_fish; i++) {
         fish_t *f = &t->fish[i];
-        s_age[i] += tended;
+        s_age[i] += aged;
         apply_stage(f, s_age[i]);
         apply_growth(f);
         /* trait drift, slow: calm + fed -> bolder/more social; startled -> shyer */

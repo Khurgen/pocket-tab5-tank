@@ -219,7 +219,7 @@ void tank_init(tank_t *t, uint32_t seed) {
     t->hold_active = false; t->hold_time = 0; t->hold_approached = false;
     t->tap_count = 0; t->tap_burst_t = 99; t->startled = false;
     t->startle_cooldown = 0;
-    t->feed_spot_x = -1; t->player_feedings = 0; t->hold_approaches = 0; t->greet_timer = 0;
+    t->feed_spot_x = -1; t->player_feedings = 0; t->feed_open = false; t->hold_approaches = 0; t->greet_timer = 0;
     t->courting = false; t->court_a = t->court_b = -1;
     t->court_cool = 30; t->court_active = 0;
     t->ravenous = false; t->trickle_off = false;
@@ -560,7 +560,7 @@ void tank_feed(tank_t *t, float x, int n) {
         n--;
     }
     t->feed_spot_x = t->feed_spot_x < 0 ? x : t->feed_spot_x + (x - t->feed_spot_x) * 0.3f;
-    t->player_feedings++;
+    t->feed_open = true;                         /* a meal once somebody eats from it */
 }
 
 void tank_touch_tap(tank_t *t, float x, float y) {
@@ -792,7 +792,10 @@ static void eat_nearby_food(tank_t *t, fish_t *f) {
             f->curiosity = clampf(f->curiosity + 0.5f, 0, 10);   /* was 0.8: a trickle burst
                                                                      re-synced the school's curiosity */
             f->eaten++;
-            if (t->food[i].from_player) { f->eaten_player++; f->ms_bits |= MS_FIRST_MEAL_FROM_YOU; }
+            if (t->food[i].from_player) {
+                f->eaten_player++; f->ms_bits |= MS_FIRST_MEAL_FROM_YOU;
+                if (t->feed_open) { t->player_feedings++; t->feed_open = false; }   /* the gesture became a meal */
+            }
             /* post-meal reflex from the prototype */
             if (f->hunger < 2.2f && f->goal.id == GOAL_SEEK_FOOD)
                 f->goal.id = (xr(t) & 1) ? GOAL_VISIT_BUBBLES : GOAL_EXPLORE;

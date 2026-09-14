@@ -1285,8 +1285,8 @@ int render_milestones_tap(const tank_t *t, float x, float y) {
             if (staged) { snprintf(g_ms_caption, sizeof g_ms_caption, "EVERY STEP IS DONE. A FRY");
                           snprintf(g_ms_caption2, sizeof g_ms_caption2, "COMES AT THE NEXT LIGHT-ON");
                           snprintf(g_ms_sub, sizeof g_ms_sub, "ON ITS WAY"); }
-            else { snprintf(g_ms_caption, sizeof g_ms_caption, "WHEN ALL %d ARE DONE A FRY", nreq);
-                   snprintf(g_ms_caption2, sizeof g_ms_caption2, "IS BORN AT NEXT LIGHT-ON");
+            else { snprintf(g_ms_caption, sizeof g_ms_caption, "WHEN ALL NEEDS ARE MET, A");     /* Strato's words, 2026-09-14 */
+                   snprintf(g_ms_caption2, sizeof g_ms_caption2, "NEW FRY IS READY TO BE BORN");
                    snprintf(g_ms_sub, sizeof g_ms_sub, "%d OF %d DONE", met, nreq); }
             g_ms_lit = staged; g_ms_icon = NULL; g_ms_fish = -1; g_ms_fry = true;
         } else if (k < nreq) {                       /* a gate: the words, and where it stands */

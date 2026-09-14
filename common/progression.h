@@ -7,7 +7,9 @@
  *    calm hold, a raised fry, drift). An arrival is staged when earned and
  *    shown at the next light-on (or boot) - an unannounced surprise.
  *  - Growth: well-fed fish grow (size) and advance fry -> juv -> adult -> elder
- *    on tended age; stage changes are silent surprises.
+ *    with time - every awake second, light on or off (2026-09-14, Strato:
+ *    "fish don't stop growing with the light off"), and a slept span at
+ *    SLEEP_GROWTH_FRAC of its length; stage changes are silent surprises.
  *  - Trait drift: bold and social creep with experience (hours of pressure).
  *  - Milestones: firsts are DETECTED from what the fish actually did (the
  *    model's own choices), per fish and per tank; render shows them.
@@ -41,13 +43,16 @@ void progression_boot(tank_t *t);
  * by itself. Returns the hours simulated, or -1 when no clock was available
  * (then it behaved like progression_boot without the ravenous rule). */
 #define PROGRESSION_SLEEP_CAP_S (7 * 24 * 3600)
+/* how much of a slept span the fish grow through (2026-09-14, Strato: "an
+ * eight-hour sleep should be worth 2 hours of growth") */
+#define SLEEP_GROWTH_FRAC 0.25f
 float progression_wake(tank_t *t, int64_t now_unix);
 /* call every frame after tank_tick */
 void progression_tick(tank_t *t, float dt);
 /* call on light-off / shutdown (autosaves on events + heartbeat anyway) */
 void progression_save(tank_t *t);
 
-/* sim/debug: multiply tended time (aging, drift) - `./fishsim --fast 60` */
+/* sim/debug: multiply time (aging, drift) - `./fishsim --fast 60` */
 extern float progression_time_scale;
 /* debug: stage and show an arrival now (sim key R); no-op at the cap */
 void progression_force_arrival(tank_t *t);
@@ -55,7 +60,7 @@ void progression_force_arrival(tank_t *t);
  * the fry appears at the next light-on (or progression_force_arrival) */
 void progression_stage_arrival(tank_t *t);
 bool progression_arrival_pending(void);
-float progression_age_s(const tank_t *t, int idx);        /* tended seconds */
+float progression_age_s(const tank_t *t, int idx);        /* grown seconds */
 /* director/debug: put a fish's tended clock at `seconds` and apply the stage
  * and size that go with it now (the silent surprise, on cue) */
 void progression_set_age(tank_t *t, int idx, float seconds);
@@ -126,9 +131,9 @@ const char *const *progression_fry_tip(int kind);
 #define POP_CAP N_FISH_MAX
 #endif
 
-/* stage thresholds, in seconds of tended life (fish age only while the tank
- * runs with the light on). A desk companion is glanced at over weeks, so the
- * arc is hours/days, not minutes. */
+/* stage thresholds, in seconds of grown life: awake time in full (the light
+ * makes no difference), sleep at SLEEP_GROWTH_FRAC. A desk companion is
+ * glanced at over weeks, so the arc is hours/days, not minutes. */
 /* tended seconds to each stage (2026-08-30, halved from 1/6/48 h: a fresh
  * tank now starts as FRY, so the first growth spurt lands in the keeper's
  * first session and elder stays a multi-day achievement) */

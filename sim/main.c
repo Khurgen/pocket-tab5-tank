@@ -98,7 +98,23 @@ static int selftest(void) {
                tank.fish[i].name, tank.fish[i].x, tank.fish[i].y,
                tank.fish[i].hunger, tank.fish[i].energy,
                GOAL_NAMES[tank.fish[i].goal.id]);
-    if (tank.player_feedings != 2) { printf("FAIL: feed gestures not counted\n"); return 1; }
+    /* meals (2026-09-14): a feeding counts once a fish eats from it - two gestures, at least one eaten from */
+    if (tank.player_feedings < 1 || tank.player_feedings > 2) { printf("FAIL: meals %d from 2 feedings\n", tank.player_feedings); return 1; }
+    {   /* a feeding nobody eats from is not a meal: pellets that vanish uneaten count nothing */
+        int meals = tank.player_feedings;
+        tank_feed(&tank, 220, 3);
+        for (int i = 0; i < MAX_FOOD; i++) tank.food[i].alive = false;
+        for (int i = 0; i < 600; i++) tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
+        if (tank.player_feedings != meals) { printf("FAIL: an uneaten feeding counted as a meal\n"); return 1; }
+        tank.feed_open = false;
+        /* and one that IS eaten from counts once, however many pellets it drops */
+        for (int i = 0; i < tank.n_fish; i++) tank.fish[i].hunger = 9.0f;
+        tank_feed(&tank, tank.fish[0].x, 3);
+        for (int i = 0; i < 1800 && tank.player_feedings == meals; i++) tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
+        for (int i = 0; i < 600; i++) tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
+        if (tank.player_feedings != meals + 1) { printf("FAIL: an eaten feeding counted %d meals\n", tank.player_feedings - meals); return 1; }
+        printf("selftest: meals: an uneaten feeding counted nothing, an eaten one counted once\n");
+    }
     return distinct >= 5 ? 0 : 1;                 /* a live tank uses most goals */
 }
 
@@ -455,16 +471,27 @@ static int selftest_sleep(void) {
         for (int i = 0; i < tank.n_fish; i++) tank.fish[i].hunger = 2.0f;
         tank_veg_set(&tank, 1, 0.30f);                   /* the 12 h above grew it to the ceiling */
         progression_save(&tank);
-        float veg0 = tank.veg_growth[1];
+        float veg0 = tank.veg_growth[1], age0 = progression_age_s(&tank, 0);
         tank_init(&tank, 8);
         float h = progression_wake(&tank, clock_port_now_unix() + 8 * 3600);
         if (h < 7.99f || h > 8.01f) { printf("FAIL: wake simulated %.2f h, not 8\n", h); return 1; }
+        /* and they grew through it, slowly: 8 h asleep = 2 h of growth (SLEEP_GROWTH_FRAC) */
+        float grew = progression_age_s(&tank, 0) - age0, hunger_wake = tank.fish[0].hunger;
+        if (fabsf(grew - 8 * 3600 * SLEEP_GROWTH_FRAC) > 1.0f) { printf("FAIL: 8 h asleep grew %.0f s, want %.0f\n", grew, 8 * 3600 * SLEEP_GROWTH_FRAC); return 1; }
         for (int i = 0; i < tank.n_fish; i++)
             if (fabsf(tank.fish[i].hunger - 8.4f) > 0.15f) {     /* 2.0 + 8 h x 0.8/h */
                 printf("FAIL: after an 8 h wake %s hunger %.1f (want 8.4)\n", tank.fish[i].name, tank.fish[i].hunger); return 1; }
         if (tank.veg_growth[1] <= veg0) { printf("FAIL: the grass did not grow through the night\n"); return 1; }
-        printf("selftest-sleep: deep-sleep wake lived through %.0f h (hunger 2.0 -> %.1f, bed 1 %.2f -> %.2f)\n",
-               h, tank.fish[0].hunger, veg0, tank.veg_growth[1]);
+        /* and awake, the light off no longer pauses growth (2026-09-14): 240 s of dark ticks age 240 s */
+        {
+            float a0 = progression_age_s(&tank, 0);
+            if (!tank.night) tank_toggle_light(&tank);                                 /* light OFF, overriding the cycle */
+            for (int i = 0; i < 240 * 60; i++) { tank_tick(&tank, 1.0f / 60.0f, advisor_rules); progression_tick(&tank, 1.0f / 60.0f); }
+            float dark = progression_age_s(&tank, 0) - a0; tank_light_auto(&tank);
+            if (!tank.night || dark < 239.0f || dark > 241.0f) { printf("FAIL: 240 s with the light off aged %.0f s (night %d)\n", dark, tank.night); return 1; }
+        }
+        printf("selftest-sleep: deep-sleep wake lived through %.0f h (hunger 2.0 -> %.1f, bed 1 %.2f -> %.2f); grew %.0f s asleep, 240 s in the dark\n",
+               h, hunger_wake, veg0, tank.veg_growth[1], grew);
     }
     printf("selftest-sleep: dash %.0f px/s at the drop; fed and calmed %.1f s after pellets\n",
            dash_speed, fed_at / 60.0f);
@@ -970,6 +997,10 @@ static int snapshot(const char *prefix, int seconds) {
         render_milestones_tap(&tank, 56 + 336 / 2, 60 + 156 + 20 + 24 + 26 + 14 - 10 - 13);   /* HOW? -> the tip page */
         render_milestones(&tank, fb, TANK_W); render_brightness_row(fb, TANK_W, 60);
         snprintf(path, sizeof path, "%s_fry_tip.ppm", prefix); write_ppm(path, fb);
+        render_milestones_leave();
+        render_milestones_tap(&tank, 100, 4 + 2 * 40 + 10);              /* the name -> the tally */
+        render_milestones(&tank, fb, TANK_W); render_brightness_row(fb, TANK_W, 60);
+        snprintf(path, sizeof path, "%s_fry_tally.ppm", prefix); write_ppm(path, fb);
         render_milestones_leave();
     }
     printf("snapshot: %d fish, wrote %s_{tank,card,card1,milestones,milestones_fry,confirm,setup_*}.ppm\n", tank.n_fish, prefix);

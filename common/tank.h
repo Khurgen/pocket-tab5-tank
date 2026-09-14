@@ -206,7 +206,10 @@ typedef struct tank {
     int32_t  cells_cleaned;        /* lifetime algae cells wiped (milestone + save) */
     /* keeper habits the tank remembers (persisted by progression.c) */
     float    feed_spot_x;          /* where the keeper usually feeds (EMA); <0 = unknown */
-    int      player_feedings;      /* feed gestures so far */
+    int      player_feedings;      /* MEALS: feedings the fish ate from (2026-09-14, Strato: a tap
+                                    * nobody eats from is not a meal) - a feed gesture opens one,
+                                    * the first player pellet eaten after it counts it */
+    bool     feed_open;            /* a feed gesture not yet eaten from (transient, not saved) */
     int      hold_approaches;      /* calm holds that drew a fish all the way in */
     float    greet_timer;          /* light-on greeting: trusting fish come up front */
     /* courtship tell (progression.c decides, tank.c performs): when the tank
