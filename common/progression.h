@@ -88,6 +88,36 @@ void progression_newborn_done(tank_t *t);
  * far counts as seen (badges earned later wear a "new" ring until the next
  * look). Rides in the save. */
 void progression_ack_milestones(tank_t *t);
+/* the new-fry checklist (2026-09-14, Strato: once the pair starts to grow,
+ * the first thing a keeper asks is "how do I get a new fry?" - and the
+ * milestones page said nothing). progression_next_fry fills one line per
+ * gate of the NEXT arrival: the care gates arrival_conditions counts (the
+ * same code, so the list can never disagree with the rule) plus the nursery
+ * bed every arrival needs. Each line: a kind (the renderer picks the art),
+ * a title, the words (what to do - a plain sentence over two lines; Strato:
+ * "all fish must have a minimum six out of 10 trust score", not a hint), a
+ * progress phrase (where it stands), a 0..1 fraction and whether it is met. Returns the count, 0 at the
+ * population cap. *staged = every gate is met and the fry waits for the
+ * next light-on. Strings fit the pixel font: <= 25 chars at scale 2. */
+enum { FRY_REQ_TRUST, FRY_REQ_FEED, FRY_REQ_HOLD, FRY_REQ_GROW, FRY_REQ_CHANGE, FRY_REQ_GRASS };
+#define FRY_REQ_MAX 4
+typedef struct {
+    int   kind;
+    char  title[12];
+    char  words[28], words2[28];   /* what to do, a plain sentence over two lines */
+    char  progress[28];            /* where it stands */
+    float frac;
+    bool  met;
+} fry_req_t;
+int progression_next_fry(const tank_t *t, fry_req_t out[FRY_REQ_MAX], bool *staged);
+/* the tip behind a gate (Strato: "if someone reads 'all fish must have a
+ * trust of at least six' they may ask OK how do I do that?"): HOW the
+ * keeper moves it, in up to FRY_TIP_LINES lines of <= 26 chars, NULL-
+ * terminated. Written from the rules in tank.c / progression.c (trust
+ * only rises under a resting finger; quick taps cost it; fish age only
+ * while lit; grass regrows by itself). */
+#define FRY_TIP_LINES 5
+const char *const *progression_fry_tip(int kind);
 
 /* population ceiling. Compile-time so the device can ship lower until its
  * advisor latency is measured (docs/progression-next.md): firmware passes

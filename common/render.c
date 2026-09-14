@@ -998,18 +998,22 @@ int render_confirm_hit(float x, float y) {
 
 /* ---- brightness row (milestones page foot) ---- */
 #define BRIGHT_ROW_Y 326
+static bool ms_modal_up(void);                    /* a milestones modal is up: the page under it is dimmed */
+#define HALF_RGB(rgb) (((rgb) >> 1) & 0x7f7f7f)
 void render_brightness_row(uint16_t *fb, int stride, int pct) {
     ctx_t c = ctx_full(fb, stride, 1.0f);
+    bool dim = ms_modal_up();                     /* drawn after the page, so it dims itself */
+    uint32_t teal = dim ? HALF_RGB(0x9fd8e2) : 0x9fd8e2, grey = dim ? HALF_RGB(0x2a3f45) : 0x2a3f45, white = dim ? 0x7f7f7f : 0xffffff;
     const char *label = "BRIGHTNESS";
-    draw_text(&c, 40, BRIGHT_ROW_Y, 2, 0x9fd8e2, label);
+    draw_text(&c, 40, BRIGHT_ROW_Y, 2, teal, label);
     int x = 40 + text_w(label, 2) + 16;
     static const int lv[3] = { 30, 60, 100 };
     for (int i = 0; i < 3; i++) {                     /* three rising bars, lit up to the level */
         int h = 6 + i * 4;
-        rect_fill(&c, x + i * 30, BRIGHT_ROW_Y + 14 - h, 22, h, pct >= lv[i] ? 0x9fd8e2 : 0x2a3f45);
+        rect_fill(&c, x + i * 30, BRIGHT_ROW_Y + 14 - h, 22, h, pct >= lv[i] ? teal : grey);
     }
     char buf[8]; snprintf(buf, sizeof buf, "%d%%", pct);
-    draw_text(&c, x + 3 * 30 - 2, BRIGHT_ROW_Y, 2, 0xffffff, buf);   /* 6 px off the last bar, clear of CLOSE at 100% */
+    draw_text(&c, x + 3 * 30 - 2, BRIGHT_ROW_Y, 2, white, buf);   /* 6 px off the last bar, clear of CLOSE at 100% */
 }
 bool render_brightness_row_hit(float x, float y) {
     /* the row's x span (caption, bars, number: 40..~330, with slop) and the
@@ -1062,9 +1066,20 @@ static const char *const STAGE_WORDS[4] = { "FRY", "JUVENILE", "ADULT", "ELDER" 
 /* the detail modal (a tap on a badge / name / strip): what to show until
  * the next tap. caption[0] == 0 means no modal. */
 static char g_ms_caption[72], g_ms_title[16];
+static char g_ms_caption2[32];       /* the caption's second line (the fry checklist's sentences), or empty */
+static char g_ms_sub[32];            /* a line under the caption (the fry checklist's progress), or empty */
 static bool g_ms_lit;
 static const icon_t *g_ms_icon;      /* the badge's art, or NULL */
 static int  g_ms_fish = -1;          /* a fish's own sprite instead, or -1 */
+static bool g_ms_fry;                /* the fry-to-be (a silhouette) instead */
+static int  g_ms_kind = -1;          /* a gate's modal: its kind (the HOW? button shows), or -1 */
+static bool ms_modal_up(void) { return g_ms_caption[0] != 0; }
+static bool g_ms_tip;                /* the gate's tip page is up instead of its modal */
+/* a gate's modal is taller (two sentence lines, progress, the HOW? button)
+   so it sits higher than the badge modal, clear of the CLOSE button */
+#define MSP_FRY_MODAL_Y 60
+#define MSP_HOW_W 76
+#define MSP_HOW_H 26
 
 /* a locked badge: the same art as a flat grey silhouette - luminance keeps
  * the shapes readable, the low alpha keeps it quiet on the ink */
@@ -1110,6 +1125,32 @@ static void badge(ctx_t *c, int x, int y, const icon_t *ic, bool on, bool fresh)
     }
 }
 static int bit_index(uint32_t bit) { int i = 0; while (bit > 1u) { bit >>= 1; i++; } return i; }
+/* the art for a gate of the fry checklist: the card's trust icon, the tank's
+   own badges for meals / a hold / grass / a change, or NULL = the youngest
+   fish itself (the GROW gate) */
+static const icon_t *fry_req_icon(int kind) {
+    switch (kind) {
+    case FRY_REQ_TRUST:  return &icon_trust;
+    case FRY_REQ_FEED:   return &icon_ms_first_feeding;
+    case FRY_REQ_HOLD:   return &icon_ms_first_hold_approach;
+    case FRY_REQ_CHANGE: return &icon_ms_tank_changed_someone;
+    case FRY_REQ_GRASS:  return &icon_ms_first_trimming;
+    default:             return NULL;
+    }
+}
+/* a gate as a badge in a 32 px cell: lit when met, the silhouette until then */
+static void fry_badge(ctx_t *c, uint16_t *fb, int stride, const tank_t *t, int x, int y, const fry_req_t *r) {
+    const icon_t *ic = fry_req_icon(r->kind);
+    if (ic) {
+        int off = (MSP_ICON - ic->w) / 2;        /* the 24 px card icon sits centred */
+        if (r->met) blit_icon(c, x + off, y + off, ic, 255); else blit_icon_locked(c, x + off, y + off, ic);
+    } else {                                     /* GROW: the youngest fish, its own colours once grown */
+        const fish_t *f = &t->fish[t->n_fish - 1];
+        float sz = f->size > 0.7f ? 0.7f : f->size;
+        if (r->met) render_fish_preview(fb, stride, x + MSP_ICON / 2, y + MSP_ICON / 2, sz, f->color, f->fin, f->accent, t->clock);
+        else        render_fish_preview(fb, stride, x + MSP_ICON / 2, y + MSP_ICON / 2, sz, MSP_DIM, MSP_DIM, MSP_DIM, t->clock);
+    }
+}
 
 void render_milestones(const tank_t *t, uint16_t *fb, int stride) {
     ctx_t c = ctx_full(fb, stride, 1.0f);
@@ -1129,6 +1170,29 @@ void render_milestones(const tank_t *t, uint16_t *fb, int stride) {
                   (f->ms_bits & bit) != 0, (f->ms_seen & bit) == 0);
         }
     }
+    /* the NEW FRY row (2026-09-14): under the last fish while the tank can
+       still grow - what the next arrival needs, as badges that light up when
+       met (the fry-to-be a silhouette at the left, a tick per gate under
+       its name, a filling bar under each badge still owed) */
+    fry_req_t req[FRY_REQ_MAX]; bool staged;
+    int nreq = progression_next_fry(t, req, &staged);
+    if (nreq > 0) {
+        int top = MSP_ROW_Y0 + t->n_fish * MSP_ROW_H;
+        uint32_t fry_rgb = staged ? MSP_TEAL : MSP_DIM;
+        render_fish_preview(fb, stride, 52, top + 20, 0.55f, fry_rgb, fry_rgb, fry_rgb, t->clock);
+        draw_text(&c, 92, top + 2, 2, MSP_TEAL, "NEW FRY");
+        for (int k = 0; k < nreq; k++)           /* one tick per gate, lit when met */
+            rect_fill(&c, 96 + k * 14, top + 27, 10, 6, req[k].met ? MSP_TEAL : MSP_DIM);
+        for (int k = 0; k < nreq; k++) {
+            int x = MSP_BADGE_X0 + k * MSP_BADGE_DX;
+            fry_badge(&c, fb, stride, t, x, top + 4, &req[k]);
+            if (!req[k].met) {                   /* the bar: how far along */
+                int w = (int)(MSP_ICON * req[k].frac + 0.5f);
+                rect_fill(&c, x, top + 38, MSP_ICON, 2, MSP_DIM);
+                if (w > 0) rect_fill(&c, x, top + 38, w, 2, MSP_TEAL);
+            }
+        }
+    }
     /* the tank's row */
     for (int x = 24; x < TANK_W - 24; x++) px_blend(&c, x, MSP_TANK_Y - 4, MSP_DIM, 200);
     draw_text(&c, 92, MSP_TANK_Y + 2, 2, MSP_TEAL, "TANK");
@@ -1142,30 +1206,68 @@ void render_milestones(const tank_t *t, uint16_t *fb, int stride) {
     /* the way out: a CLOSE button in the prompt's calm dress (a tap anywhere
        else never drops the page - too much to tap for that) */
     button(&c, MSP_CLOSE_X, MSP_CLOSE_Y, MSP_CLOSE_W, MSP_CLOSE_H, 0x1c2f36, MSP_TEAL, "CLOSE", 2);
+    /* a modal up: the page under it is out of reach (any tap only closes the
+       modal), so it LOOKS out of reach - every pixel at half (Strato: with
+       CLOSE lit it looked like you could still tap it). One shift per
+       pixel, so cheap enough for every frame. */
+    if (g_ms_caption[0])
+        for (int y = 0; y < TANK_H; y++)
+            for (int x = 0; x < TANK_W; x++) fb[y * stride + x] = (uint16_t)((fb[y * stride + x] >> 1) & 0x7bef);
     /* the detail modal, in the reset prompt's dress: the art at 2x, a title
        (the fish's name / TANK, or NOT YET), the milestone's words */
-    if (g_ms_caption[0]) {
-        const int X = MSP_MODAL_X, Y = MSP_MODAL_Y, W = MSP_MODAL_W, H = MSP_MODAL_H;
+    if (g_ms_caption[0] && g_ms_tip) {
+        /* the tip page: HOW, then the gate's lines; any tap closes it */
+        const int X = MSP_MODAL_X, Y = MSP_FRY_MODAL_Y, W = MSP_MODAL_W;
+        const char *const *tip = progression_fry_tip(g_ms_kind);
+        int n = 0; while (tip[n]) n++;
+        const int H = 56 + n * 20 + 16;
         rect_fill(&c, X, Y, W, H, 0x04141a);
         rect_edge(&c, X, Y, W, H, MSP_TEAL); rect_edge(&c, X + 1, Y + 1, W - 2, H - 2, 0x1c2f36);
-        if (g_ms_icon) blit_icon_scaled(&c, X + (W - 64) / 2, Y + 16, g_ms_icon, 2, g_ms_lit);
+        char title[24]; snprintf(title, sizeof title, "%s: HOW", g_ms_title);
+        draw_text(&c, X + (W - text_w(title, 3)) / 2, Y + 16, 3, 0xffffff, title);
+        for (int i = 0; i < n; i++) draw_text(&c, X + (W - text_w(tip[i], 2)) / 2, Y + 56 + i * 20, 2, MSP_TEAL, tip[i]);
+    } else if (g_ms_caption[0]) {
+        const int X = MSP_MODAL_X, W = MSP_MODAL_W;
+        const int Y = g_ms_kind >= 0 ? MSP_FRY_MODAL_Y : MSP_MODAL_Y;
+        const int H = MSP_MODAL_H + (g_ms_caption2[0] ? 20 : 0) + (g_ms_sub[0] ? 24 : 0) + (g_ms_kind >= 0 ? MSP_HOW_H + 14 : 0);
+        rect_fill(&c, X, Y, W, H, 0x04141a);
+        rect_edge(&c, X, Y, W, H, MSP_TEAL); rect_edge(&c, X + 1, Y + 1, W - 2, H - 2, 0x1c2f36);
+        if (g_ms_kind >= 0)                        /* the way further in: HOW?, centred at the foot (Strato: bottom
+                                                      right sat too close to CLOSE for comfort) */
+            button(&c, X + (W - MSP_HOW_W) / 2, Y + H - 10 - MSP_HOW_H, MSP_HOW_W, MSP_HOW_H, 0x1c2f36, MSP_TEAL, "HOW?", 2);
+        if (g_ms_icon) blit_icon_scaled(&c, X + (W - g_ms_icon->w * 2) / 2, Y + 16 + (32 - g_ms_icon->w), g_ms_icon, 2, g_ms_lit);
         else if (g_ms_fish >= 0 && g_ms_fish < t->n_fish) {
             const fish_t *f = &t->fish[g_ms_fish];
-            render_fish_preview(fb, stride, X + W / 2, Y + 48, f->size * 1.6f, f->color, f->fin, f->accent, t->clock);
-        }
+            if (g_ms_lit) render_fish_preview(fb, stride, X + W / 2, Y + 48, f->size * 1.6f, f->color, f->fin, f->accent, t->clock);
+            else          render_fish_preview(fb, stride, X + W / 2, Y + 48, f->size * 1.6f, MSP_DIM, MSP_DIM, MSP_DIM, t->clock);
+        } else if (g_ms_fry)
+            render_fish_preview(fb, stride, X + W / 2, Y + 48, 0.9f, g_ms_lit ? MSP_TEAL : MSP_DIM, g_ms_lit ? MSP_TEAL : MSP_DIM, g_ms_lit ? MSP_TEAL : MSP_DIM, t->clock);
         draw_text(&c, X + (W - text_w(g_ms_title, 3)) / 2, Y + 92, 3, g_ms_lit ? 0xffffff : MSP_TEAL, g_ms_title);
         draw_text(&c, X + (W - text_w(g_ms_caption, 2)) / 2, Y + 124, 2, g_ms_lit ? MSP_TEAL : 0x5f8a92, g_ms_caption);
+        int ly = Y + 144;
+        if (g_ms_caption2[0]) { draw_text(&c, X + (W - text_w(g_ms_caption2, 2)) / 2, ly, 2, g_ms_lit ? MSP_TEAL : 0x5f8a92, g_ms_caption2); ly += 20; }
+        if (g_ms_sub[0]) draw_text(&c, X + (W - text_w(g_ms_sub, 2)) / 2, ly + 4, 2, g_ms_lit ? 0xffffff : MSP_TEAL, g_ms_sub);
     }
 }
 
 int render_milestones_tap(const tank_t *t, float x, float y) {
-    if (g_ms_caption[0]) { render_milestones_leave(); return MS_TAP_KEPT; }   /* any tap: back to the page */
+    if (g_ms_caption[0]) {                       /* a modal is up */
+        if (g_ms_kind >= 0 && !g_ms_tip) {       /* a gate's: the HOW? button opens its tip page */
+            const int H = MSP_MODAL_H + (g_ms_caption2[0] ? 20 : 0) + (g_ms_sub[0] ? 24 : 0) + MSP_HOW_H + 14;
+            const int bx = MSP_MODAL_X + (MSP_MODAL_W - MSP_HOW_W) / 2, by = MSP_FRY_MODAL_Y + H - 10 - MSP_HOW_H;
+            if (x >= bx - 10 && x < bx + MSP_HOW_W + 12 && y >= by - 10 && y < by + MSP_HOW_H + 12) { g_ms_tip = true; return MS_TAP_KEPT; }
+        }
+        render_milestones_leave(); return MS_TAP_KEPT;   /* any other tap: back to the page */
+    }
     if (x >= MSP_CLOSE_X - 8 && y >= MSP_CLOSE_Y - 4) return MS_TAP_CLOSE;      /* slop out to the glass edge */
-    int row = -1; bool tank_row = false;
+    int row = -1; bool tank_row = false, fry_row = false;
+    fry_req_t req[FRY_REQ_MAX]; bool staged;
+    int nreq = progression_next_fry(t, req, &staged);
     if (y >= MSP_ROW_Y0 - 2 && y < MSP_ROW_Y0 + N_FISH_MAX * MSP_ROW_H) {
         row = (int)((y - MSP_ROW_Y0) / MSP_ROW_H);
         if (row < 0) row = 0;
-        if (row >= t->n_fish) return MS_TAP_NONE;    /* an empty row */
+        if (row == t->n_fish && nreq > 0) fry_row = true;   /* the NEW FRY row */
+        else if (row >= t->n_fish) return MS_TAP_NONE;      /* an empty row */
     } else if (y >= MSP_TANK_Y - 6 && y < 318) tank_row = true;   /* down to the brightness strip: fingers near the
                                                                    bottom bezel report LOW (see render_brightness_row_hit) */
     else return MS_TAP_NONE;
@@ -1175,7 +1277,28 @@ int render_milestones_tap(const tank_t *t, float x, float y) {
         if (k > 5) k = 5;
     } else if (x >= 20 && x < MSP_BADGE_X0 - 4) k = -1;
     else return MS_TAP_NONE;
-    if (tank_row) {
+    g_ms_caption2[0] = 0; g_ms_sub[0] = 0; g_ms_fry = false; g_ms_kind = -1; g_ms_tip = false;
+    if (fry_row) {
+        if (k < 0) {                                 /* the name: the tally, and when it comes */
+            int met = 0; for (int i = 0; i < nreq; i++) met += req[i].met;
+            snprintf(g_ms_title, sizeof g_ms_title, "NEW FRY");
+            if (staged) { snprintf(g_ms_caption, sizeof g_ms_caption, "EVERY STEP IS DONE. A FRY");
+                          snprintf(g_ms_caption2, sizeof g_ms_caption2, "COMES AT THE NEXT LIGHT-ON");
+                          snprintf(g_ms_sub, sizeof g_ms_sub, "ON ITS WAY"); }
+            else { snprintf(g_ms_caption, sizeof g_ms_caption, "WHEN ALL %d ARE DONE A FRY", nreq);
+                   snprintf(g_ms_caption2, sizeof g_ms_caption2, "IS BORN AT NEXT LIGHT-ON");
+                   snprintf(g_ms_sub, sizeof g_ms_sub, "%d OF %d DONE", met, nreq); }
+            g_ms_lit = staged; g_ms_icon = NULL; g_ms_fish = -1; g_ms_fry = true;
+        } else if (k < nreq) {                       /* a gate: the words, and where it stands */
+            const fry_req_t *r = &req[k];
+            snprintf(g_ms_title, sizeof g_ms_title, "%s", r->title);
+            snprintf(g_ms_caption, sizeof g_ms_caption, "%s", r->words);
+            snprintf(g_ms_caption2, sizeof g_ms_caption2, "%s", r->words2);
+            snprintf(g_ms_sub, sizeof g_ms_sub, "%s", r->progress);
+            g_ms_lit = r->met; g_ms_icon = fry_req_icon(r->kind); g_ms_kind = r->kind;
+            g_ms_fish = g_ms_icon ? -1 : t->n_fish - 1;
+        } else return MS_TAP_NONE;
+    } else if (tank_row) {
         if (k < 0) {
             snprintf(g_ms_title, sizeof g_ms_title, "TANK");
             snprintf(g_ms_caption, sizeof g_ms_caption, "%d OF %d FISH SO FAR", t->n_fish, POP_CAP);
@@ -1201,4 +1324,4 @@ int render_milestones_tap(const tank_t *t, float x, float y) {
     }
     return MS_TAP_KEPT;
 }
-void render_milestones_leave(void) { g_ms_caption[0] = 0; g_ms_title[0] = 0; g_ms_icon = NULL; g_ms_fish = -1; }
+void render_milestones_leave(void) { g_ms_kind = -1; g_ms_tip = false; g_ms_caption[0] = 0; g_ms_caption2[0] = 0; g_ms_title[0] = 0; g_ms_sub[0] = 0; g_ms_icon = NULL; g_ms_fish = -1; g_ms_fry = false; }

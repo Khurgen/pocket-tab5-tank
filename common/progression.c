@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <math.h>
+#include <stdio.h>
 
 #define SAVE_MAGIC 0x50544b32u   /* "PTK2" (PTK1 saves are 4-fish, pre-population: start fresh) */
 #define RAVENOUS_AFTER_S (60 * 60)
@@ -143,21 +144,139 @@ static void do_arrival(tank_t *t) {
 
 /* care gates (docs/progression-next.md, Act 2): never time alone.
  * Counted, not just checked, so the tank can TELL when it's close: one
- * condition shy of an arrival, the parents-to-be start courting. */
-static void arrival_conditions(const tank_t *t, int *met, int *total) {
-    float min_trust = 10; bool changed = false;
+ * condition shy of an arrival, the parents-to-be start courting - and the
+ * milestones page can LIST them (progression_next_fry, 2026-09-14). One
+ * table serves both: `have` / `need` are the numbers behind the words. */
+typedef struct { int kind; float have, need, frac; bool met; } gate_t;
+static int care_gates(const tank_t *t, gate_t g[3]) {
+    float min_trust = 10, drift = 0; bool changed = false;
     for (int i = 0; i < t->n_fish; i++) {
         const fish_t *f = &t->fish[i];
         if (f->trust < min_trust) min_trust = f->trust;
-        if (fabsf(f->bold - f->bold0) >= 0.11f || fabsf(f->sociable - f->sociable0) >= 0.11f) changed = true;
+        float db = fabsf(f->bold - f->bold0), ds = fabsf(f->sociable - f->sociable0);
+        if (db > drift) drift = db;
+        if (ds > drift) drift = ds;
+        if (db >= 0.11f || ds >= 0.11f) changed = true;
     }
-    const fish_t *last = &t->fish[t->n_fish - 1];
+    int last = t->n_fish - 1;
+    float age = last >= 0 ? s_age[last] : 0;
+    int n = 0;
+#define GATE(k, h, nd, m) do { g[n].kind = (k); g[n].have = (h); g[n].need = (nd); g[n].met = (m); \
+        g[n].frac = g[n].met ? 1.0f : (nd) > 0 ? (h) / (nd) : 0; if (g[n].frac > 1) g[n].frac = 1; n++; } while (0)
     switch (t->n_fish) {
-    case 2:  *total = 3; *met = (min_trust >= 6.0f) + (t->player_feedings >= 12) + (t->hold_approaches >= 1); break;
-    case 3:  *total = 2; *met = (last->stage >= STAGE_JUV) + (changed || t->player_feedings >= 40); break;
-    case 4:  *total = 3; *met = (last->stage >= STAGE_ADULT) + (t->player_feedings >= 80) + (min_trust >= 7.0f); break;
-    default: *total = 3; *met = (last->stage >= STAGE_ADULT) + (t->player_feedings >= 140) + (min_trust >= 8.0f); break;
+    case 2:
+        GATE(FRY_REQ_TRUST, min_trust, 6.0f, min_trust >= 6.0f);
+        GATE(FRY_REQ_FEED, (float)t->player_feedings, 12, t->player_feedings >= 12);
+        GATE(FRY_REQ_HOLD, (float)t->hold_approaches, 1, t->hold_approaches >= 1);
+        break;
+    case 3:
+        GATE(FRY_REQ_GROW, age, (float)STAGE_JUV_AGE, t->fish[last].stage >= STAGE_JUV);
+        GATE(FRY_REQ_CHANGE, (float)t->player_feedings, 40, changed || t->player_feedings >= 40);
+        if (drift / 0.11f > g[n - 1].frac) g[n - 1].frac = drift / 0.11f;   /* whichever is closer */
+        break;
+    case 4:
+        GATE(FRY_REQ_GROW, age, (float)STAGE_ADULT_AGE, t->fish[last].stage >= STAGE_ADULT);
+        GATE(FRY_REQ_FEED, (float)t->player_feedings, 80, t->player_feedings >= 80);
+        GATE(FRY_REQ_TRUST, min_trust, 7.0f, min_trust >= 7.0f);
+        break;
+    default:
+        GATE(FRY_REQ_GROW, age, (float)STAGE_ADULT_AGE, t->fish[last].stage >= STAGE_ADULT);
+        GATE(FRY_REQ_FEED, (float)t->player_feedings, 140, t->player_feedings >= 140);
+        GATE(FRY_REQ_TRUST, min_trust, 8.0f, min_trust >= 8.0f);
+        break;
     }
+#undef GATE
+    return n;
+}
+static void arrival_conditions(const tank_t *t, int *met, int *total) {
+    gate_t g[3];
+    *total = care_gates(t, g); *met = 0;
+    for (int i = 0; i < *total; i++) *met += g[i].met;
+}
+
+/* how each gate is moved - the words behind the HOW? button */
+static const char *const TIP_TRUST[]  = { "REST A FINGER ON THE GLASS", "AND KEEP IT STILL. EVERY", "FISH EARNS TRUST WHILE IT", "RESTS THERE. 3 QUICK TAPS", "SCARE THEM AND COST TRUST.", NULL };
+static const char *const TIP_FEED[]   = { "TAP THE WATER AT THE VERY", "TOP OF THE TANK TO DROP", "FOOD. EVERY TAP THERE IS", "ONE MEAL. HUNGRY FISH RUSH", "TO IT, FULL ONES DRIFT BY.", NULL };
+static const char *const TIP_HOLD[]   = { "REST A FINGER ON THE GLASS", "FOR A FEW SECONDS. A FISH", "THAT TRUSTS YOU SWIMS OVER", "AND STAYS. FEED FIRST: A", "HUNGRY FISH WON'T COME.", NULL };
+static const char *const TIP_GROW[]   = { "FISH GROW ONLY WHILE THE", "LIGHT IS ON: JUVENILE AT", "30 MINUTES, ADULT AT 3", "HOURS, ELDER AT A DAY. TWO", "TAPS TOGGLE THE LIGHT.", NULL };
+static const char *const TIP_CHANGE[] = { "A CALM, WELL-FED FISH GETS", "BOLDER. ONE THAT SHADOWS A", "FRIEND GETS MORE SOCIAL.", "THAT TAKES A FEW LIT HOURS", "OR JUST KEEP FEEDING.", NULL };
+static const char *const TIP_GRASS[]  = { "GRASS REGROWS ON ITS OWN,", "FASTEST WHILE THE TANK", "SLEEPS. LEAVE ONE BED", "UNTRIMMED AND IT WILL BE", "TALL ENOUGH IN A FEW HOURS", NULL };
+const char *const *progression_fry_tip(int kind) {
+    switch (kind) {
+    case FRY_REQ_TRUST:  return TIP_TRUST;
+    case FRY_REQ_FEED:   return TIP_FEED;
+    case FRY_REQ_HOLD:   return TIP_HOLD;
+    case FRY_REQ_GROW:   return TIP_GROW;
+    case FRY_REQ_CHANGE: return TIP_CHANGE;
+    default:             return TIP_GRASS;
+    }
+}
+
+/* the checklist, in words. No %f: the device's printf may be the nano one. */
+static const char *const STAGE_WORDS[4] = { "A FRY", "A JUVENILE", "AN ADULT", "AN ELDER" };
+int progression_next_fry(const tank_t *t, fry_req_t out[FRY_REQ_MAX], bool *staged) {
+    if (staged) *staged = s_arrival_pending;
+    if (t->n_fish >= POP_CAP || t->n_fish >= N_FISH_MAX || t->n_fish < 2) return 0;
+    gate_t g[3];
+    int n = care_gates(t, g);
+    for (int i = 0; i < n; i++) {
+        fry_req_t *r = &out[i];
+        memset(r, 0, sizeof *r);
+        r->kind = g[i].kind; r->frac = g[i].frac; r->met = g[i].met;
+        int have = (int)g[i].have, need = (int)g[i].need;
+        switch (g[i].kind) {
+        case FRY_REQ_TRUST:
+            snprintf(r->title, sizeof r->title, "TRUST");
+            snprintf(r->words, sizeof r->words, "ALL FISH MUST HAVE TRUST");
+            snprintf(r->words2, sizeof r->words2, "OF AT LEAST %d OUT OF 10", need);
+            if (r->met) snprintf(r->progress, sizeof r->progress, "EVERY FISH DOES");
+            else { int tenths = (int)(g[i].have * 10 + 0.5f);
+                   snprintf(r->progress, sizeof r->progress, "LOWEST NOW %d.%d", tenths / 10, tenths % 10); }
+            break;
+        case FRY_REQ_FEED:
+            snprintf(r->title, sizeof r->title, "MEALS");
+            snprintf(r->words, sizeof r->words, "FEED THE FISH AT LEAST");
+            snprintf(r->words2, sizeof r->words2, "%d TIMES IN ALL", need);
+            if (r->met) snprintf(r->progress, sizeof r->progress, "DONE");
+            else snprintf(r->progress, sizeof r->progress, "%d OF %d SO FAR", have, need);
+            break;
+        case FRY_REQ_HOLD:
+            snprintf(r->title, sizeof r->title, "HOLD");
+            snprintf(r->words, sizeof r->words, "REST A FINGER ON THE GLASS");
+            snprintf(r->words2, sizeof r->words2, "UNTIL A FISH SWIMS TO IT");
+            snprintf(r->progress, sizeof r->progress, r->met ? "DONE" : "NOT YET");
+            break;
+        case FRY_REQ_GROW: {
+            const fish_t *f = &t->fish[t->n_fish - 1];
+            snprintf(r->title, sizeof r->title, "GROW");
+            snprintf(r->words, sizeof r->words, "THE YOUNGEST FISH MUST");
+            snprintf(r->words2, sizeof r->words2, need >= STAGE_ADULT_AGE ? "GROW INTO AN ADULT" : "GROW INTO A JUVENILE");
+            snprintf(r->progress, sizeof r->progress, "%s IS %s", f->name, STAGE_WORDS[f->stage & 3]);
+            break; }
+        case FRY_REQ_CHANGE:
+            snprintf(r->title, sizeof r->title, "CHANGE");
+            snprintf(r->words, sizeof r->words, "A FISH'S PERSONALITY MUST");
+            snprintf(r->words2, sizeof r->words2, "SHIFT, OR FEED %d TIMES", need);
+            if (r->met) snprintf(r->progress, sizeof r->progress, have >= need ? "DONE" : "SOMEONE CHANGED");
+            else snprintf(r->progress, sizeof r->progress, "MEALS %d OF %d", have, need);
+            break;
+        }
+    }
+    /* and the nursery: every arrival needs grass to be born in */
+    {
+        fry_req_t *r = &out[n++];
+        memset(r, 0, sizeof *r);
+        float best = 0;
+        for (int b = 0; b < VEG_BEDS; b++) if (t->veg_growth[b] > best) best = t->veg_growth[b];
+        r->kind = FRY_REQ_GRASS; r->met = tank_nursery_bed(t) >= 0;
+        r->frac = r->met ? 1.0f : best / VEG_NURSERY;
+        snprintf(r->title, sizeof r->title, "GRASS");
+        snprintf(r->words, sizeof r->words, "ONE GRASS BED MUST GROW");
+        snprintf(r->words2, sizeof r->words2, "TALL ENOUGH TO HIDE IN");
+        if (r->met) snprintf(r->progress, sizeof r->progress, "A NURSERY BED IS READY");
+        else snprintf(r->progress, sizeof r->progress, "TALLEST BED %d%% THERE", (int)(r->frac * 100 + 0.5f));
+    }
+    return n;
 }
 
 static bool arrival_earned(const tank_t *t) {

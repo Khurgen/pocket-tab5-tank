@@ -111,6 +111,27 @@ static int selftest_pop(void) {
     print_roster(&tank);
     if (tank.n_fish != 2) { printf("FAIL: new tank should start with 2\n"); return 1; }
     if (!progression_setup_pending()) { printf("FAIL: a new tank should owe the first-run setup\n"); return 1; }
+    /* the new-fry checklist (2026-09-14) reads the same gates: a fresh pair
+       owes trust, meals and a hold, and has the default garden's nursery */
+    {
+        fry_req_t req[FRY_REQ_MAX]; bool staged;
+        int n = progression_next_fry(&tank, req, &staged);
+        if (n != 4 || staged) { printf("FAIL: a new pair should list 4 fry gates, none staged (%d, %d)\n", n, staged); return 1; }
+        int met = 0; for (int i = 0; i < n; i++) met += req[i].met;
+        if (req[0].kind != FRY_REQ_TRUST || req[1].kind != FRY_REQ_FEED || req[2].kind != FRY_REQ_HOLD || req[3].kind != FRY_REQ_GRASS
+            || met != 1 || !req[3].met) { printf("FAIL: a fresh pair's gates: %d met, grass %d\n", met, req[3].met); return 1; }
+        printf("selftest-pop: fry checklist: %d gates (%s / %s / %s / %s)\n", n, req[0].progress, req[1].progress, req[2].progress, req[3].progress);
+        tank.player_feedings = 12; progression_next_fry(&tank, req, &staged);
+        if (!req[1].met || strcmp(req[1].progress, "DONE") || req[1].frac != 1.0f) { printf("FAIL: 12 feedings should meet the MEALS gate (%s)\n", req[1].progress); return 1; }
+        tank.player_feedings = 3; progression_next_fry(&tank, req, &staged);
+        if (req[1].met || req[1].frac < 0.24f || req[1].frac > 0.26f) { printf("FAIL: 3 of 12 feedings should be a quarter (%.2f)\n", req[1].frac); return 1; }
+        tank.player_feedings = 0;
+        float g0 = tank.veg_growth[0], g1 = tank.veg_growth[1], g2 = tank.veg_growth[2];
+        tank_veg_set(&tank, 0, VEG_NUB); tank_veg_set(&tank, 1, VEG_NUB); tank_veg_set(&tank, 2, VEG_NUB);
+        progression_next_fry(&tank, req, &staged);
+        if (req[3].met || req[3].frac >= 1.0f) { printf("FAIL: scalped beds should leave the GRASS gate owed (%s)\n", req[3].progress); return 1; }
+        tank_veg_set(&tank, 0, g0); tank_veg_set(&tank, 1, g1); tank_veg_set(&tank, 2, g2);
+    }
     progression_time_scale = 600;                 /* 10 minutes of tended time per second */
     int arrivals = 0, last_n = tank.n_fish;
     bool saw_court = false;                       /* the tell fires before the fry */
@@ -137,6 +158,33 @@ static int selftest_pop(void) {
                tank.fish[i].ms_bits, tank.fish[i].trust);
     printf("  tank ms 0x%03x\n", tank.tank_ms_bits);
     if (arrivals < 1) { printf("FAIL: no arrival earned by an attentive keeper\n"); return 1; }
+    {   /* the checklist follows the population: a full tank lists nothing,
+           a growing one lists the next arrival's gates + grass */
+        fry_req_t req[FRY_REQ_MAX];
+        int n = progression_next_fry(&tank, req, NULL);
+        if (tank.n_fish >= POP_CAP ? n != 0 : (n < 3 || req[n - 1].kind != FRY_REQ_GRASS)) {
+            printf("FAIL: checklist lists %d gates at %d fish\n", n, tank.n_fish); return 1; }
+        if (n > 0) {   /* and the page draws it: the row, the name's tally, the first gate's modal */
+            static uint16_t fb[TANK_W * TANK_H];
+            int top = 4 + tank.n_fish * 40;
+            render_milestones(&tank, fb, TANK_W);
+            if (render_milestones_tap(&tank, 100, top + 10) != MS_TAP_KEPT) { printf("FAIL: the NEW FRY name did not open its modal\n"); return 1; }
+            render_milestones(&tank, fb, TANK_W);
+            if (render_milestones_tap(&tank, 100, top + 10) != MS_TAP_KEPT) { printf("FAIL: a tap did not close the modal\n"); return 1; }
+            if (render_milestones_tap(&tank, 176 + 16, top + 20) != MS_TAP_KEPT) { printf("FAIL: the first gate did not open its modal\n"); return 1; }
+            render_milestones(&tank, fb, TANK_W);
+            /* HOW? (bottom right of the gate's panel) flips to the tip page; the next tap closes it */
+            if (render_milestones_tap(&tank, 56 + 336 / 2, 60 + 156 + 20 + 24 + 26 + 14 - 10 - 13) != MS_TAP_KEPT) { printf("FAIL: HOW? did not open the tip\n"); return 1; }
+            render_milestones(&tank, fb, TANK_W);
+            if (render_milestones_tap(&tank, 200, 150) != MS_TAP_KEPT) { printf("FAIL: a tap did not close the tip page\n"); return 1; }
+            if (render_milestones_tap(&tank, 176 + 16, top + 20) != MS_TAP_KEPT) { printf("FAIL: the gate did not reopen\n"); return 1; }
+            if (render_milestones_tap(&tank, 200, 150) != MS_TAP_KEPT) { printf("FAIL: a tap off HOW? did not close the modal\n"); return 1; }
+            if (render_milestones_tap(&tank, 200, 232) != MS_TAP_NONE) { printf("FAIL: the modal is still up\n"); return 1; }   /* an empty row */
+            render_milestones_leave();
+            if (render_milestones_tap(&tank, 176 + n * 40 + 16, top + 20) != MS_TAP_NONE) { printf("FAIL: an empty gate cell opened a modal\n"); return 1; }
+            printf("selftest-pop: NEW FRY row at %d fish: %d gates, first %s / %s / %s\n", tank.n_fish, n, req[0].title, req[0].words, req[0].progress);
+        }
+    }
     /* the newest fry is owed its welcome (the birth flow) and wears the
        family's colours: the body of one parent, the markings of the other */
     int nb = progression_newborn();
@@ -905,7 +953,26 @@ static int snapshot(const char *prefix, int seconds) {
         }
         setup_cancel(&tank);
     }
-    printf("snapshot: %d fish, wrote %s_{tank,card,card1,milestones,confirm,setup_*}.ppm\n", tank.n_fish, prefix);
+    /* the NEW FRY row (2026-09-14): a young pair part way to its first
+       arrival - the page, then the TRUST gate's modal */
+    {
+        tank_init(&tank, 2024); tank_new_population(&tank);
+        tank.fish[0].trust = 4.1f; tank.fish[1].trust = 5.2f;
+        tank.player_feedings = 7; tank.hold_approaches = 1;
+        tank_veg_set(&tank, 0, 0.5f); tank_veg_set(&tank, 1, 0.2f); tank_veg_set(&tank, 2, VEG_NUB);
+        for (int i = 0; i < tank.n_fish; i++) tank.fish[i].ms_seen = tank.fish[i].ms_bits;
+        tank.tank_ms_seen = tank.tank_ms_bits;
+        render_milestones(&tank, fb, TANK_W); render_brightness_row(fb, TANK_W, 60);
+        snprintf(path, sizeof path, "%s_milestones_fry.ppm", prefix); write_ppm(path, fb);
+        render_milestones_tap(&tank, 176 + 16, 4 + 2 * 40 + 20);        /* the TRUST gate -> its modal */
+        render_milestones(&tank, fb, TANK_W); render_brightness_row(fb, TANK_W, 60);
+        snprintf(path, sizeof path, "%s_fry_modal.ppm", prefix); write_ppm(path, fb);
+        render_milestones_tap(&tank, 56 + 336 / 2, 60 + 156 + 20 + 24 + 26 + 14 - 10 - 13);   /* HOW? -> the tip page */
+        render_milestones(&tank, fb, TANK_W); render_brightness_row(fb, TANK_W, 60);
+        snprintf(path, sizeof path, "%s_fry_tip.ppm", prefix); write_ppm(path, fb);
+        render_milestones_leave();
+    }
+    printf("snapshot: %d fish, wrote %s_{tank,card,card1,milestones,milestones_fry,confirm,setup_*}.ppm\n", tank.n_fish, prefix);
     return 0;
 }
 

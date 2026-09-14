@@ -64,11 +64,16 @@ void render_battery(uint16_t *fb, int stride, float frac, bool charging);
  * size, its name, a growth strip fry -> elder - and six event badges; the
  * tank's row below with the population strip and six tank badges. A locked
  * badge is the same picture as a grey silhouette; one earned since the
- * keeper last closed the page wears a ring. render_milestones_tap maps a
- * tap: a badge, a name or a strip opens a small detail modal (the art at
- * 2x, a title, the words); while the modal is up ANY tap closes it. A
- * CLOSE button at the bottom right leaves the page. Callers try it BEFORE
- * the brightness row. */
+ * keeper last closed the page wears a ring. While the tank can still grow,
+ * a NEW FRY row sits under the last fish (2026-09-14): the fry-to-be as a
+ * silhouette, a tick per gate, and the next arrival's gates as badges
+ * (progression_next_fry) - lit once met, a filling bar under each still
+ * owed; a tap on a gate says what to do and where it stands, with a HOW?
+ * button that flips to a tip page (progression_fry_tip: how the keeper
+ * moves that gate); a tap on the name gives the tally. render_milestones_tap maps a tap: a badge, a name
+ * or a strip opens a small detail modal (the art at 2x, a title, the
+ * words); while the modal is up ANY tap closes it. A CLOSE button at the
+ * bottom right leaves the page. Callers try it BEFORE the brightness row. */
 void render_milestones(const tank_t *t, uint16_t *fb, int stride);
 /* a tap on the page (2026-09-13, Strato: with this much to tap, a stray tap
  * must not drop the whole page): MS_TAP_CLOSE = the CLOSE button, bottom

@@ -155,7 +155,19 @@ gray silhouette; one earned since you last looked wears a ring. Tap a badge
 to read it (a small panel; tap again to dismiss); the CLOSE button at the
 bottom right leaves the page.
 
+**The next fry.** While the tank can still grow, a NEW FRY row sits under
+the last fish: what the next arrival needs, as badges that light up when
+met, with a filling bar under each one still owed. The list is read from
+the same rule that decides a birth, so it is never wrong: at two fish it
+is trust, meals and a calm hold; later the youngest must grow up, and the
+counts rise. Tap a badge for the plain words and where it stands ("ALL FISH
+MUST HAVE TRUST OF AT LEAST 6 OUT OF 10 / LOWEST NOW 4.1"), and HOW? for a
+tip on how to get there. Tap the name for the tally. When every step is
+done, the fry is born at the next light-on.
+
 ![The milestones page](docs/media/sim-milestones.png)
+![The NEW FRY row, and a gate's tip](docs/media/sim-milestones-fry.png)
+![A gate's HOW? tip](docs/media/sim-fry-how.png)
 
 **Habits and continuity.** The tank remembers where you feed it and greets
 the light coming on. A real-time clock tells it how long it was off, so a
