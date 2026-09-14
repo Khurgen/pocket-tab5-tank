@@ -190,7 +190,12 @@ static int selftest_pop(void) {
             if (render_milestones_tap(&tank, 176 + 16, top + 20) != MS_TAP_KEPT) { printf("FAIL: the first gate did not open its modal\n"); return 1; }
             render_milestones(&tank, fb, TANK_W);
             /* HOW? (bottom right of the gate's panel) flips to the tip page; the next tap closes it */
-            if (render_milestones_tap(&tank, 56 + 336 / 2, 60 + 156 + 20 + 24 + 26 + 14 - 10 - 13) != MS_TAP_KEPT) { printf("FAIL: HOW? did not open the tip\n"); return 1; }
+            if (render_milestones_tap(&tank, 56 + 336 / 2, 60 + 156 + 20 + 24 + 32 + 14 - 10 - 16) != MS_TAP_KEPT) { printf("FAIL: HOW? did not open the tip\n"); return 1; }
+            render_milestones(&tank, fb, TANK_W);
+            if (render_milestones_tap(&tank, 200, 150) != MS_TAP_KEPT) { printf("FAIL: a tap did not close the tip page\n"); return 1; }
+            /* a low, wide press - 26 px under the button's foot, 30 px past its side - still opens it (the slop) */
+            if (render_milestones_tap(&tank, 176 + 16, top + 20) != MS_TAP_KEPT) { printf("FAIL: the gate did not reopen\n"); return 1; }
+            if (render_milestones_tap(&tank, 56 + 336 / 2 + 50 + 30, 60 + 246 - 10 + 26) != MS_TAP_KEPT) { printf("FAIL: a low wide press missed HOW?\n"); return 1; }
             render_milestones(&tank, fb, TANK_W);
             if (render_milestones_tap(&tank, 200, 150) != MS_TAP_KEPT) { printf("FAIL: a tap did not close the tip page\n"); return 1; }
             if (render_milestones_tap(&tank, 176 + 16, top + 20) != MS_TAP_KEPT) { printf("FAIL: the gate did not reopen\n"); return 1; }
@@ -994,7 +999,7 @@ static int snapshot(const char *prefix, int seconds) {
         render_milestones_tap(&tank, 176 + 16, 4 + 2 * 40 + 20);        /* the TRUST gate -> its modal */
         render_milestones(&tank, fb, TANK_W); render_brightness_row(fb, TANK_W, 60);
         snprintf(path, sizeof path, "%s_fry_modal.ppm", prefix); write_ppm(path, fb);
-        render_milestones_tap(&tank, 56 + 336 / 2, 60 + 156 + 20 + 24 + 26 + 14 - 10 - 13);   /* HOW? -> the tip page */
+        render_milestones_tap(&tank, 56 + 336 / 2, 60 + 156 + 20 + 24 + 32 + 14 - 10 - 16);   /* HOW? -> the tip page */
         render_milestones(&tank, fb, TANK_W); render_brightness_row(fb, TANK_W, 60);
         snprintf(path, sizeof path, "%s_fry_tip.ppm", prefix); write_ppm(path, fb);
         render_milestones_leave();

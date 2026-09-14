@@ -1078,8 +1078,15 @@ static bool g_ms_tip;                /* the gate's tip page is up instead of its
 /* a gate's modal is taller (two sentence lines, progress, the HOW? button)
    so it sits higher than the badge modal, clear of the CLOSE button */
 #define MSP_FRY_MODAL_Y 60
-#define MSP_HOW_W 76
-#define MSP_HOW_H 26
+#define MSP_HOW_W 100                 /* CLOSE-sized (Strato hit the 76 x 26 one a third of the time) */
+#define MSP_HOW_H 32
+/* its hit box: wide and deep. Fingers on this panel land low and wide of
+   where they feel, and a miss here costs the modal (any other tap closes
+   it), so the box runs 36 px past each side, 12 above and 28 below - the
+   whole foot of the panel, down to its edge. */
+#define MSP_HOW_SLOP_X 36
+#define MSP_HOW_SLOP_UP 12
+#define MSP_HOW_SLOP_DN 28
 
 /* a locked badge: the same art as a flat grey silhouette - luminance keeps
  * the shapes readable, the low alpha keeps it quiet on the ink */
@@ -1255,7 +1262,8 @@ int render_milestones_tap(const tank_t *t, float x, float y) {
         if (g_ms_kind >= 0 && !g_ms_tip) {       /* a gate's: the HOW? button opens its tip page */
             const int H = MSP_MODAL_H + (g_ms_caption2[0] ? 20 : 0) + (g_ms_sub[0] ? 24 : 0) + MSP_HOW_H + 14;
             const int bx = MSP_MODAL_X + (MSP_MODAL_W - MSP_HOW_W) / 2, by = MSP_FRY_MODAL_Y + H - 10 - MSP_HOW_H;
-            if (x >= bx - 10 && x < bx + MSP_HOW_W + 12 && y >= by - 10 && y < by + MSP_HOW_H + 12) { g_ms_tip = true; return MS_TAP_KEPT; }
+            if (x >= bx - MSP_HOW_SLOP_X && x < bx + MSP_HOW_W + MSP_HOW_SLOP_X && y >= by - MSP_HOW_SLOP_UP && y < by + MSP_HOW_H + MSP_HOW_SLOP_DN) {
+                g_ms_tip = true; return MS_TAP_KEPT; }
         }
         render_milestones_leave(); return MS_TAP_KEPT;   /* any other tap: back to the page */
     }
