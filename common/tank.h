@@ -308,8 +308,11 @@ void  tank_touch_tap(tank_t *t, float x, float y);
  * stroke that STARTS on a vegetation bed is a SLASH: every frond it crosses
  * is cut to the height where the stroke crosses it (a lower pass cuts again;
  * nothing ever cuts below nubs) - a short sideways flick takes one or two
- * fronds, a sweep along the floor mows the bed. Deliberately more travel
- * than a tap, so aiming at a fish can never shear the garden. */
+ * fronds, a sweep along the floor mows the bed. The finger is a pad: the
+ * stroke reaches a few px past where it lands and where it lifts, so the
+ * outer frond of a bed by the glass falls to a sweep that stops just short
+ * of its spine (2026-09-14). Deliberately more travel than a tap, so aiming
+ * at a fish can never shear the garden. */
 void  tank_touch_drag(tank_t *t, float x, float y);
 void  tank_feed(tank_t *t, float x, int n);
 

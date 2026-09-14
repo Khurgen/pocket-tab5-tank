@@ -281,10 +281,23 @@ void tank_init(tank_t *t, uint32_t seed) {
                                  * rolly fingertip tap stays under this; one
                                  * frond pitch is 12 px, so a flick takes 1-2) */
 #define SLASH_RATIO      1.5f   /* ... and it must be this much more h than v */
-#define SLASH_START_PX   10.0f  /* a slash must START this close to a FROND (its spine
-                                 * sideways, its tip upward) - not the bed's box:
-                                 * a cleaning scrub begun mid-glass over a tall bed
-                                 * used to arm the scissors (Strato, 2026-09-04) */
+#define SLASH_START_PX   10.0f  /* a slash must START this close to a FROND's tip
+                                 * (upward) - not the bed's box: a cleaning scrub
+                                 * begun mid-glass over a tall bed used to arm the
+                                 * scissors (Strato, 2026-09-04) */
+#define SLASH_START_SIDE_PX 16.0f /* ... and this close to a spine SIDEWAYS: the pad
+                                 * of a fingertip is ~6 mm = 75 px on this glass, so
+                                 * a landing a pitch beside a bed's outer frond has
+                                 * that frond under the finger (a stroke begun at
+                                 * the glass, heading in, used to arm nothing) */
+#define SLASH_REACH_PX    8.0f  /* the fingertip's reach past its REPORTED point: a
+                                 * stroke cuts the frond up to this far beyond where
+                                 * it lands and where it lifts. The touch point is
+                                 * the pad's centre; the outer frond of a bed stands
+                                 * 24 px from the glass and the centre stops short of
+                                 * it, so "the last blade never trips" (Strato,
+                                 * 2026-09-14). Two thirds of the 12 px pitch: a flick
+                                 * still takes only the fronds it visibly covers. */
 
 static int popcount32u(uint32_t v) { int n = 0; while (v) { n += v & 1; v >>= 1; } return n; }
 
@@ -365,16 +378,16 @@ void tank_veg_set(tank_t *t, int b, float g) {
 }
 
 /* is (x,y) inside bed b's canopy? */
-/* is (x,y) within `m` px of some frond of bed b - beside its spine and no
- * higher than its tip? The slash arms only from here. */
-static bool veg_near_frond(const tank_t *t, int b, float x, float y, float m) {
+/* is (x,y) within `side` px of some frond of bed b sideways, and no more than
+ * `up` px above its tip? The slash arms only from here. */
+static bool veg_near_frond(const tank_t *t, int b, float x, float y, float side, float up) {
     float x0, x1; int n;
     tank_veg_bed(t, b, &x0, &x1, NULL, &n);
-    if (x < x0 - m || x > x1 + m) return false;
+    if (x < x0 - side || x > x1 + side) return false;
     for (int i = 0; i < n; i++) {
         float fx; int segs = tank_veg_frond(t, b, i, &fx);
         float tip = TANK_H - 16 - segs * VEG_SEG_PX;
-        if (fabsf(x - fx) <= m && y >= tip - m) return true;
+        if (fabsf(x - fx) <= side && y >= tip - up) return true;
     }
     return false;
 }
@@ -386,16 +399,25 @@ static bool veg_inside(const tank_t *t, int b, float x, float y) {
 
 /* the scissors: cut every frond whose spine the stroke segment (x0,y0)-(x1,y1)
  * crosses, to the height where it crosses (only ever DOWN, never below nubs).
+ * The segment reaches SLASH_REACH_PX past its far end - the finger is a pad,
+ * not a point, and the frond just ahead of the reported point at lift is
+ * under it (mid-stroke the next segment crosses that frond anyway, at the
+ * same height); `landing` (the retroactive first segment of a stroke) reaches
+ * the same distance back past its start, for the frond under the finger as
+ * it touched down. A frond in the reach is cut at the height of that end.
  * Returns the number of fronds cut. */
-static int veg_cut(tank_t *t, float x0, float y0, float x1, float y1) {
+static int veg_cut(tank_t *t, float x0, float y0, float x1, float y1, bool landing) {
     int cuts = 0;
     float lo = x0 < x1 ? x0 : x1, hi = x0 < x1 ? x1 : x0;
+    if (x1 >= x0) hi += SLASH_REACH_PX; else lo -= SLASH_REACH_PX;
+    if (landing) { if (x1 >= x0) lo -= SLASH_REACH_PX; else hi += SLASH_REACH_PX; }
+    float dx = x1 - x0;
     for (int b = 0; b < VEG_BEDS; b++) {
         float bx0; int n; veg_bed_base(t, b, &bx0, &n);
         for (int i = 0; i < n; i++) {
             float fx = bx0 + i * 12;
             if (fx < lo || fx > hi) continue;
-            float u = hi > lo ? (fx - x0) / (x1 - x0) : 0;
+            float u = fabsf(dx) > 0.001f ? clampf((fx - x0) / dx, 0, 1) : 0;
             float cy = y0 + (y1 - y0) * u;
             float hf = (TANK_H - 16 - cy) / ((VEG_SEGS_FULL - 1) * VEG_SEG_PX);
             if (hf < VEG_NUB) hf = VEG_NUB;
@@ -475,7 +497,7 @@ void tank_touch_drag(tank_t *t, float x, float y) {
          * wiping algae and the fronds stand. */
         t->slash_armed = false;
         for (int b = 0; b < VEG_BEDS && !t->slash_armed; b++)
-            t->slash_armed = veg_near_frond(t, b, x, y, SLASH_START_PX);
+            t->slash_armed = veg_near_frond(t, b, x, y, SLASH_START_SIDE_PX, SLASH_START_PX);
         t->slash_engaged = t->slash_cut = false;
         t->slash_x0 = x; t->slash_y0 = y; t->slash_h = t->slash_v = 0;
     }
@@ -498,10 +520,10 @@ void tank_touch_drag(tank_t *t, float x, float y) {
             if (!t->slash_engaged) {
                 if (t->slash_h >= SLASH_PX && t->slash_h > SLASH_RATIO * t->slash_v) {
                     t->slash_engaged = true;
-                    cuts += veg_cut(t, t->slash_x0, t->slash_y0, x, y);
+                    cuts += veg_cut(t, t->slash_x0, t->slash_y0, x, y, true);
                 }
             } else if (fabsf(sdx) >= fabsf(sdy))   /* only the sideways segments cut */
-                cuts += veg_cut(t, t->drag_px, t->drag_py, x, y);
+                cuts += veg_cut(t, t->drag_px, t->drag_py, x, y, false);
             if (cuts && !t->slash_cut) { t->slash_cut = true; t->trims++; }
         }
     }

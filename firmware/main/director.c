@@ -119,6 +119,12 @@ static void show_state(const tank_t *t) {
              t->courting ? t->fish[t->court_a].name : "no", t->courting ? "+" : "",
              t->courting ? t->fish[t->court_b].name : "", t->court_active > 0 ? " (circling)" : "",
              progression_arrival_pending() ? "staged" : "-");
+    for (int b = 0; b < VEG_BEDS; b++) {           /* per-frond heights: which blades a sweep left standing */
+        char row[VEG_FRONDS_MAX * 5 + 1]; int len = 0, n; float x0;
+        tank_veg_bed(t, b, &x0, NULL, NULL, &n);
+        for (int i = 0; i < n && len < (int)sizeof row - 5; i++) len += snprintf(row + len, sizeof row - len, " %.2f", t->veg_h[b][i]);
+        ESP_LOGI(TAG, "bed %d fronds (x from %.0f, pitch 12):%s", b, x0 + 6, row);
+    }
     ESP_LOGI(TAG, "nursery bed %d (a bed >= %.2f) | parked real tank: %s", tank_nursery_bed(t), (double)VEG_NURSERY,
              nvs_has("bk") ? "YES (restore)" : "no (this IS the real tank)");
     float bf; bool chg;

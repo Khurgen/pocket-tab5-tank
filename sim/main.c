@@ -419,8 +419,9 @@ static int selftest_tend(void) {
     {
         float fx1, fx2; tank_veg_frond(&tank, 1, 1, &fx1); tank_veg_frond(&tank, 1, 2, &fx2);
         float before[VEG_FRONDS_MAX]; memcpy(before, tank.veg_h[1], sizeof before);
-        float sy = 200;
-        for (float sx = fx1 - 6; sx <= fx2 + 6; sx += 2) tank_touch_drag(&tank, sx, sy);
+        float sy = 200;                            /* lands and lifts a third of a pitch off the two spines:
+                                                      the pad's reach (SLASH_REACH_PX) must not take 0 or 3 */
+        for (float sx = fx1 - 3; sx <= fx2 + 3; sx += 2) tank_touch_drag(&tank, sx, sy);
         tank_tick(&tank, 1.0f / 60.0f, advisor_rules); tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
         float want = (TANK_H - 16 - sy) / ((VEG_SEGS_FULL - 1) * 3.2f);
         int n; tank_veg_bed(&tank, 1, NULL, NULL, NULL, &n);
@@ -432,6 +433,27 @@ static int selftest_tend(void) {
             if (cut && fabsf(h - want) > 0.02f) { printf("FAIL: frond %d not cut to the finger's height (%.2f vs %.2f)\n", i, h, want); return 1; }
             if (!cut && h < before[i]) { printf("FAIL: frond %d cut by a flick that never crossed it\n", i); return 1; }
         }
+    }
+    /* The outer blade by the glass (Strato, 2026-09-14: "the last blade in the
+     * row never trips"): bed 1's last frond stands 24 px from the glass and
+     * the finger's reported centre stops short of its spine. A sweep along
+     * the floor that ends 6 px before that spine must still take it... */
+    {
+        int n; float x0; tank_veg_bed(&tank, 1, &x0, NULL, NULL, &n);
+        float fl; tank_veg_frond(&tank, 1, n - 1, &fl);
+        tank_veg_set(&tank, 1, 1.0f);
+        for (float sx = x0 + 2; sx <= fl - 6; sx += 4) tank_touch_drag(&tank, sx, TANK_H - 8.0f);
+        tank_tick(&tank, 1.0f / 60.0f, advisor_rules); tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
+        printf("selftest-tend: sweep stopping 6 px short of bed 1's outer frond (spine %.0f, glass %d): %.2f\n", fl, TANK_W, tank.veg_h[1][n - 1]);
+        if (tank.veg_h[1][n - 1] > VEG_NUB + 1e-3f) { printf("FAIL: the outer frond stood after a sweep that stopped just short of it\n"); return 1; }
+        /* ...and a stroke that BEGINS between that frond and the glass, 14 px
+         * out, heading in, arms and takes it (it used to arm nothing) */
+        tank_veg_set(&tank, 1, 1.0f);
+        for (float sx = fl + 14; sx >= x0; sx -= 4) tank_touch_drag(&tank, sx, TANK_H - 8.0f);
+        tank_tick(&tank, 1.0f / 60.0f, advisor_rules); tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
+        if (fabsf(tank.veg_growth[1] - VEG_NUB) > 1e-3f) { printf("FAIL: a sweep begun at the glass left bed 1 at %.2f\n", tank.veg_growth[1]); return 1; }
+        printf("selftest-tend: a sweep begun 14 px outside the outer frond mowed the bed\n");
+        tank_veg_set(&tank, 1, 1.0f);
     }
     /* ...then the mow: one sweep along the floor takes every frond of a bed
      * to nubs, never bare */
