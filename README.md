@@ -359,9 +359,11 @@ seven-minute prompt check before an overnight run is always worth it.
   through the night at wake
 - ✅ Browser installer: one click from Chrome or Edge, hosted at
   stratobuilds.com
-- 🚧 Next: labels on the milestones page (the renderer has a pixel font
-  now), a partial-stripe display flush, and a data run to broaden a content
-  fish's repertoire
+- 🚧 Next: a points system for unlockables
+- 🚧 Next: biodiversity as the unlockables: new fish species, new plant
+  species, corals, and tank maintenance critters (snails for the algae,
+  urchins to keep the grass down)
+- 🚧 Next: more achievements and milestones
 
 ## The video series
 
