@@ -137,6 +137,19 @@ void tank_make_fish(tank_t *t, int slot, int preset, float sociable, float bold,
     f->rest_dx = 8 + slot * 24 + bold * 14; f->rest_dy = -slot * 9 - tank_randf(t, 0, 10);   /* a body apart (was 9 px per slot) */
     f->sig = 0xffffffffu; f->ms_bits = 0; f->ms_seen = 0;
     f->color = p->color; f->fin = p->fin; f->accent = p->accent;
+    f->parent_a = f->parent_b = -1;
+}
+
+void tank_set_bubble_x(tank_t *t, float x) {
+    /* clear of the reef rock (the fish's other landmark) and of the glass;
+       grass is fine - the beds cover most of the width and the default spot
+       already rises through one */
+    float lo = t->reef_x + 50, hi = TANK_W - 30;
+    if (x < lo) x = lo;
+    if (x > hi) x = hi;
+    float dx = x - t->bubble_x;
+    t->bubble_x = x;
+    for (int i = 0; i < MAX_BUBBLE; i++) if (t->bubble[i].column) t->bubble[i].x += dx;   /* the column moves as one */
 }
 
 static void place_near_reef(tank_t *t, fish_t *f) {
@@ -175,6 +188,12 @@ int tank_add_fish(tank_t *t, int parent_a, int parent_b) {
     float soc  = clampf((pa->sociable + pb->sociable) * 0.5f + tank_randf(t, -0.15f, 0.15f), 0.05f, 0.95f);
     int slot = t->n_fish;
     tank_make_fish(t, slot, preset, soc, bold, STAGE_FRY);
+    /* its look is the family's, not the preset's (2026-09-14): the body from
+       one parent, the markings from the other - a coin decides which is
+       which; tank_set_look keeps the markings off a matching body */
+    if (tank_randf(t, 0, 1) < 0.5f) { int x = ia; ia = ib; ib = x; pa = &t->fish[ia]; pb = &t->fish[ib]; }
+    tank_set_look(t, slot, pa->color, pb->accent);
+    t->fish[slot].parent_a = (int8_t)ia; t->fish[slot].parent_b = (int8_t)ib;
     place_near_reef(t, &t->fish[slot]);
     t->fish[slot].hunger = 4; t->fish[slot].trust = 4;
     t->n_fish++;
@@ -185,15 +204,15 @@ void tank_init(tank_t *t, uint32_t seed) {
     t->rng = seed ? seed : 0xC0FFEE;
     t->n_fish = 0;                 /* progression_boot restores or calls tank_new_population */
     for (int i = 0; i < MAX_FOOD; i++) t->food[i].alive = false;
+    t->bubble_x = BUBBLE_X_DEFAULT; t->bubble_y = TANK_H * 0.5f;   /* matches gen_traces.py; setup may move x */
     for (int i = 0; i < MAX_BUBBLE; i++) {
         bubble_t *b = &t->bubble[i];
         b->column = i < 10;
-        b->x = b->column ? TANK_W * 0.8f + tank_randf(t, -10, 10) : tank_randf(t, 12, TANK_W - 12);
+        b->x = b->column ? t->bubble_x + tank_randf(t, -10, 10) : tank_randf(t, 12, TANK_W - 12);
         b->y = tank_randf(t, 0, TANK_H);
         b->vy = tank_randf(t, 14, 30);
         b->wobble = tank_randf(t, 0, TAU);
     }
-    t->bubble_x = TANK_W * 0.8f;  t->bubble_y = TANK_H * 0.5f;   /* matches gen_traces.py */
     t->reef_x   = TANK_W * 0.15f; t->reef_y   = TANK_H * 0.85f;
     t->clock = 0; t->day_phase = 0; t->night = false;
     t->light_override = false; t->light_on = true;

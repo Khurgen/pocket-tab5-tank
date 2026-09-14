@@ -11,6 +11,7 @@ int  touch_port_selected(void);   /* tapped fish for the stats card, -1 = none *
  * touch_port_show_milestones is the director's cue (needs no card). */
 bool touch_port_milestones(void);
 void touch_port_show_milestones(bool on);
+void touch_port_dismiss(void);    /* drop the card and the page: a flow (the birth flow) took the glass */
 void touch_port_set_inverted(bool inverted);   /* mirror coords when the screen is flipped */
 /* reset confirm prompt (render_confirm_reset): opened by main.c's chord -
  * BOOT held, then a finger lands on the glass - or the director's `reset`.

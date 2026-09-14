@@ -56,15 +56,21 @@ typedef struct {
     uint8_t  setup_pending, pad_id[3];
     char     names[N_FISH_MAX][FISH_NAME_MAX + 1];
     uint32_t body[N_FISH_MAX], accent[N_FISH_MAX];
+    float    bubble_x;                   /* the keeper's bubble column (0 = the default spot) */
     /* seen-milestones tail (2026-09-13, the milestones page): what the
      * keeper has already looked at, so a badge earned since wears a ring.
      * Older saves read zeros: everything earned shows as new once. */
     uint32_t ms_seen[N_FISH_MAX], tank_ms_seen;
+    /* family tail (2026-09-14, the birth flow): each fish's parents and the
+     * arrival still owed its welcome, all as slot + 1 so an older save's
+     * zeros read as "none". */
+    uint8_t  newborn_p1, parent_p1[N_FISH_MAX][2], pad_fam[3];
 } save_t;
 #define SAVE_CORE_SIZE   offsetof(save_t, veg_growth)   /* pre-upkeep PTK2 size */
 #define SAVE_UPKEEP_SIZE offsetof(save_t, veg_h)        /* 2026-08-30 .. 09-04 size */
 #define SAVE_FROND_SIZE  offsetof(save_t, setup_pending) /* 2026-09-04 .. 09-13 size */
 #define SAVE_IDENT_SIZE  offsetof(save_t, ms_seen)       /* identity tail, before the seen masks */
+#define SAVE_SEEN_SIZE   offsetof(save_t, newborn_p1)    /* seen masks, before the family tail (2026-09-13 .. 09-14) */
 
 float progression_time_scale = 1.0f;
 
@@ -78,6 +84,7 @@ static bool  s_arrival_pending;
 static bool  s_prev_night;
 static bool  s_booted;
 static bool  s_setup_pending;        /* the first-run flow still owed (setup.c) */
+static int   s_newborn = -1;         /* the arrival still owed its birth flow (setup.c), or -1 */
 
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
 static void mark_dirty(void) { if (!s_dirty) { s_dirty = true; s_dirty_since = 0; } }
@@ -86,6 +93,8 @@ float progression_age_s(const tank_t *t, int idx) { (void)t; return idx >= 0 && 
 bool  progression_arrival_pending(void) { return s_arrival_pending; }
 bool  progression_setup_pending(void)   { return s_setup_pending; }
 void  progression_setup_done(tank_t *t) { s_setup_pending = false; progression_save(t); }
+int   progression_newborn(void)         { return s_newborn; }
+void  progression_newborn_done(tank_t *t) { s_newborn = -1; progression_save(t); }
 
 static void set_ms(fish_t *f, uint32_t bit) { if (!(f->ms_bits & bit)) { f->ms_bits |= bit; mark_dirty(); } }
 static void set_tms(tank_t *t, uint32_t bit) { if (!(t->tank_ms_bits & bit)) { t->tank_ms_bits |= bit; mark_dirty(); } }
@@ -128,6 +137,7 @@ static void do_arrival(tank_t *t) {
     s_age[slot] = 0;
     t->fish[slot].ms_bits = MS_ARRIVED;
     if (t->n_fish <= N_FISH_MAX) set_tms(t, POP_TMS[t->n_fish]);
+    s_newborn = slot;                        /* owed its welcome: the birth flow (setup.c) */
     mark_dirty();
 }
 
@@ -170,6 +180,7 @@ void progression_fresh(tank_t *t) {
     s_arrival_pending = false; s_prev_night = t->night;
     s_ravenous = false; s_ravenous_t = 0;
     s_setup_pending = true;          /* a new tank: welcome, names, colours */
+    s_newborn = -1;
     s_booted = true;
     mark_dirty();
 }
@@ -189,10 +200,16 @@ void progression_set_age(tank_t *t, int idx, float seconds) {
     mark_dirty();
 }
 
-void progression_boot(tank_t *t) {
+/* restore the saved tank into t; false = no usable save (t untouched).
+ * *saved_unix gets the save's wall-clock stamp (0 if unknown). */
+static bool load_save(tank_t *t, int64_t *saved_unix) {
     save_t sv; memset(&sv, 0, sizeof sv);
-    s_booted = true;
+    *saved_unix = 0;
     bool loaded = persist_port_load(&sv, sizeof sv);
+    if (!loaded) {                       /* pre-family save: load that prefix */
+        memset(&sv, 0, sizeof sv);
+        loaded = persist_port_load(&sv, SAVE_SEEN_SIZE);
+    }
     if (!loaded) {                       /* pre-seen-masks save: load that prefix */
         memset(&sv, 0, sizeof sv);
         loaded = persist_port_load(&sv, SAVE_IDENT_SIZE);
@@ -209,10 +226,8 @@ void progression_boot(tank_t *t) {
         memset(&sv, 0, sizeof sv);
         loaded = persist_port_load(&sv, SAVE_CORE_SIZE);
     }
-    if (!loaded || sv.magic != SAVE_MAGIC || sv.n_fish < 2 || sv.n_fish > N_FISH_MAX) {
-        progression_fresh(t);
-        return;
-    }
+    if (!loaded || sv.magic != SAVE_MAGIC || sv.n_fish < 2 || sv.n_fish > N_FISH_MAX) return false;
+    *saved_unix = sv.saved_unix;
     t->n_fish = 0;
     for (int i = 0; i < sv.n_fish; i++) {
         const fish_save_t *s = &sv.fish[i];
@@ -228,8 +243,13 @@ void progression_boot(tank_t *t) {
         t->n_fish = i + 1;
         if (sv.names[i][0]) { sv.names[i][FISH_NAME_MAX] = 0; tank_set_name(t, i, sv.names[i]); }
         tank_set_look(t, i, sv.body[i], sv.accent[i]);        /* zeros keep the preset's */
+        f->parent_a = (int8_t)(sv.parent_p1[i][0] - 1); f->parent_b = (int8_t)(sv.parent_p1[i][1] - 1);   /* 0 = none = -1 */
+        if (f->parent_a >= sv.n_fish) f->parent_a = -1;
+        if (f->parent_b >= sv.n_fish) f->parent_b = -1;
     }
     s_setup_pending = sv.setup_pending != 0;
+    s_newborn = sv.newborn_p1 && sv.newborn_p1 <= sv.n_fish ? sv.newborn_p1 - 1 : -1;
+    if (sv.bubble_x > 0) tank_set_bubble_x(t, sv.bubble_x);
     t->light_override = sv.light_override; t->light_on = sv.light_on;
     t->feed_spot_x = sv.feed_spot_x; t->player_feedings = sv.player_feedings;
     t->hold_approaches = sv.hold_approaches; t->tank_ms_bits = sv.tank_ms_bits;
@@ -244,13 +264,36 @@ void progression_boot(tank_t *t) {
     t->trims = sv.trims; t->cells_cleaned = sv.cells_cleaned;
     s_arrival_pending = sv.arrival_pending;
     s_prev_night = t->night;
+    return true;
+}
+
+void progression_boot(tank_t *t) {
+    int64_t saved_unix;
+    s_booted = true;
+    if (!load_save(t, &saved_unix)) { progression_fresh(t); return; }
     int64_t now = clock_port_now_unix();
-    if (now > 0 && sv.saved_unix > 0 && now - sv.saved_unix >= RAVENOUS_AFTER_S) {
+    if (now > 0 && saved_unix > 0 && now - saved_unix >= RAVENOUS_AFTER_S) {
         s_ravenous = true; s_ravenous_t = 0;                 /* the one offline rule */
         s_rav_feedings0 = t->player_feedings;
         for (int i = 0; i < t->n_fish; i++) t->fish[i].hunger = 9.6f;
     }
     if (s_arrival_pending && !t->night && tank_nursery_bed(t) >= 0) do_arrival(t);   /* earned while you were away: here it is */
+}
+
+float progression_wake(tank_t *t, int64_t now_unix) {
+    int64_t saved_unix;
+    s_booted = true;
+    if (!load_save(t, &saved_unix)) { progression_fresh(t); return -1; }
+    float slept = -1;
+    if (now_unix > 0 && saved_unix > 0 && now_unix > saved_unix) {
+        int64_t span = now_unix - saved_unix;
+        if (span > PROGRESSION_SLEEP_CAP_S) span = PROGRESSION_SLEEP_CAP_S;
+        tank_tick_sleep(t, (float)span);
+        slept = span / 3600.0f;
+        mark_dirty();
+    }
+    if (s_arrival_pending && !t->night && tank_nursery_bed(t) >= 0) do_arrival(t);
+    return slept;
 }
 
 void progression_tick(tank_t *t, float dt) {
@@ -368,10 +411,13 @@ void progression_save(tank_t *t) {
     memcpy(sv.algae, t->algae, ALGAE_CELLS);
     sv.trims = t->trims; sv.cells_cleaned = t->cells_cleaned;
     sv.setup_pending = s_setup_pending;
+    sv.newborn_p1 = (uint8_t)(s_newborn >= 0 && s_newborn < t->n_fish ? s_newborn + 1 : 0);
+    sv.bubble_x = t->bubble_x;
     for (int i = 0; i < t->n_fish; i++) {
         const fish_t *f = &t->fish[i]; fish_save_t *s = &sv.fish[i];
         if (strcmp(f->name, tank_roster_name(f->preset))) memcpy(sv.names[i], f->name, FISH_NAME_MAX + 1);
         sv.body[i] = f->color; sv.accent[i] = f->accent;      /* the preset's too: harmless, exact */
+        sv.parent_p1[i][0] = (uint8_t)(f->parent_a + 1); sv.parent_p1[i][1] = (uint8_t)(f->parent_b + 1);
         s->preset = (uint8_t)f->preset; s->stage = (uint8_t)f->stage;
         s->size = f->size; s->trust = f->trust; s->bold = f->bold; s->sociable = f->sociable;
         s->bold0 = f->bold0; s->sociable0 = f->sociable0;

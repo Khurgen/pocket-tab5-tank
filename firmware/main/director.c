@@ -142,11 +142,11 @@ static void help(void) {
     ESP_LOGI(TAG, "stash (park the real tank now) | restore (bring it back) | age <fish> <hours>");
     ESP_LOGI(TAG, "milestones [off] (the page, on cue; on the device: tap the open stats card)");
     ESP_LOGI(TAG, "reset (the keeper's confirm prompt, as BOOT + tap opens it) | reset yes|no (answer it here) - YES WIPES EVERY SAVE, a parked tank too");
-    ESP_LOGI(TAG, "setup [off] (the first-run flow: welcome, names, colours; off drops the panel) | name <fish|idx> <newname> (up to %d letters, saved)", FISH_NAME_MAX);
+    ESP_LOGI(TAG, "setup [off] (the first-run flow: welcome, names, colours; off drops the panel - the birth flow too) | name <fish|idx> <newname> (up to %d letters, saved)", FISH_NAME_MAX);
     ESP_LOGI(TAG, "touch [bias <px>] (finger-landing correction: reported touches move up by px; not saved)");
     ESP_LOGI(TAG, "pmic (AXP2101 dump) | pmic on|off <aldo1|aldo2..4|bldo1|bldo2|cpusldo|dcdc2..5|dldo1|dldo2> (experiments; boot trims the unused ones) | pmic trim");
     ESP_LOGI(TAG, "bright <0-255> (panel now; not saved) | level 100|60|30 (the keeper's setting, saved)");
-    ESP_LOGI(TAG, "batlog [clear] (the tank's own battery log: SoC/VBAT every 5 min awake, 30 min asleep, mA derived - read it after a night on battery) | codec (ES8311 registers)");
+    ESP_LOGI(TAG, "batlog [clear] (the tank's own battery log: SoC/VBAT every 5 min awake, 30 min asleep, mA derived - read it after a night on battery) | codec (ES8311 registers) | deepsleep [N] (sleep now; wake after N s, or BOOT)");
     ESP_LOGI(TAG, "overgrown (grass to the ceiling + fouled glass; fish stress climbs) | court (pair circles the reef now and every ~minute; fry at the next light-on) | arrive (the fry, now)");
 }
 
@@ -224,6 +224,11 @@ static void run(tank_t *t, char *line) {
         int v = atoi(argv[1]); if (v < 0) v = 0; if (v > 255) v = 255;
         display_port_set_brightness((uint8_t)v);
         ESP_LOGI(TAG, "brightness %d/255", v);
+    } else if (!strcmp(c, "deepsleep")) {
+        int n = argc > 1 ? atoi(argv[1]) : 0;
+        ESP_LOGI(TAG, "deep sleep now%s - the USB port vanishes until the wake", n > 0 ? " (timer wake)" : " (BOOT wakes)");
+        vTaskDelay(pdMS_TO_TICKS(50));
+        device_sleep(n);
     } else if (!strcmp(c, "codec")) {
         codec_port_dump();
     } else if (!strcmp(c, "batlog")) {
@@ -238,7 +243,7 @@ static void run(tank_t *t, char *line) {
         if (!touch_port_confirm_answer(ans)) ESP_LOGW(TAG, "no reset prompt is up (`reset` first)");
         else ESP_LOGI(TAG, "reset prompt: %s", ans > 0 ? "YES - the tank task wipes it this frame" : "NO");
     } else if (!strcmp(c, "setup")) {
-        if (argc > 1 && !strcmp(argv[1], "off")) { setup_cancel(t); ESP_LOGI(TAG, "setup panel dropped%s", progression_setup_pending() ? " (still owed: it returns at the next boot)" : ""); }
+        if (argc > 1 && !strcmp(argv[1], "off")) { setup_cancel(t); ESP_LOGI(TAG, "setup panel dropped%s", progression_setup_pending() || progression_newborn() >= 0 ? " (still owed: it returns at the next boot)" : ""); }
         else { setup_begin(t); ESP_LOGI(TAG, "setup: welcome page up (tap through on the glass)"); }
     } else if (!strcmp(c, "touch")) {
         if (argc > 2 && !strcmp(argv[1], "bias")) touch_port_set_bias(atoi(argv[2]));
@@ -300,7 +305,7 @@ static void run(tank_t *t, char *line) {
         if (tank_nursery_bed(t) < 0) { tank_veg_set(t, 0, 0.3f); ESP_LOGI(TAG, "no nursery: reef bed set to 0.30"); }
         int before = t->n_fish;
         progression_force_arrival(t);
-        if (t->n_fish > before) ESP_LOGI(TAG, "a fry: %s, by the reef", t->fish[t->n_fish - 1].name);
+        if (t->n_fish > before) ESP_LOGI(TAG, "a fry: %s, by the reef - the birth flow opens (announce, name, family; `setup off` drops it)", t->fish[t->n_fish - 1].name);
         else ESP_LOGW(TAG, "no arrival: tank at the cap (%d)", t->n_fish);
         show_state(t);
     } else if (!strcmp(c, "age") && argc > 2) {

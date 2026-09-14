@@ -159,11 +159,12 @@ bottom right leaves the page.
 
 **Habits and continuity.** The tank remembers where you feed it and greets
 the light coming on. A real-time clock tells it how long it was off, so a
-tank left dark for a day wakes hungry. A short press on BOOT drowses the
-device: the screen goes dark and the fish sleep with a slow metabolism,
-hunger rising and stress fading, no decisions made. Another press resumes in
-place. Holding BOOT powers the tank off entirely. Flip the device and the
-screen follows.
+tank left dark for a day wakes hungry. A short press on BOOT puts the
+device into deep sleep: the tank saves, the screen goes dark and the chip
+draws microamps. Another press wakes it, a three-second boot, and the fish
+have lived through the time away: hunger up, energy back, the grass and the
+algae grown, a long night ending in begging at the surface. Holding BOOT
+powers the tank off entirely. Flip the device and the screen follows.
 
 **First run.** A new tank, whether a fresh install or a reset, opens with a
 short setup over the live water. A welcome page; then you place the bubble
@@ -179,6 +180,21 @@ light stays on throughout, and the column, the names and the colors you
 chose are saved with the tank.
 
 ![Naming a fish on the letter wheel](docs/media/sim-setup-name.png)
+
+**A birth.** Every arrival is an event. The fry hatches low in the nursery
+grass wearing its family's colors, the body of one parent and the markings
+of the other, and the tank stops to introduce it. *A new fry!* rings the
+newcomer wherever it is and names its parents; the next page is the same
+letter wheel, so you name it; the last page shows the fry on its own, as it
+is now, with what it inherited: whose body, whose markings, and how bold
+and sociable it is on bars marked with each parent's own value. Its
+markings, like any fry's, come in as it grows. The welcome is saved with
+the tank until you finish it, so a fry born while you were away is waiting
+for you at the next light.
+
+![A new fry: the announcement](docs/media/sim-birth-born.png)
+![Naming the new fry](docs/media/sim-birth-name_new.png)
+![The family page: what it inherited](docs/media/sim-birth-family.png)
 
 **Starting over.** Hold BOOT and tap the glass: a *Reset tank?* prompt
 appears over the water with a NO and a YES. YES wipes the save and two new
@@ -211,19 +227,20 @@ clicks to startle, two to toggle the light, drag across the glass to wipe
 algae, and stroke sideways through a bed to trim it. Keys: **F** feed at the
 mouse, **N** light, **A** auto light, **L** switch
 between the rule stub and the LLM brain, **U** overlays, **M** milestones,
-**X** the reset prompt, **S** the first-run setup, **R** force an arrival, **Z** jump through seven
+**X** the reset prompt, **S** the first-run setup (or drops a birth's pages), **R** force an arrival
+(the birth flow opens), **Z** jump through seven
 hours of sleep, **G** grow the grass and algae now, **Q** quit.
 
 Flags: `--fresh` starts a new random tank, `--fast N` runs tended time N×
 faster so you can watch fish grow up, `--greedy` disables sampling,
 `--narrate` prints every decision as it's made, `--snapshot <prefix>` writes
-PPM frames of the tank, card, milestones page, reset prompt, and the setup
-pages.
+PPM frames of the tank, card, milestones page, reset prompt, the setup
+pages, and the three pages of a birth.
 
 Headless checks, all of which run in CI-style without a window:
 `--selftest` (reflex layer), `--selftest-llm [min]` (the real model),
-`--selftest-pop` (arrivals, saves, and the setup flow), `--selftest-sleep` (drowse metabolism
-and ravenous begging), `--selftest-hunger` (the hunger economy),
+`--selftest-pop` (arrivals, inherited looks, saves, the setup and birth flows), `--selftest-sleep` (sleep metabolism,
+the deep-sleep wake, and ravenous begging), `--selftest-hunger` (the hunger economy),
 `--selftest-tend` (grass, algae, trust holds), and `--bench` (render cost).
 
 ## Try it: firmware in QEMU
@@ -337,7 +354,9 @@ seven-minute prompt check before an overnight run is always worth it.
   decision, with touch, sleep and power-off, auto-rotation, battery gauge
 - ✅ The living tank: growth, arrivals with courtship, trust, the hunger
   economy, upkeep chores, milestones, the reset prompt, the first-run setup
-  (place the bubbles, a letter wheel to name each fry, a body color to pick)
+  (place the bubbles, a letter wheel to name each fry, a body color to pick),
+  births announced and named with a family page, deep sleep that lives
+  through the night at wake
 - ✅ Browser installer: one click from Chrome or Edge, hosted at
   stratobuilds.com
 - 🚧 Next: labels on the milestones page (the renderer has a pixel font

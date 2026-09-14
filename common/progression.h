@@ -33,6 +33,15 @@ int64_t clock_port_now_unix(void);                         /* 0 if unknown */
 /* call after tank_init: restores the saved tank (or creates a new population)
  * and applies the boot rule */
 void progression_boot(tank_t *t);
+/* the device waking from DEEP sleep (2026-09-14): restore the save, then live
+ * through the dark stretch since it was written - tank_tick_sleep for
+ * (now_unix - saved_unix), capped at PROGRESSION_SLEEP_CAP_S - instead of the
+ * cold-boot ravenous rule. Hunger, energy, grass and algae land where a night
+ * of drowse would have put them; a long enough night ends in ravenous begging
+ * by itself. Returns the hours simulated, or -1 when no clock was available
+ * (then it behaved like progression_boot without the ravenous rule). */
+#define PROGRESSION_SLEEP_CAP_S (7 * 24 * 3600)
+float progression_wake(tank_t *t, int64_t now_unix);
 /* call every frame after tank_tick */
 void progression_tick(tank_t *t, float dt);
 /* call on light-off / shutdown (autosaves on events + heartbeat anyway) */
@@ -68,6 +77,13 @@ void progression_reset(tank_t *t, uint32_t seed);
  * done (nobody's running tank gets the tutorial after an update). */
 bool progression_setup_pending(void);
 void progression_setup_done(tank_t *t);
+/* the birth flow (setup.c, 2026-09-14): every arrival is owed a visit - the
+ * announcement, a name, the family page - until the keeper walks it.
+ * progression_newborn is the slot still owed (-1 = none); it rides in the
+ * save, so a reboot mid-flow brings it back. progression_newborn_done clears
+ * it and saves the name at once. */
+int  progression_newborn(void);
+void progression_newborn_done(tank_t *t);
 /* milestones page (2026-09-13): the keeper closed it - everything earned so
  * far counts as seen (badges earned later wear a "new" ring until the next
  * look). Rides in the save. */

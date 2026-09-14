@@ -534,6 +534,16 @@ void render_tank(const tank_t *t, uint16_t *fb, int stride) {
         draw_veg(&c, t, b, veg_seed[b], 0, cached);
         /* no DYN_RECT: with the scene cache each frond span vignettes itself */
     PROF_ADD(2, p0);
+    /* the airstone the column rises from, on the floor where the keeper put
+       it (setup): three stones and a glint - dynamic, since it can move */
+    {
+        float ax = t->bubble_x, ay = TANK_H - 17;
+        fill_ellipse(&c, ax - 6, ay + 1, 7, 4, 0x2a3634, 255);
+        fill_ellipse(&c, ax + 5, ay + 2, 6, 3.5f, 0x22302c, 255);
+        fill_ellipse(&c, ax, ay - 2, 6, 3.5f, 0x3a4a48, 255);
+        fill_ellipse(&c, ax - 1, ay - 3, 2, 1.2f, 0x5a6a68, 200);
+        DYN_RECT((int)ax - 14, (int)ay - 7, (int)ax + 12, (int)ay + 7);
+    }
     /* food pellets */
     for (int i = 0; i < MAX_FOOD; i++)
         if (t->food[i].alive) {
@@ -946,6 +956,15 @@ void render_fish_preview(uint16_t *fb, int stride, float x, float y, float size,
     f.stage = STAGE_ADULT;                       /* grown: the crest shows the fin colour */
     f.hunger = 4; f.stress = 0; f.goal.id = GOAL_EXPLORE;
     f.color = body; f.fin = fin; f.accent = accent;
+    draw_fish_core(&c, &f, clock, false, 1.0f, size);
+}
+void render_fish_portrait(uint16_t *fb, int stride, float x, float y, float size, const fish_t *who, float clock) {
+    ctx_t c = ctx_full(fb, stride, 1.0f);
+    fish_t f; memset(&f, 0, sizeof f);
+    f.x = x; f.y = y; f.heading = 0; f.size = size; f.speed = 40;
+    f.stage = who->stage;
+    f.hunger = 4; f.stress = 0; f.goal.id = GOAL_EXPLORE;
+    f.color = who->color; f.fin = who->fin; f.accent = who->accent;
     draw_fish_core(&c, &f, clock, false, 1.0f, size);
 }
 void render_confirm_reset(uint16_t *fb, int stride, float frac) {

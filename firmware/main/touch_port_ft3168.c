@@ -84,8 +84,12 @@ void touch_port_poll(tank_t *t) {
     }
     bool su = setup_active();                                /* before the touch: BEGIN's release is not a tank tap */
     if (su && !s_cf) {
+        bool birth = setup_is_birth(); int who = setup_fish();
         setup_touch(t, tx, ty, touched);                     /* taps and the letter wheel, classified in setup.c */
-        if (!setup_active()) ESP_LOGI(TAG, "setup done: %s + %s", t->fish[0].name, t->fish[1].name);
+        if (!setup_active()) {
+            if (birth) ESP_LOGI(TAG, "birth flow done: %s named and saved", who >= 0 && who < t->n_fish ? t->fish[who].name : "?");
+            else ESP_LOGI(TAG, "setup done: %s + %s", t->fish[0].name, t->fish[1].name);
+        }
     }
     bool modal = s_ms || s_cf || su;                         /* a page or a prompt owns the glass */
     if (touched) { s_lx = tx; s_ly = ty; if (!modal) tank_touch_drag(t, tx, ty); }  /* stroke = wipe/slash */
@@ -155,6 +159,7 @@ released:
 int touch_port_selected(void) { return s_sel; }
 bool touch_port_milestones(void) { return s_ms; }
 void touch_port_show_milestones(bool on) { if (s_ms && !on) render_milestones_leave(); s_ms = on; }
+void touch_port_dismiss(void) { s_sel = -1; if (s_ms) render_milestones_leave(); s_ms = false; }
 
 /* ---- reset confirm prompt ---- */
 void touch_port_confirm_open(void) {

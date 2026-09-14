@@ -148,6 +148,11 @@ typedef struct {
     /* colors as 0xRRGGBB, used by render only: the preset's, or the keeper's
      * picks from LOOK_BODY / LOOK_ACCENT (setup.c); saved per fish */
     uint32_t color, fin, accent;
+    /* family (2026-09-14, the birth flow): the slots of the two fish it
+     * inherited from - its body colour is parent_a's, its markings (accent)
+     * parent_b's, bold / sociable the pair's average with a nudge. -1 = one
+     * of the founding pair (or an older save). Saved per fish. */
+    int8_t parent_a, parent_b;
 } fish_t;
 
 typedef struct { float x, y, age; bool alive, from_player; } food_t;
@@ -266,9 +271,11 @@ void  tank_init(tank_t *t, uint32_t seed);
 /* Population. tank_init leaves the tank empty (n_fish = 0); the progression
  * layer either restores a save or calls tank_new_population for a fresh tank:
  * two random roster presets, personalities rolled with a guaranteed contrast,
- * adults. tank_add_fish appends the next unused preset as a fry whose
- * bold/social are inherited from two live fish (+ noise); returns the index or
- * -1 if the tank is full. */
+ * adults. tank_add_fish appends the next unused preset (name, temperament)
+ * as a fry whose bold/social are inherited from two live fish (+ noise) and
+ * whose look is theirs too - body from one, markings from the other (the
+ * fish records which in parent_a / parent_b); returns the index or -1 if
+ * the tank is full. */
 void  tank_new_population(tank_t *t);
 int   tank_add_fish(tank_t *t, int parent_a, int parent_b);
 /* (re)build slot from a roster preset: used by persistence to restore a fish */
@@ -344,8 +351,8 @@ float tank_randf(tank_t *t, float lo, float hi);
 /* roster preset count (6) and a preset's display name, for UI */
 int   tank_roster_count(void);
 const char *tank_roster_name(int preset);
-/* the keeper's say over a fish's identity (first-run setup, 2026-09-13; a
- * rename from the card may follow). tank_set_name copies up to FISH_NAME_MAX
+/* the keeper's say over a fish's identity (first-run setup, 2026-09-13; the
+ * birth flow names an arrival, 2026-09-14). tank_set_name copies up to FISH_NAME_MAX
  * chars (empty = back to the preset's name); tank_set_look sets the body and
  * accent colours - the fin follows the body (the preset's own fin when the
  * body is a roster colour, a darkened body otherwise). The swatch palettes
@@ -354,5 +361,13 @@ extern const uint32_t LOOK_BODY[LOOK_N];
 extern const uint32_t LOOK_ACCENT[LOOK_N];
 void  tank_set_name(tank_t *t, int slot, const char *name);
 void  tank_set_look(tank_t *t, int slot, uint32_t body, uint32_t accent);
+/* the bubble column is the keeper's to place (first-run setup, 2026-09-13):
+ * x is clamped clear of the reef rock and the glass (grass is fine), the
+ * column's live bubbles shift with it, and everything that knows the column
+ * - the play loop, the advisor's sighting, the milestone, the airstone -
+ * reads tank_t.bubble_x. Saved per tank; the model only ever sees the
+ * column as a distance bucket and a bearing, never a position. */
+#define BUBBLE_X_DEFAULT (TANK_W * 0.8f)
+void  tank_set_bubble_x(tank_t *t, float x);
 
 #endif

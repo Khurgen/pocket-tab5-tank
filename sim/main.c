@@ -6,7 +6,8 @@
  *                          N light, L brain, U overlays, M milestones view,
  *                          X reset prompt (device: hold BOOT + tap the glass),
  *                          S the first-run setup flow (welcome / names / colours),
- *                          R force an arrival (debug), A auto-light, Q quit;
+ *                          R force an arrival (the birth flow opens: announce /
+ *                          name / family; S drops it), A auto-light, Q quit;
  *                          click fish = stats; tap the water surface = feed;
  *                          drag down from the top = feed; hold >= 3 s = finger
  *                          on glass (trusting fish visit); swipe sideways
@@ -136,6 +137,20 @@ static int selftest_pop(void) {
                tank.fish[i].ms_bits, tank.fish[i].trust);
     printf("  tank ms 0x%03x\n", tank.tank_ms_bits);
     if (arrivals < 1) { printf("FAIL: no arrival earned by an attentive keeper\n"); return 1; }
+    /* the newest fry is owed its welcome (the birth flow) and wears the
+       family's colours: the body of one parent, the markings of the other */
+    int nb = progression_newborn();
+    if (nb != tank.n_fish - 1) { printf("FAIL: the last arrival (%d) is not owed the birth flow (%d)\n", tank.n_fish - 1, nb); return 1; }
+    {
+        const fish_t *f = &tank.fish[nb];
+        if (f->parent_a < 0 || f->parent_b < 0 || f->parent_a >= nb || f->parent_b >= nb) { printf("FAIL: newborn parents %d/%d\n", f->parent_a, f->parent_b); return 1; }
+        const fish_t *pa = &tank.fish[f->parent_a], *pb = &tank.fish[f->parent_b];
+        if (f->color != pa->color || (f->accent != pb->accent && pb->accent != pa->color)) {   /* (markings step aside from a matching body) */
+            printf("FAIL: newborn look %06x/%06x is not %s's body + %s's markings (%06x/%06x)\n", f->color, f->accent, pa->name, pb->name, pa->color, pb->accent); return 1;
+        }
+        printf("  newborn %s: body from %s, markings from %s, bold %.2f (%.2f/%.2f) social %.2f (%.2f/%.2f)\n", f->name, pa->name, pb->name,
+               f->bold, pa->bold, pb->bold, f->sociable, pa->sociable, pb->sociable);
+    }
     /* round-trip the save */
     bool pending_at_save = progression_arrival_pending();
     progression_save(&tank);
@@ -146,10 +161,51 @@ static int selftest_pop(void) {
     if (tank.n_fish != expect) { printf("FAIL: restore n_fish %d != %d\n", tank.n_fish, expect); return 1; }
     for (int i = 0; i < saved.n_fish; i++)
         if (tank.fish[i].preset != saved.fish[i].preset || tank.fish[i].ms_bits != saved.fish[i].ms_bits ||
-            fabsf(tank.fish[i].bold - saved.fish[i].bold) > 1e-4f) {
+            fabsf(tank.fish[i].bold - saved.fish[i].bold) > 1e-4f ||
+            tank.fish[i].parent_a != saved.fish[i].parent_a || tank.fish[i].parent_b != saved.fish[i].parent_b) {
             printf("FAIL: restore mismatch on fish %d\n", i); return 1;
         }
-    printf("  save/restore ok (%d fish, tank ms 0x%03x)\n", tank.n_fish, tank.tank_ms_bits);
+    /* the debt came back too (or moved to the fry delivered at boot) */
+    if (progression_newborn() != tank.n_fish - 1) { printf("FAIL: the birth flow owed is %d after the reload, not %d\n", progression_newborn(), tank.n_fish - 1); return 1; }
+    printf("  save/restore ok (%d fish, tank ms 0x%03x, fry %d owed its welcome)\n", tank.n_fish, tank.tank_ms_bits, progression_newborn());
+    /* the birth flow (setup.c): the platforms poll it open; announce ->
+       name (the wheel) -> family (BACK / DONE); DONE pays the debt and
+       saves the name */
+    {
+        static uint16_t fb[TANK_W * TANK_H];
+        nb = progression_newborn();
+        if (setup_poll_birth(&tank) != nb || !setup_active() || !setup_is_birth() || setup_page() != SETUP_PG_BORN || setup_fish() != nb) {
+            printf("FAIL: the birth flow did not open on the announcement (%d)\n", setup_page()); return 1;
+        }
+        if (setup_poll_birth(&tank) != -1) { printf("FAIL: the poll re-opened a flow already up\n"); return 1; }
+        if (setup_hit(SETUP_MID_X + 20, SETUP_BTN_Y + 20) != SETUP_HIT_NEXT || setup_hit(SETUP_TOP_NEXT_X + 20, SETUP_TOP_BTN_Y + 20) != 0) { printf("FAIL: announcement hit-test\n"); return 1; }
+        render_setup(&tank, fb, TANK_W, 1.0f);
+        setup_activate(&tank, SETUP_HIT_NEXT);
+        setup_touch(&tank, 0, 0, false);
+        if (setup_page() != SETUP_PG_NAME_NEW || setup_fish() != nb || tank.stage_fish != nb) { printf("FAIL: MEET IT did not reach the fry's name page (page %d, stage %d)\n", setup_page(), tank.stage_fish); return 1; }
+        char was[FISH_NAME_MAX + 1]; strcpy(was, tank.fish[nb].name);
+        setup_activate(&tank, SETUP_HIT_SLOT0 + 0); setup_activate(&tank, SETUP_HIT_UP);   /* the first letter, one step on */
+        if (!strcmp(tank.fish[nb].name, was) || setup_fish() != nb) { printf("FAIL: the wheel did not turn the fry's name\n"); return 1; }
+        render_setup(&tank, fb, TANK_W, 1.0f);
+        setup_activate(&tank, SETUP_HIT_NEXT);
+        char named[FISH_NAME_MAX + 1]; strcpy(named, tank.fish[nb].name);
+        if (setup_page() != SETUP_PG_FAMILY || tank.stage_fish != -1) { printf("FAIL: NEXT did not reach the family page\n"); return 1; }
+        if (setup_hit(SETUP_NEXT_X + 20, SETUP_BTN_Y + 20) != SETUP_HIT_NEXT || setup_hit(SETUP_BACK_X + 20, SETUP_BTN_Y + 20) != SETUP_HIT_BACK ||
+            setup_hit(SETUP_MID_X + 55, SETUP_FAM_ROW_Y) != 0) { printf("FAIL: family page hit-test\n"); return 1; }
+        render_setup(&tank, fb, TANK_W, 1.0f);
+        setup_activate(&tank, SETUP_HIT_BACK);
+        if (setup_page() != SETUP_PG_NAME_NEW || strcmp(tank.fish[nb].name, named)) { printf("FAIL: BACK from the family page lost the name\n"); return 1; }
+        setup_activate(&tank, SETUP_HIT_BACK);
+        if (setup_page() != SETUP_PG_BORN) { printf("FAIL: BACK did not return to the announcement\n"); return 1; }
+        setup_activate(&tank, SETUP_HIT_BACK);
+        if (setup_page() != SETUP_PG_BORN) { printf("FAIL: BACK left the flow\n"); return 1; }
+        setup_activate(&tank, SETUP_HIT_NEXT); setup_activate(&tank, SETUP_HIT_NEXT); setup_activate(&tank, SETUP_HIT_NEXT);   /* DONE */
+        if (setup_active() || progression_newborn() != -1 || tank.stage_fish != -1) { printf("FAIL: DONE did not pay the birth debt\n"); return 1; }
+        if (setup_poll_birth(&tank) != -1) { printf("FAIL: the poll opened a flow with nothing owed\n"); return 1; }
+        tank_init(&tank, 6); progression_boot(&tank);
+        if (progression_newborn() != -1 || strcmp(tank.fish[nb].name, named)) { printf("FAIL: the fry's name ('%s') or the paid debt (%d) did not survive a reboot\n", tank.fish[nb].name, progression_newborn()); return 1; }
+        printf("  birth flow ok: %s (was %s), named through the wheel, saved and reloaded, nothing owed\n", named, was);
+    }
     /* the keeper's reset: every save gone, two fry with nothing tended, and
        the fresh pair already saved so a reboot lands on them */
     progression_reset(&tank, 11);
@@ -179,6 +235,29 @@ static int selftest_pop(void) {
     if (!setup_active() || setup_page() != SETUP_PG_WELCOME) { printf("FAIL: setup did not open on the welcome page\n"); return 1; }
     if (setup_hit(SETUP_MID_X + 20, SETUP_BTN_Y + 20) != SETUP_HIT_NEXT || setup_hit(5, 5) != 0) { printf("FAIL: welcome NEXT hit-test\n"); return 1; }
     setup_activate(&tank, setup_hit(SETUP_MID_X + 20, SETUP_BTN_Y + 20));
+    if (setup_page() != SETUP_PG_BUBBLES) { printf("FAIL: NEXT did not reach the bubbles page\n"); return 1; }
+    /* the bubble column: a press on the water brings it there, a drag moves
+       it, the rising bubbles come along, the reef and the grass push it off;
+       the release is no tap */
+    {
+        setup_touch(&tank, 300, 200, true);
+        tank_t probe = tank; tank_set_bubble_x(&probe, 300);
+        if (fabsf(tank.bubble_x - probe.bubble_x) > 0.5f) { printf("FAIL: press put the column at %.0f, not %.0f\n", tank.bubble_x, probe.bubble_x); return 1; }
+        for (int k = 1; k <= 20; k++) setup_touch(&tank, 300 + k * 2, 200, true);
+        probe = tank; tank_set_bubble_x(&probe, 340);
+        if (fabsf(tank.bubble_x - probe.bubble_x) > 0.5f) { printf("FAIL: drag left the column at %.0f\n", tank.bubble_x); return 1; }
+        for (int i = 0; i < MAX_BUBBLE; i++)
+            if (tank.bubble[i].column && fabsf(tank.bubble[i].x - tank.bubble_x) > 12) { printf("FAIL: a column bubble stayed behind\n"); return 1; }
+        setup_touch(&tank, 340, 200, false);
+        if (setup_page() != SETUP_PG_BUBBLES) { printf("FAIL: the drag's release acted as a tap\n"); return 1; }
+        tank_set_bubble_x(&tank, 5);
+        if (tank.bubble_x < tank.reef_x + 50) { printf("FAIL: the column sits on the reef (%.0f)\n", tank.bubble_x); return 1; }
+        tank_set_bubble_x(&tank, 900);
+        if (tank.bubble_x > TANK_W - 30) { printf("FAIL: the column sits in the glass (%.0f)\n", tank.bubble_x); return 1; }
+        tank_set_bubble_x(&tank, 340);
+    }
+    float bubble_x_set = tank.bubble_x;
+    setup_activate(&tank, SETUP_HIT_NEXT);
     if (setup_page() != SETUP_PG_NAME_A) { printf("FAIL: NEXT did not reach the name page\n"); return 1; }
     /* the fish being named takes the stage - the clear spot above the letters */
     setup_touch(&tank, 0, 0, false);
@@ -253,12 +332,13 @@ static int selftest_pop(void) {
     setup_activate(&tank, SETUP_HIT_NEXT);            /* BEGIN */
     if (setup_active() || progression_setup_pending() || tank.stage_fish != -1) { printf("FAIL: BEGIN did not finish the setup\n"); return 1; }
     tank_init(&tank, 13); progression_boot(&tank);
+    if (fabsf(tank.bubble_x - bubble_x_set) > 0.5f) { printf("FAIL: the bubble column did not come back from the save (%.0f)\n", tank.bubble_x); return 1; }
     if (progression_setup_pending() || strcmp(tank.fish[0].name, "BUB") || strcmp(tank.fish[1].name, preset1) ||
         tank.fish[0].color != LOOK_BODY[6] || tank.fish[0].accent != accent0 || strcmp(preset0, tank_roster_name(tank.fish[0].preset))) {
         printf("FAIL: names/looks did not come back from the save ('%s' %06x/%06x, pending %d)\n",
                tank.fish[0].name, tank.fish[0].color, tank.fish[0].accent, progression_setup_pending()); return 1;
     }
-    printf("  setup ok: %s (blue) + %s, saved and reloaded, nothing owed\n", tank.fish[0].name, tank.fish[1].name);
+    printf("  setup ok: %s (blue) + %s, bubbles at x %.0f, saved and reloaded, nothing owed\n", tank.fish[0].name, tank.fish[1].name, tank.bubble_x);
     (void)system(cmd);                            /* leave no test save behind */
     return 0;
 }
@@ -319,6 +399,24 @@ static int selftest_sleep(void) {
         for (int i = 0; i < MAX_FOOD; i++) if (tank.food[i].alive) printf("  DEBUG pellet (%.0f,%.0f) age %.0f\n", tank.food[i].x, tank.food[i].y, tank.food[i].age);
         printf("  DEBUG ravenous %d feed_spot %.0f\n", tank.ravenous, tank.feed_spot_x);
         return 1;
+    }
+    /* the device's deep-sleep wake (2026-09-14): save, forget everything,
+       come back "8 hours later" - the night is lived through in one step,
+       NOT the cold-boot ravenous rule (which would pin everyone at 9.6) */
+    {
+        for (int i = 0; i < tank.n_fish; i++) tank.fish[i].hunger = 2.0f;
+        tank_veg_set(&tank, 1, 0.30f);                   /* the 12 h above grew it to the ceiling */
+        progression_save(&tank);
+        float veg0 = tank.veg_growth[1];
+        tank_init(&tank, 8);
+        float h = progression_wake(&tank, clock_port_now_unix() + 8 * 3600);
+        if (h < 7.99f || h > 8.01f) { printf("FAIL: wake simulated %.2f h, not 8\n", h); return 1; }
+        for (int i = 0; i < tank.n_fish; i++)
+            if (fabsf(tank.fish[i].hunger - 8.4f) > 0.15f) {     /* 2.0 + 8 h x 0.8/h */
+                printf("FAIL: after an 8 h wake %s hunger %.1f (want 8.4)\n", tank.fish[i].name, tank.fish[i].hunger); return 1; }
+        if (tank.veg_growth[1] <= veg0) { printf("FAIL: the grass did not grow through the night\n"); return 1; }
+        printf("selftest-sleep: deep-sleep wake lived through %.0f h (hunger 2.0 -> %.1f, bed 1 %.2f -> %.2f)\n",
+               h, tank.fish[0].hunger, veg0, tank.veg_growth[1]);
     }
     printf("selftest-sleep: dash %.0f px/s at the drop; fed and calmed %.1f s after pellets\n",
            dash_speed, fed_at / 60.0f);
@@ -622,6 +720,11 @@ static void frame_cb(lv_timer_t *timer) {
     tank.hold_light = setup_active() || confirm_view;   /* no lights-out mid-name */
     tank_tick(&tank, dt, llm_active ? advisor_llm : advisor_rules);
     progression_tick(&tank, dt);
+    if (!confirm_view) {                          /* an arrival owed its welcome: the birth flow (setup.c) */
+        int nb = setup_poll_birth(&tank);
+        if (nb >= 0) { selected_fish = -1; milestones_view = false;
+                       printf("a new fry, %s: the birth flow is up (announce / name / family; S drops it)\n", tank.fish[nb].name); }
+    }
     if (milestones_view) { render_milestones(&tank, canvas_buf, TANK_W); render_brightness_row(canvas_buf, TANK_W, sim_bright); }
     else {
         render_tank(&tank, canvas_buf, TANK_W);
@@ -772,8 +875,9 @@ static int snapshot(const char *prefix, int seconds) {
     /* the first-run setup, page by page (never BEGIN: that would save this
        staged tank over the real one) */
     setup_begin(&tank);
-    static const char *const pg_name[SETUP_PG_N] = { "welcome", "name", "look", "name2", "look2", "care" };
+    static const char *const pg_name[SETUP_PG_N] = { "welcome", "bubbles", "name", "look", "name2", "look2", "care" };
     for (int pg = 0; pg < SETUP_PG_N; pg++) {
+        if (pg == SETUP_PG_BUBBLES) { setup_touch(&tank, 300, 200, true); setup_touch(&tank, 300, 200, false); }
         if (pg == SETUP_PG_NAME_A) { tank_set_name(&tank, 0, "BUB"); setup_activate(&tank, SETUP_HIT_SLOT0 + 1); }
         if (pg == SETUP_PG_LOOK_A) setup_activate(&tank, SETUP_HIT_BODY0 + 6);
         setup_touch(&tank, 0, 0, false);                   /* the stage is set; let the fish get there */
@@ -783,6 +887,24 @@ static int snapshot(const char *prefix, int seconds) {
         if (pg + 1 < SETUP_PG_N) setup_activate(&tank, SETUP_HIT_NEXT);
     }
     setup_cancel(&tank);
+    /* the birth flow, page by page (never DONE: it saves): the last fish as
+       a fry just hatched in the reef bed's grass, born to fish 0 and 1
+       (tank_add_fish above gave it their colours) */
+    {
+        int nb = tank.n_fish - 1;
+        tank.fish[nb].stage = STAGE_FRY; tank.fish[nb].size = tank.fish[nb].base_size * 0.55f;
+        tank.fish[nb].x = tank.reef_x + 70; tank.fish[nb].y = TANK_H - 34;
+        setup_begin_birth(&tank, nb);
+        static const char *const bpg_name[SETUP_BIRTH_PAGES] = { "born", "name_new", "family" };
+        for (int pg = 0; pg < SETUP_BIRTH_PAGES; pg++) {
+            setup_touch(&tank, 0, 0, false);
+            if (setup_page() == SETUP_PG_NAME_NEW) for (int i = 0; i < 300; i++) tank_tick(&tank, 1.0f / 60.0f, advisor_rules);   /* let the fry reach the stage */
+            render_tank(&tank, fb, TANK_W); render_setup(&tank, fb, TANK_W, 1.0f);
+            snprintf(path, sizeof path, "%s_setup_%s.ppm", prefix, bpg_name[pg]); write_ppm(path, fb);
+            if (pg + 1 < SETUP_BIRTH_PAGES) setup_activate(&tank, SETUP_HIT_NEXT);
+        }
+        setup_cancel(&tank);
+    }
     printf("snapshot: %d fish, wrote %s_{tank,card,card1,milestones,confirm,setup_*}.ppm\n", tank.n_fish, prefix);
     return 0;
 }
@@ -982,8 +1104,9 @@ int main(int argc, char **argv) {
         }
         bool setup_up = setup_active();          /* before the touch: BEGIN's release must not become a tank tap */
         if (setup_up) {
+            bool birth = setup_is_birth(); int who = setup_fish();
             setup_touch(&tank, (float)mx, (float)my, mpress);   /* taps and the letter wheel, classified in setup.c */
-            if (!setup_active()) { printf("setup done\n"); print_roster(&tank); }
+            if (!setup_active()) { printf(birth ? "birth flow done: %s named and saved\n" : "setup done\n", who >= 0 ? tank.fish[who].name : "?"); print_roster(&tank); }
         }
         bool modal = confirm_view || setup_up;
         if (mpress && !modal) tank_touch_drag(&tank, (float)mx, (float)my);   /* stroke -> wipe/slash */

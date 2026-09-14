@@ -13,6 +13,11 @@
  * render_tank while setup_active. Every other gesture is swallowed while it
  * is up. No timeout: it waits for the keeper.
  *
+ * PLACE THE BUBBLES (2026-09-13, Strato's idea): right after the welcome,
+ * over the live tank - a finger anywhere on the water drags the bubble
+ * column to that x (tank_set_bubble_x keeps it off the reef rock); a translucent stripe marks the column, the airstone at its foot
+ * moves with it, the bubbles already rising shift as one.
+ *
  * Naming (third design, Strato: "seeing the fish while naming it is very
  * important" - and a keyboard's keys are too small for a 35 mm glass): NO
  * panel - the tank stays in view with a ring around the fish being named -
@@ -21,7 +26,19 @@
  * above and below) to spin its letter through blank, A..Z. A blank at the
  * end shortens the name; NEXT trims blanks and puts the preset's name back
  * if nothing is left. Targets are a slot wide (44 px) and the whole band
- * tall, so nothing here needs aim. */
+ * tall, so nothing here needs aim.
+ *
+ * THE BIRTH FLOW (2026-09-14, Strato: an arrival "will be an exciting event
+ * for the player"): when progression says a fry is owed its welcome
+ * (progression_newborn), setup_poll_birth opens three pages over the live
+ * tank - A NEW FRY! (the announcement: the fry ringed wherever it hatched,
+ * its parents named), NAME THE NEW FRY (the letter wheel, as in the first
+ * run) and the family page (a panel: the fry's portrait on its own, as it
+ * is now; whose body and whose markings it wears; its boldness and
+ * sociability on bars between its parents' marks). No colour picker - a
+ * fry's look is its family's (tank_add_fish). DONE clears the debt and
+ * saves the name; a cancel (director `setup off`, sim S) leaves it owed, so
+ * it returns at the next boot. */
 #ifndef POCKET_TANK_SETUP_H
 #define POCKET_TANK_SETUP_H
 #include "tank.h"
@@ -29,7 +46,14 @@
 #include <stdbool.h>
 
 void setup_begin(tank_t *t);             /* page 1 (needs 2 fish; fewer = done at once) */
+void setup_begin_birth(tank_t *t, int slot);   /* the birth flow for the fry in `slot` */
+/* platforms, every frame while no prompt owns the glass: opens the birth
+ * flow once per arrival owed (never over a flow already up); returns the
+ * slot it opened for, or -1 */
+int  setup_poll_birth(tank_t *t);
 bool setup_active(void);
+bool setup_is_birth(void);               /* the birth flow, not the first run */
+int  setup_fish(void);                   /* the fish the current page is about (-1 = none) */
 void setup_cancel(tank_t *t);            /* drop the pages; the save still says pending */
 int  setup_page(void);                   /* SETUP_PG_* while active */
 /* the finger, every frame (or poll): x,y in tank coordinates, down = touching.
@@ -45,7 +69,10 @@ int  setup_slot(void);                   /* the active letter slot on a name pag
 void render_setup(const tank_t *t, uint16_t *fb, int stride, float clock);
 
 /* pages, in order */
-enum { SETUP_PG_WELCOME, SETUP_PG_NAME_A, SETUP_PG_LOOK_A, SETUP_PG_NAME_B, SETUP_PG_LOOK_B, SETUP_PG_CARE, SETUP_PG_N };
+enum { SETUP_PG_WELCOME, SETUP_PG_BUBBLES, SETUP_PG_NAME_A, SETUP_PG_LOOK_A, SETUP_PG_NAME_B, SETUP_PG_LOOK_B, SETUP_PG_CARE, SETUP_PG_N };
+/* the birth flow's pages, in order (numbered past the first run's) */
+enum { SETUP_PG_BORN = SETUP_PG_N, SETUP_PG_NAME_NEW, SETUP_PG_FAMILY, SETUP_PG_BIRTH_END };
+#define SETUP_BIRTH_PAGES (SETUP_PG_BIRTH_END - SETUP_PG_BORN)
 /* element ids (setup_hit / setup_activate) */
 #define SETUP_HIT_NEXT  1
 #define SETUP_HIT_BACK  2
@@ -95,6 +122,17 @@ enum { SETUP_PG_WELCOME, SETUP_PG_NAME_A, SETUP_PG_LOOK_A, SETUP_PG_NAME_B, SETU
 #define SETUP_SW_X  ((TANK_W - (SETUP_SW_N - 1) * SETUP_SW_PX - SETUP_SW_W) / 2)
 #define SETUP_SW_Y  176
 #define SETUP_ACC_Y 276
+/* the family page (birth flow): the portrait ringed under the name, then
+ * four rows - BODY / MARKINGS (a swatch, whose it is), BOLD / SOCIAL (a bar
+ * of the fry's own, the parents' ticks in their body colours) - and a
+ * PARENTS legend naming both in their tick colours; BACK + DONE at the foot */
+#define SETUP_FAM_PORTRAIT_Y (SETUP_Y + 78)
+#define SETUP_FAM_ROW_Y      (SETUP_Y + 128)
+#define SETUP_FAM_ROW_DY     26
+#define SETUP_FAM_LABEL_X    (SETUP_X + 28)
+#define SETUP_FAM_VALUE_X    (SETUP_X + 150)
+#define SETUP_FAM_BAR_W      200
+#define SETUP_FAM_BAR_H      8
 /* the stage: the clear spot each page leaves for the fish being edited
  * (tank_t.stage_*), top centre between the buttons */
 #define SETUP_STAGE_X   (TANK_W / 2)

@@ -36,6 +36,7 @@
 #include "freertos/semphr.h"
 #include "driver/gpio.h"
 #include "esp_sleep.h"
+#include "driver/rtc_io.h"
 
 /* sleep button: BOOT (GPIO0, active low, RTC-wake capable). A press saves the
  * tank, powers the panel down and deep-sleeps; the next press wakes through a
@@ -88,59 +89,36 @@ static void enter_poweroff(void);
 static bool s_btn_armed; static int64_t s_btn_low_since;   /* sleep_button_poll state */
 static bool s_btn_used;   /* this press opened the reset prompt: no drowse, no power-off from it */
 
-/* Sleep = drowse (docs/HANDOFF.md): the tank keeps living, slowly. Screen and
- * touch rails cut, then duty-cycled LIGHT sleep - a brief wake every 5 min to
- * advance the fish's slow physiology (tank_tick_sleep: hunger up, energy back,
- * nothing eats), RAM alive throughout, so a BOOT press RESUMES in place
- * instead of rebooting. Waking a tank slept past starving lands in the
- * ravenous begging state until the keeper feeds. The wake press must be a
- * fresh one (never listen while the entry press is still held), and a wake
- * press held >= the long-press threshold goes straight to power-off. */
-#define DROWSE_TICK_US (300LL * 1000000)  /* was 30 s, then 60; the sleep math takes any slice */
-#define DROWSE_SAVE_US (30LL * 60 * 1000000)
+/* Sleep = DEEP sleep (2026-09-14; until then a RAM-alive light-sleep drowse
+ * that woke every few minutes to tick the fish - measured at ~1.6 %/h of the
+ * cell and stuck there, the chip + PSRAM + panel-in-reset being the floor).
+ * Now: save, quiesce the IMU, drop the panel and touch, arm BOOT (ext0, low)
+ * and power the chip down to microamps - RAM and PSRAM gone. Waking is a
+ * boot: app_main sees the ext0 (or, from the director's `deepsleep N`, the
+ * timer) wake cause and calls progression_wake, which restores the save and
+ * lives through the dark stretch since it was written in one tank_tick_sleep
+ * (hunger up, energy back, grass and algae grown) - the same physiology the
+ * drowse ticked in slices. A wake press still held ~1.5 s after boot goes to
+ * power-off, as the drowse wake did. */
 static int battery_pct(void) { float f; bool c; return battery_port_read(&f, &c) ? (int)(f * 100 + 0.5f) : -1; }
-
-/* panel brightness policy: brightness.c */
-static void enter_sleep(void) {
+static void enter_sleep_for(int wake_after_s) {
     int pct0 = battery_pct(), mv0 = battery_port_vbat_mv();
-    ESP_LOGI(TAG, "sleep: save, panel off, drowse (slow metabolism; BOOT wakes) | battery %d%% %d mV", pct0, mv0);
-    batlog_add(pct0, mv0, display_port_brightness(), true, "sleep");
+    ESP_LOGI(TAG, "sleep: save, panel off, deep sleep (BOOT wakes%s) | battery %d%% %d mV",
+             wake_after_s > 0 ? ", or the timer" : "", pct0, mv0);
     touch_port_confirm_answer(-1);              /* an open reset prompt is a NO */
     progression_save(&tank);
+    batlog_add(pct0, mv0, display_port_brightness(), true, "sleep");
     imu_port_sleep();          /* quiesce BEFORE the rails cycle (latch-up guard) */
     display_port_sleep();
-    while (!gpio_get_level(BTN_SLEEP)) vTaskDelay(pdMS_TO_TICKS(10));
+    while (!gpio_get_level(BTN_SLEEP)) vTaskDelay(pdMS_TO_TICKS(10));   /* ext0 is level-triggered: never arm it held */
     vTaskDelay(pdMS_TO_TICKS(30));
-    gpio_wakeup_enable(BTN_SLEEP, GPIO_INTR_LOW_LEVEL);
-    esp_sleep_enable_gpio_wakeup();
-    int64_t t0 = esp_timer_get_time(), last = t0, last_save = t0;
-    for (;;) {
-        esp_sleep_enable_timer_wakeup(DROWSE_TICK_US);
-        esp_light_sleep_start();
-        int64_t now = esp_timer_get_time();
-        tank_tick_sleep(&tank, (now - last) / 1e6f);
-        last = now;
-        if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_GPIO) break;
-        if (now - last_save > DROWSE_SAVE_US) {
-            progression_save(&tank); last_save = now;
-            batlog_add(battery_pct(), battery_port_vbat_mv(), 0, true, "drowse");   /* the gauge is on an always-on rail */
-        }
-    }
-    gpio_wakeup_disable(BTN_SLEEP);
-    int64_t held0 = esp_timer_get_time();
-    while (!gpio_get_level(BTN_SLEEP)) {                    /* wake press still down */
-        if (esp_timer_get_time() - held0 >= 1500000) { enter_poweroff(); break; }
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-    ESP_LOGI(TAG, "wake: slept %.0f s, hunger[0] %.1f | battery %d%% -> %d%%, %d -> %d mV",
-             (esp_timer_get_time() - t0) / 1e6, tank.n_fish ? tank.fish[0].hunger : 0.0f,
-             pct0, battery_pct(), mv0, battery_port_vbat_mv());
-    batlog_add(battery_pct(), battery_port_vbat_mv(), 0, true, "wake");
-    display_port_wake();
-    imu_port_wake();           /* soft reset + reconfig: never resume on trust */
-    progression_save(&tank);
-    s_btn_armed = false; s_btn_low_since = 0;               /* require a fresh press */
+    rtc_gpio_pullup_en(BTN_SLEEP); rtc_gpio_pulldown_dis(BTN_SLEEP);
+    esp_sleep_enable_ext0_wakeup(BTN_SLEEP, 0);
+    if (wake_after_s > 0) esp_sleep_enable_timer_wakeup((int64_t)wake_after_s * 1000000);
+    esp_deep_sleep_start();
 }
+static void enter_sleep(void) { enter_sleep_for(0); }
+void device_sleep(int wake_after_s) { enter_sleep_for(wake_after_s); }   /* director `deepsleep N` */
 
 /* full power-down: save, then the AXP2101 cuts every rail (~ its own quiescent
  * uA until the PWR button boots it). Deep sleep keeps the module + touch +
@@ -151,7 +129,7 @@ static void enter_poweroff(void) {
     display_port_sleep();
     vTaskDelay(pdMS_TO_TICKS(50));
     if (battery_port_poweroff()) vTaskDelay(pdMS_TO_TICKS(500));  /* rails drop here */
-    enter_sleep();   /* no PMIC (QEMU / bring-up) or write failed: deep sleep */
+    enter_sleep();   /* no PMIC (QEMU / bring-up) or write failed: deep sleep anyway */
 }
 
 /* armed only after the button has been seen released, so the press that ended
@@ -216,6 +194,11 @@ static void tank_task(void *arg) {
         tank.hold_light = setup_active() || touch_port_confirm_up();   /* no lights-out mid-name */
         tank_tick(&tank, dt, llm_ok ? advisor_llm_esp : advisor_rules);
         progression_tick(&tank, dt);
+        if (!touch_port_confirm_up()) {           /* an arrival owed its welcome: the birth flow (setup.c) */
+            int nb = setup_poll_birth(&tank);
+            if (nb >= 0) { touch_port_dismiss();
+                           ESP_LOGI(TAG, "a new fry, %s: birth flow up (announce, name, family; director `setup off` drops it)", tank.fish[nb].name); }
+        }
         if (fb[cur]) {
             if (s_prefetch_pending) {                       /* prior frame's scene prefetch */
                 xSemaphoreTake(s_amc_done, portMAX_DELAY);
@@ -361,7 +344,21 @@ void app_main(void) {
     }
     rtc_port_init(board_i2c_bus());   /* wall clock for the ravenous rule */
     tank_init(&tank, (uint32_t)esp_timer_get_time() ^ 0xC0FFEEu);
-    progression_boot(&tank);                 /* restore (or a new random pair) + ravenous rule */
+    esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+    bool from_sleep = cause == ESP_SLEEP_WAKEUP_EXT0 || cause == ESP_SLEEP_WAKEUP_TIMER;
+    if (from_sleep) {                        /* the night, lived through in one step */
+        float h = progression_wake(&tank, clock_port_now_unix());
+        ESP_LOGI(TAG, "wake from deep sleep (%s): %s%.1f h simulated | hunger[0] %.1f | battery %d%% %d mV",
+                 cause == ESP_SLEEP_WAKEUP_TIMER ? "timer" : "BOOT", h < 0 ? "no clock, " : "", h < 0 ? 0.0f : h,
+                 tank.n_fish ? tank.fish[0].hunger : 0.0f, battery_pct(), battery_port_vbat_mv());
+        batlog_add(battery_pct(), battery_port_vbat_mv(), 0, true, "wake");
+        /* the wake press still held ~1.5 s into the boot = power-off (as the drowse wake did) */
+        int64_t held0 = esp_timer_get_time();
+        while (cause == ESP_SLEEP_WAKEUP_EXT0 && !gpio_get_level(BTN_SLEEP)) {
+            if (esp_timer_get_time() - held0 >= 1500000) { enter_poweroff(); break; }
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    } else progression_boot(&tank);          /* restore (or a new random pair) + ravenous rule */
     ESP_LOGI(TAG, "population %d (cap %d): %s + %s ...", tank.n_fish, POP_CAP,
              tank.fish[0].name, tank.n_fish > 1 ? tank.fish[1].name : "-");
     if (progression_setup_pending()) {           /* a new tank (fresh install, or a reset mid-flow): the welcome */
