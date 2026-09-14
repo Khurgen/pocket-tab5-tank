@@ -59,7 +59,7 @@ fetchable from the page's origin (or send CORS headers).
   binaries stay on GitHub.
 
 Two things to check once on a new host: the button must say *Install Pocket
-Tank* rather than the unsupported notice (a script optimiser rewriting the
+Tank* rather than the unsupported notice (a script optimizer rewriting the
 module tag breaks it), and `manifest.json` and `firmware/*.bin` must return
 200 in the browser's network tab.
 

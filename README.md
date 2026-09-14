@@ -151,7 +151,7 @@ hold-approach, first reef, first bubbles, first follow, first dart. The
 tank's row below tracks the population and the firsts you share: first
 feeding, first trimming, first glass cleaning, first quiet night, first play
 session, the tank changed someone. A locked badge is the same picture as a
-grey silhouette; one earned since you last looked wears a ring. Tap a badge
+gray silhouette; one earned since you last looked wears a ring. Tap a badge
 to read it (a small panel; tap again to dismiss); the CLOSE button at the
 bottom right leaves the page.
 
@@ -166,15 +166,17 @@ place. Holding BOOT powers the tank off entirely. Flip the device and the
 screen follows.
 
 **First run.** A new tank, whether a fresh install or a reset, opens with a
-short setup over the live water. A welcome page, then each of the two fry in
-turn: the fish being introduced swims a slow loop front and centre with a
+short setup over the live water. A welcome page; then you place the bubble
+column, dragging it left or right across the tank while the bubbles and
+the airstone follow your finger; then each of the two fry in
+turn: the fish being introduced swims a slow loop front and center with a
 ring around it while you name it on an arcade-style letter wheel (touch a
 slot, drag up or down to spin its letter, or tap the chevrons above and
 below it), then you pick its body color from eight swatches and watch the
 fry wear it. Its accent stays a question mark: a fry has no markings yet,
 and they come in as it grows. A page of care tips finishes the tour. The
-light stays on throughout, and the names and colors you chose are saved
-with the tank.
+light stays on throughout, and the column, the names and the colors you
+chose are saved with the tank.
 
 ![Naming a fish on the letter wheel](docs/media/sim-setup-name.png)
 
@@ -335,7 +337,7 @@ seven-minute prompt check before an overnight run is always worth it.
   decision, with touch, sleep and power-off, auto-rotation, battery gauge
 - ✅ The living tank: growth, arrivals with courtship, trust, the hunger
   economy, upkeep chores, milestones, the reset prompt, the first-run setup
-  (a letter wheel to name each fry, a body color to pick)
+  (place the bubbles, a letter wheel to name each fry, a body color to pick)
 - ✅ Browser installer: one click from Chrome or Edge, hosted at
   stratobuilds.com
 - 🚧 Next: labels on the milestones page (the renderer has a pixel font
