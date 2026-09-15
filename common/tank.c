@@ -8,7 +8,6 @@
 
 #define TAU 6.2831853f
 static void veg_sync(tank_t *t);   /* veg_growth[] = per-bed mean of veg_h[][] */
-#define VEG_START 0.35f          /* a fresh tank: comfortable canopy cover */
 
 const char *const GOAL_NAMES[GOAL_COUNT] = {
     "seek_food", "flee_shadow", "visit_bubbles", "follow_friend",
@@ -236,6 +235,7 @@ void tank_init(tank_t *t, uint32_t seed) {
     }
     t->reef_x   = TANK_W * 0.15f; t->reef_y   = TANK_H * 0.85f;
     t->clock = 0; t->night = false; t->idle_s = 0;
+    t->light_idle_s = LIGHT_IDLE_S; t->light_auto = false; t->light_manual_off = false;
     t->light_override = false; t->light_on = true;
     t->hold_active = false; t->hold_time = 0; t->hold_approached = false;
     t->tap_count = 0; t->tap_burst_t = 99; t->startled = false;
@@ -246,7 +246,7 @@ void tank_init(tank_t *t, uint32_t seed) {
     t->ravenous = false; t->trickle_off = false;
     t->stage_fish = -1; t->hold_light = false;
     t->drag_active = false; t->drag_has_prev = false; t->drag_dist = 0;
-    for (int b = 0; b < VEG_BEDS; b++) {
+    for (int b = 0; b < VEG_BEDS_MAX; b++) {
         /* a fresh tank's canopy has a natural profile: fronds within +-0.04
            of VEG_START, seeded per slot so it's the same tank every boot */
         for (int i = 0; i < VEG_FRONDS_MAX; i++) {
@@ -259,6 +259,11 @@ void tank_init(tank_t *t, uint32_t seed) {
     t->slash_h = t->slash_v = 0;
     for (int i = 0; i < ALGAE_CELLS; i++) t->algae[i] = 0;
     t->algae_acc = 0; t->trims = 0; t->cells_cleaned = 0;
+    t->algae_colonies = 0; t->trim_px = 0;
+    t->sd_balance = t->sd_earned = 0; t->sd_unlocks = 0;
+    for (int i = 0; i < N_FISH_MAX; i++) t->sd_paid_fish[i] = 0;
+    t->sd_colonies_paid = t->sd_inches_paid = 0;
+    t->snail_x = -1; t->snail_y = -1; t->snail_heading = 0; t->snail_cell = -1; t->snail_graze = 0;
     t->tank_ms_bits = 0; t->tank_ms_seen = 0; t->ask_rr = 0; t->advisor_asks = 0;
     tank_scatter_food(t, 2);
 }
@@ -353,12 +358,17 @@ static int popcount32u(uint32_t v) { int n = 0; while (v) { n += v & 1; v >>= 1;
  * of the tank's height" are the same thing for the comfort band below. At
  * VEG_NUB the fronds are ~5 segment green stubble. */
 static int veg_segs(float h) { return 2 + (int)(h * (VEG_SEGS_FULL - 2)); }
+/* frond pitch per bed: grass at 12 px; the sword plant's broad leaves at 14 */
+static int veg_pitch(int b) { return b == 3 ? 14 : 12; }
 static void veg_bed_base(const tank_t *t, int b, float *bx0, int *n) {
     int lush = popcount32u(t->tank_ms_bits); if (lush > 4) lush = 4;
     int base_n;
     if (b == 0)      { *bx0 = t->reef_x - 24 - lush * 6; base_n = 5 + lush; }
     else if (b == 1) { *bx0 = TANK_W * 0.84f; base_n = 4; }
-    else             { *bx0 = TANK_W * 0.62f; base_n = 2; }
+    else if (b == 2) { *bx0 = TANK_W * 0.62f; base_n = 2; }
+    else             { *bx0 = 208; *n = 4; return; }        /* the sword plant (2026-09-15): four broad
+                                                              leaves on the open floor between the reef
+                                                              bed's widest reach (~199) and bed 2 (272) */
     /* the frond count is fixed per bed now (it used to widen with growth):
        with fronds cut one at a time, a bed's outer fronds can't be allowed
        to vanish because its MEAN height dropped */
@@ -367,19 +377,21 @@ static void veg_bed_base(const tank_t *t, int b, float *bx0, int *n) {
     while (nn > 1 && *bx0 + nn * 12 > TANK_W - 8) nn--;   /* beds stop at the glass */
     *n = nn;
 }
+int tank_veg_beds(const tank_t *t) { return (t->sd_unlocks & SD_ITEM_PLANT) ? VEG_BEDS_MAX : VEG_BEDS; }
+veg_kind_t tank_veg_kind(const tank_t *t, int b) { (void)t; return b == 3 ? VEG_KIND_SWORD : VEG_KIND_GRASS; }
 void tank_veg_bed(const tank_t *t, int b, float *x0, float *x1, float *top_y, int *fronds) {
     float bx0; int n;
     veg_bed_base(t, b, &bx0, &n);
     float hmax = 0;
     for (int i = 0; i < n; i++) if (t->veg_h[b][i] > hmax) hmax = t->veg_h[b][i];
     if (x0) *x0 = bx0 - 6;
-    if (x1) *x1 = bx0 + n * 12 + 6;
+    if (x1) *x1 = bx0 + n * veg_pitch(b) + 6;
     if (top_y) *top_y = TANK_H - 16 - veg_segs(hmax) * VEG_SEG_PX - 4;
     if (fronds) *fronds = n;
 }
 int tank_nursery_bed(const tank_t *t) {
     int best = -1;
-    for (int b = 0; b < VEG_BEDS; b++)
+    for (int b = 0; b < tank_veg_beds(t); b++)
         if (t->veg_growth[b] >= VEG_NURSERY && (best < 0 || t->veg_growth[b] > t->veg_growth[best])) best = b;
     return best;
 }
@@ -395,13 +407,13 @@ static void court_site(const tank_t *t, float *cx, float *cy, float *rx) {
 int tank_veg_frond(const tank_t *t, int b, int i, float *x) {
     float bx0; int n;
     veg_bed_base(t, b, &bx0, &n);
-    if (x) *x = bx0 + i * 12;
+    if (x) *x = bx0 + i * veg_pitch(b);
     return veg_segs(t->veg_h[b][i]);
 }
 /* veg_growth[b] is the bed's mean frond height - the comfort band, the save
  * and the firmware log read it; recomputed after anything moves a frond */
 static void veg_sync(tank_t *t) {
-    for (int b = 0; b < VEG_BEDS; b++) {
+    for (int b = 0; b < VEG_BEDS_MAX; b++) {
         float bx0; int n; veg_bed_base(t, b, &bx0, &n);
         float sum = 0;
         for (int i = 0; i < n; i++) sum += t->veg_h[b][i];
@@ -409,7 +421,7 @@ static void veg_sync(tank_t *t) {
     }
 }
 static void veg_grow(tank_t *t, float dg) {
-    for (int b = 0; b < VEG_BEDS; b++)
+    for (int b = 0; b < tank_veg_beds(t); b++)
         for (int i = 0; i < VEG_FRONDS_MAX; i++)
             t->veg_h[b][i] = fminf(1, t->veg_h[b][i] + dg);
     veg_sync(t);
@@ -455,16 +467,17 @@ static int veg_cut(tank_t *t, float x0, float y0, float x1, float y1, bool landi
     if (x1 >= x0) hi += SLASH_REACH_PX; else lo -= SLASH_REACH_PX;
     if (landing) { if (x1 >= x0) lo -= SLASH_REACH_PX; else hi += SLASH_REACH_PX; }
     float dx = x1 - x0;
-    for (int b = 0; b < VEG_BEDS; b++) {
+    for (int b = 0; b < tank_veg_beds(t); b++) {
         float bx0; int n; veg_bed_base(t, b, &bx0, &n);
         for (int i = 0; i < n; i++) {
-            float fx = bx0 + i * 12;
+            float fx = bx0 + i * veg_pitch(b);
             if (fx < lo || fx > hi) continue;
             float u = fabsf(dx) > 0.001f ? clampf((fx - x0) / dx, 0, 1) : 0;
             float cy = y0 + (y1 - y0) * u;
             float hf = (TANK_H - 16 - cy) / ((VEG_SEGS_FULL - 1) * VEG_SEG_PX);
             if (hf < VEG_NUB) hf = VEG_NUB;
             if (hf >= t->veg_h[b][i]) continue;    /* the stroke passed above the tip */
+            t->trim_px += (t->veg_h[b][i] - hf) * (VEG_SEGS_FULL - 1) * VEG_SEG_PX;   /* the inches (sand dollars) */
             t->veg_h[b][i] = hf;
             cuts++;
             int puffs = 2;                         /* cut leaves drift up */
@@ -508,10 +521,38 @@ void tank_grow_algae(tank_t *t, int steps) {
     }
 }
 
-/* wipe the film in a WIPE_RADIUS band around the segment (x0,y0)-(x1,y1) */
+/* label the film's connected patches (8-neighbour): lab[i] = 1.. per cell
+ * with film, 0 without; returns the patch count. A 28 x 23 grid, an
+ * iterative flood fill - a few thousand steps, once per wiping frame. */
+static int algae_label(const uint8_t *algae, uint8_t *lab) {
+    int n = 0;
+    int16_t stack[ALGAE_CELLS];
+    for (int i = 0; i < ALGAE_CELLS; i++) lab[i] = 0;
+    for (int i = 0; i < ALGAE_CELLS; i++) {
+        if (!algae[i] || lab[i]) continue;
+        if (n >= 255) break;                               /* the label is a byte; the cap is 30% cover anyway */
+        n++; int sp = 0; stack[sp++] = (int16_t)i; lab[i] = (uint8_t)n;
+        while (sp) {
+            int c = stack[--sp], cx = c % ALGAE_COLS, cy = c / ALGAE_COLS;
+            for (int dy = -1; dy <= 1; dy++)
+                for (int dx = -1; dx <= 1; dx++) {
+                    int nx = cx + dx, ny = cy + dy;
+                    if (nx < 0 || nx >= ALGAE_COLS || ny < 0 || ny >= ALGAE_ROWS) continue;
+                    int j = ny * ALGAE_COLS + nx;
+                    if (algae[j] && !lab[j]) { lab[j] = (uint8_t)n; stack[sp++] = (int16_t)j; }
+                }
+        }
+    }
+    return n;
+}
+/* wipe the film in a WIPE_RADIUS band around the segment (x0,y0)-(x1,y1).
+ * A patch whose last cell goes under the keeper's stroke is a COLONY removed
+ * (tank_t.algae_colonies, the sand dollars' chore count, 2026-09-15). */
 static void wipe_algae(tank_t *t, float x0, float y0, float x1, float y1) {
     float dx = x1 - x0, dy = y1 - y0;
     float len2 = dx * dx + dy * dy;
+    uint8_t lab[ALGAE_CELLS]; int patches = -1;             /* labelled lazily: only a stroke that clears something pays the fill */
+    int wiped = 0;
     for (int cy = 0; cy < ALGAE_ROWS; cy++)
         for (int cx = 0; cx < ALGAE_COLS; cx++) {
             uint8_t *cell = &t->algae[cy * ALGAE_COLS + cx];
@@ -520,10 +561,106 @@ static void wipe_algae(tank_t *t, float x0, float y0, float x1, float y1) {
             float py = cy * ALGAE_CELL + ALGAE_CELL * 0.5f;
             float u = len2 > 1 ? clampf(((px - x0) * dx + (py - y0) * dy) / len2, 0, 1) : 0;
             if (tank_dist(px, py, x0 + dx * u, y0 + dy * u) < WIPE_RADIUS) {
+                if (patches < 0) patches = algae_label(t->algae, lab);
                 *cell = 0;
-                t->cells_cleaned++;
+                t->cells_cleaned++; wiped++;
             }
         }
+    if (wiped && patches > 0) {
+        bool alive[256] = { false };
+        for (int i = 0; i < ALGAE_CELLS; i++) if (t->algae[i] && lab[i]) alive[lab[i]] = true;
+        for (int p = 1; p <= patches; p++) {
+            bool touched = false;                          /* only a patch this stroke reached can have gone */
+            for (int i = 0; i < ALGAE_CELLS && !touched; i++) touched = lab[i] == p && !t->algae[i];
+            if (touched && !alive[p]) t->algae_colonies++;
+        }
+    }
+}
+
+/* ---- the snail (2026-09-15, the shop's algae control) ----
+ * A rule-based creature on the GLASS: it crawls toward the nearest film cell
+ * and grazes it thin, cell by cell; with the glass clean it ambles along the
+ * edge. The model never sees it (schema v4 is frozen) - it reaches the fish
+ * the way the film does, through cover and calm. Its grazing is not the
+ * keeper's chore: cells_cleaned and the colonies never count it. */
+#define SNAIL_PX_S        4.0f     /* crawl toward a patch (6 was "a bit fast" - Strato) */
+#define SNAIL_AMBLE_PX_S  3.0f     /* nothing to eat: the edge walk */
+#define SNAIL_GRAZE_PER_S 45.0f    /* film units per second on a cell (a fresh 90 cell in 2 s) */
+#define SNAIL_SLEEP_CELLS_PER_H 20 /* the night shift, coarse (tank_tick_sleep) */
+#define SNAIL_MARGIN      30.0f    /* it keeps inside the visible window: the panel's corners are
+                                    * rounded and the bezel curve hides the outer ~24 px (Strato,
+                                    * 2026-09-15: "stuck in the bottom left corner, I can barely
+                                    * see it" - the film seeds from the corners and it went there) */
+#define SNAIL_REACH       16.0f    /* it grazes a cell from this close (one cell): a corner cell
+                                    * under the bezel is eaten from the visible edge */
+static int snail_nearest_cell(const tank_t *t) {
+    int best = -1; float bd = 1e9f;
+    for (int i = 0; i < ALGAE_CELLS; i++) {
+        if (!t->algae[i]) continue;
+        float cx = (i % ALGAE_COLS) * ALGAE_CELL + ALGAE_CELL * 0.5f, cy = (i / ALGAE_COLS) * ALGAE_CELL + ALGAE_CELL * 0.5f;
+        float d = tank_dist(t->snail_x, t->snail_y, cx, cy);
+        if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+}
+bool tank_snail_upright(const tank_t *t) { return t->snail_cell < 0 && t->snail_y >= SNAIL_FLOOR_Y - 1; }
+static void snail_tick(tank_t *t, float dt) {
+    if (!(t->sd_unlocks & SD_ITEM_SNAIL)) return;
+    if (t->snail_x < 0) tank_snail_place(t);
+    if (t->snail_cell < 0 || !t->algae[t->snail_cell]) { t->snail_cell = (int16_t)snail_nearest_cell(t); t->snail_graze = 0; }
+    if (t->snail_cell >= 0) {
+        float cx = (t->snail_cell % ALGAE_COLS) * ALGAE_CELL + ALGAE_CELL * 0.5f;
+        float cy = (t->snail_cell / ALGAE_COLS) * ALGAE_CELL + ALGAE_CELL * 0.5f;
+        float tx = clampf(cx, SNAIL_MARGIN, TANK_W - SNAIL_MARGIN), ty = clampf(cy, SNAIL_MARGIN, TANK_H - SNAIL_MARGIN);
+        float d = tank_dist(t->snail_x, t->snail_y, tx, ty);      /* to the nearest point it may stand on */
+        if (d > 3 && tank_dist(t->snail_x, t->snail_y, cx, cy) > SNAIL_REACH) {
+            t->snail_heading = atan2f(ty - t->snail_y, tx - t->snail_x);
+            float step = fminf(d, SNAIL_PX_S * dt);
+            t->snail_x += cosf(t->snail_heading) * step; t->snail_y += sinf(t->snail_heading) * step;
+        } else {                                            /* grazing: the film thins under it */
+            t->snail_graze += dt;
+            int v = t->algae[t->snail_cell] - (int)(SNAIL_GRAZE_PER_S * dt + 0.5f);
+            t->algae[t->snail_cell] = (uint8_t)(v < 0 ? 0 : v);
+        }
+    } else if (t->snail_y < SNAIL_FLOOR_Y - 1) {            /* clean glass: down to the floor, flat on the glass, head down.
+                                                               A hair off straight down keeps the sideways facing it had
+                                                               (cos's sign) for the floor walk it lands in. */
+        t->snail_heading = 1.5708f + (cosf(t->snail_heading) < 0 ? 0.001f : -0.001f);
+        t->snail_y = fminf(SNAIL_FLOOR_Y, t->snail_y + SNAIL_PX_S * dt);
+    } else {                                                /* the floor walk, upright: along the bottom, a rest now and
+                                                               then, a turn at each end (the facing lives in snail_heading) */
+        t->snail_y = SNAIL_FLOOR_Y;
+        bool resting = fmodf(t->clock, 24.0f) < 5.0f;
+        if (!resting) {
+            float dir = cosf(t->snail_heading) < 0 ? -1.0f : 1.0f;
+            t->snail_x += dir * SNAIL_AMBLE_PX_S * dt;
+            if (t->snail_x <= SNAIL_MARGIN)          { t->snail_x = SNAIL_MARGIN;          t->snail_heading = 0; }
+            if (t->snail_x >= TANK_W - SNAIL_MARGIN) { t->snail_x = TANK_W - SNAIL_MARGIN; t->snail_heading = 3.14159f; }
+        }
+    }
+    t->snail_x = clampf(t->snail_x, SNAIL_MARGIN, TANK_W - SNAIL_MARGIN);
+    t->snail_y = clampf(t->snail_y, SNAIL_MARGIN, SNAIL_FLOOR_Y);
+}
+/* asleep: the snail keeps working, coarsely - the nearest cells go, one by one */
+static void snail_sleep(tank_t *t, float seconds) {
+    if (!(t->sd_unlocks & SD_ITEM_SNAIL)) return;
+    if (t->snail_x < 0) tank_snail_place(t);
+    int cells = (int)(seconds / 3600.0f * SNAIL_SLEEP_CELLS_PER_H);
+    for (int k = 0; k < cells; k++) {
+        int c = snail_nearest_cell(t);
+        if (c < 0) break;
+        t->algae[c] = 0;
+        t->snail_x = clampf((c % ALGAE_COLS) * ALGAE_CELL + ALGAE_CELL * 0.5f, SNAIL_MARGIN, TANK_W - SNAIL_MARGIN);
+        t->snail_y = clampf((c / ALGAE_COLS) * ALGAE_CELL + ALGAE_CELL * 0.5f, SNAIL_MARGIN, TANK_H - SNAIL_MARGIN);
+    }
+    t->snail_cell = -1;
+}
+void tank_snail_place(tank_t *t) {
+    t->snail_x = SNAIL_MARGIN + 10; t->snail_y = SNAIL_FLOOR_Y;   /* on the floor, bottom left, facing right */
+    t->snail_heading = 0; t->snail_cell = -1; t->snail_graze = 0;
+}
+void tank_plant_place(tank_t *t) {
+    tank_veg_set(t, 3, VEG_START);                          /* a young plant; it grows from here */
 }
 
 void tank_touch_hold(tank_t *t, float x, float y) {
@@ -541,7 +678,7 @@ void tank_touch_drag(tank_t *t, float x, float y) {
          * bed, and then works down through the grass arms nothing: it keeps
          * wiping algae and the fronds stand. */
         t->slash_armed = false;
-        for (int b = 0; b < VEG_BEDS && !t->slash_armed; b++)
+        for (int b = 0; b < tank_veg_beds(t) && !t->slash_armed; b++)
             t->slash_armed = veg_near_frond(t, b, x, y, SLASH_START_SIDE_PX, SLASH_START_PX);
         t->slash_engaged = t->slash_cut = false; t->wipe_sounded = false;
         t->slash_x0 = x; t->slash_y0 = y; t->slash_h = t->slash_v = 0;
@@ -620,10 +757,14 @@ void tank_touch_tap(tank_t *t, float x, float y) {
 /* per-frame bookkeeping for the touch state machine */
 static void touch_tick(tank_t *t, float dt) {
     t->tap_burst_t += dt;
-    /* (until 2026-09-15 two taps then a pause toggled the light; a saved
-       override then froze a tank in permanent day - the light is the idle
-       detector's now, see tank_handled) */
-    if (t->tap_count >= 2 && t->tap_burst_t > TAP_WINDOW) t->tap_count = 0;
+    /* two taps then a pause: the light (MANUAL, the default; in settings'
+       AUTO the idle rule owns it - 2026-09-15: the old always-on override
+       rode in the save and froze a tank in permanent day) */
+    if (!t->startled && t->tap_count == 2 && t->tap_burst_t > TAP_WINDOW) {
+        if (!t->light_auto) t->light_manual_off = !t->light_manual_off;
+        t->tap_count = 0;
+    }
+    if (t->tap_count >= 3 && t->tap_burst_t > TAP_WINDOW) t->tap_count = 0;
     if (t->startled) {
         t->startle_cooldown -= dt;
         if (t->startle_cooldown <= 0) { t->startled = false; t->tap_count = 0; }
@@ -687,9 +828,9 @@ static void touch_tick(tank_t *t, float dt) {
 void tank_handled(tank_t *t) { t->idle_s = 0; }
 
 void tank_toggle_light(tank_t *t) {
-    /* first toggle takes over from the idle detector at the current state
+    /* the first toggle takes over from the idle rule AND flips the light
        (the on/off cue comes from tank_tick, where the flip lands) */
-    if (!t->light_override) { t->light_override = true; t->light_on = !t->night; }
+    if (!t->light_override) { t->light_override = true; t->light_on = t->night; }
     else t->light_on = !t->light_on;
 }
 
@@ -728,6 +869,7 @@ void tank_tick_sleep(tank_t *t, float seconds) {
     /* the garden grows fastest in a dark, untended tank: waking to a taller
      * canopy and film on the glass is the morning chore */
     veg_grow(t, seconds / VEG_GROW_SLEEP_S);
+    snail_sleep(t, seconds);
     /* film steps go through the same accumulator the awake tick uses: the
      * device drowses in 60 s slices (firmware DROWSE_TICK_US) and
      * (int)(30 / 120) is 0 - the truncation that had quietly stopped every
@@ -931,7 +1073,7 @@ static void update_fish(tank_t *t, int idx, float dt) {
                           : -0.012f - f->speed / 4000.0f), 0, 10);
     /* a canopy is a place to hide: a fish inside one calms faster (below) */
     bool hidden = false;
-    for (int b = 0; b < VEG_BEDS && !hidden; b++)
+    for (int b = 0; b < tank_veg_beds(t) && !hidden; b++)
         hidden = t->veg_growth[b] >= VEG_BARE && veg_inside(t, b, f->x, f->y);
     /* vegetation comfort (2026-09-04 rework: fish LIKE cover). Three regimes,
      * each seeking its own equilibrium against the natural decay above:
@@ -947,9 +1089,10 @@ static void update_fish(tank_t *t, int idx, float dt) {
      *    faster again for a fish tucked inside a canopy. */
     {
         float g1 = 0, g2 = 0, gmean = 0;               /* tallest, second tallest */
-        for (int b = 0; b < VEG_BEDS; b++) {
+        int nb = tank_veg_beds(t);
+        for (int b = 0; b < nb; b++) {
             float g = t->veg_growth[b];
-            gmean += g / VEG_BEDS;
+            gmean += g / nb;
             if (g > g1) { g2 = g1; g1 = g; } else if (g > g2) g2 = g;
         }
         float over = (g2 - VEG_SMOTHER) / (1.0f - VEG_SMOTHER);
@@ -1119,7 +1262,7 @@ static void update_fish(tank_t *t, int idx, float dt) {
     f->target_speed = want * (f->energy < 1.2f ? 0.45f : 1);
     /* swimming through a canopy is slow going (a fleeing fish crashes through) */
     if (f->goal.id != GOAL_FLEE_SHADOW)
-        for (int b = 0; b < VEG_BEDS; b++)
+        for (int b = 0; b < tank_veg_beds(t); b++)
             if (veg_inside(t, b, f->x, f->y)) { f->target_speed *= VEG_SLOW; break; }
     f->speed = lerpf(f->speed, f->target_speed, clampf(dt * 2.6f, 0, 1));
     f->x += cosf(f->heading) * f->speed * dt;
@@ -1170,7 +1313,10 @@ void tank_tick(tank_t *t, float dt, advisor_fn advise) {
      * director's / sim's manual override wins over both. */
     t->idle_s += dt;
     bool was_night = t->night;
-    t->night = t->light_override ? !t->light_on : !t->hold_light && t->idle_s > LIGHT_IDLE_S;
+    t->night = t->light_override ? !t->light_on
+             : t->hold_light ? false
+             : !t->light_auto ? t->light_manual_off              /* MANUAL (default): the double-tap's state */
+             : t->idle_s > (float)t->light_idle_s;                      /* AUTO: the idle rule */
     if (t->night != was_night) tank_emit(t->night ? TEV_LIGHT_OFF : TEV_LIGHT_ON, -1);
 
     touch_tick(t, dt);
@@ -1213,6 +1359,7 @@ void tank_tick(tank_t *t, float dt, advisor_fn advise) {
         t->algae_acc -= ALGAE_STEP_AWAKE_S;
         tank_grow_algae(t, 1);
     }
+    snail_tick(t, dt);
 
     /* bubbles rise */
     for (int i = 0; i < MAX_BUBBLE; i++) {

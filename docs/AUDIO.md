@@ -102,7 +102,7 @@ Tiers are build order. Tier 1 alone is a shippable feature.
 |---|---|---|
 | `tap` | any tap on the glass that is not a feed | tiny, dry, ~60 ms |
 | `feed` | surface tap / pellets drop (`tank_feed`) | a plink or splash; once per drop, not per pellet |
-| `light_on`, `light_off` | double-tap light toggle | on rises, off falls |
+| `light_on`, `light_off` | the light flipping: MANUAL (default) = the double-tap; AUTO = a pick-up / touch after the idle time, and going idle | on rises, off falls |
 | `wipe` | algae squeegee stroke engaged | soft, loopable while the stroke moves? v1: one cue per stroke |
 | `snip` | a frond cut (`veg_cut` returns > 0) | one per cut, rate-limited 150 ms |
 | `card_open`, `card_close` | stats card up / dismissed | quiet |
@@ -128,6 +128,7 @@ Tiers are build order. Tier 1 alone is a shippable feature.
 | `milestone` | a milestone or checklist line earned | plays with the milestone modal (section 4a) |
 | `stage_up` | fry -> juv -> adult -> elder | |
 | `sleep`, `wake` | BOOT press to drowse / wake | DEFERRED by Strato 2026-09-15, no cue yet; wake would play after the codec is up, so ~100 ms into the boot |
+| `coin` | sand dollars earned (the "+N" toast, render_sd_toast) | not yet: no cue in the bank; the toast is silent. A purchase plays `confirm` |
 | `low_battery` | gauge falls to 10% | once per discharge, with the low-battery modal and the persistent pill (section 4a) |
 | `error` | save failed, reset prompt | |
 

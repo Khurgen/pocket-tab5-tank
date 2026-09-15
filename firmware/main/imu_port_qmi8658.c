@@ -45,7 +45,8 @@ static bool s_inverted;
 static int s_streak;              /* consecutive polls voting for a flip */
 static int64_t s_next_us;
 static int16_t s_prev[3]; static bool s_have_prev;
-static int64_t s_moved_us; static int s_motion;
+static int64_t s_moved_us; static int s_motion; static int16_t s_last[3];
+static int64_t s_handled_us; static bool s_prev_moved;   /* two polls in a row over the threshold */
 
 static bool wr8(uint8_t reg, uint8_t val) {
     uint8_t buf[2] = { reg, val };
@@ -112,9 +113,12 @@ void imu_port_poll(int64_t now_us) {
             int d = a[i] - s_prev[i]; m += d < 0 ? -d : d;
         }
         s_motion = m;
-        if (m > MOTION_THRESH) s_moved_us = now_us;
+        bool moved = m > MOTION_THRESH;
+        if (moved) s_moved_us = now_us;
+        if (moved && s_prev_moved) s_handled_us = now_us;
+        s_prev_moved = moved;
     }
-    for (int i = 0; i < 3; i++) s_prev[i] = a[i];
+    for (int i = 0; i < 3; i++) { s_prev[i] = a[i]; s_last[i] = a[i]; }
     s_have_prev = true;
     /* railed axis = a channel latched at full scale. Found 2026-08-31: X and
      * Z pegged at +-32767 while Y tracked reality, with clean comms, clean
@@ -154,6 +158,8 @@ void imu_port_poll(int64_t now_us) {
 }
 
 bool imu_port_inverted(void) { return s_inverted; }
+void imu_port_last(int16_t out[3], int *motion) { for (int i = 0; i < 3; i++) out[i] = s_last[i]; if (motion) *motion = s_motion; }
+bool imu_port_handled(void) { return s_handled_us && esp_timer_get_time() - s_handled_us < IMU_MOTION_HOLD_US; }
 bool imu_port_moving(void) { return s_moved_us && esp_timer_get_time() - s_moved_us < IMU_MOTION_HOLD_US; }
 int  imu_port_motion(void) { return s_motion; }
 

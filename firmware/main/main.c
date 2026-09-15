@@ -307,7 +307,8 @@ static void tank_task(void *arg) {
         float dt = (now - last) / 1e6f; last = now; if (dt > 0.25f) dt = 0.25f;
         sleep_button_poll(now);
         imu_port_poll(now);
-        if (imu_port_moving()) { audio_port_prewarm(); tank_handled(&tank); }   /* in a hand: the codec stays warm (docs/AUDIO.md), the light stays on */
+        if (imu_port_moving()) audio_port_prewarm();   /* in a hand: the codec stays warm (docs/AUDIO.md) */
+        if (imu_port_handled()) tank_handled(&tank);   /* ... and the light stays on (two polls of motion: a bump on the desk is not a pick-up) */
         bool inv = imu_port_inverted();
         display_port_set_inverted(inv);   /* per-frame, so a flip lands between flushes */
         touch_port_set_inverted(inv);
@@ -318,7 +319,14 @@ static void tank_task(void *arg) {
         else if (ans < 0) ESP_LOGI(TAG, "reset prompt: tank kept");
         { int v = 0, w = touch_port_take_setting(&v);                 /* the settings page */
           if (w == SET_TAP_BRIGHT) brightness_set_level(v);
-          else if (w == SET_TAP_VOLUME) { audio_port_set_volume(v); if (v) audio_port_play(SND_CONFIRM, AUDIO_PITCH_ONE); } }
+          else if (w == SET_TAP_VOLUME) { audio_port_set_volume(v); if (v) audio_port_play(SND_CONFIRM, AUDIO_PITCH_ONE); }
+          else if (w == SET_TAP_LIGHT) ESP_LOGI(TAG, "settings: lights out %s", v ? "AUTO (the idle rule)" : "MANUAL (double-tap the glass)");
+          else if (w == SET_TAP_IDLE) ESP_LOGI(TAG, "settings: lights out after %d s still", v); }
+        { int item = touch_port_take_buy();                             /* the shop's UNLOCK */
+          if (item >= 0) {
+              if (progression_buy(&tank, item)) { audio_port_play(SND_CONFIRM, AUDIO_PITCH_ONE);
+                  ESP_LOGI(TAG, "shop: %s unlocked, %d sand dollars left", SD_ITEMS[item].name, (int)tank.sd_balance); }
+              else ESP_LOGI(TAG, "shop: %s refused (balance %d, price %d)", SD_ITEMS[item].name, (int)tank.sd_balance, SD_ITEMS[item].price); } }
         brightness_apply(tank.night);
         { static int64_t last_bat; if (now - last_bat > 5LL * 60 * 1000000) {   /* battery log: awake sample every 5 min */
             batlog_add(battery_pct(), battery_port_vbat_mv(), display_port_brightness(), false, last_bat ? "" : "boot"); last_bat = now; } }
@@ -326,7 +334,7 @@ static void tank_task(void *arg) {
         tank_tick(&tank, dt, llm_ok ? advisor_llm_esp : advisor_rules);
         progression_tick(&tank, dt);
         battery_frame(now);
-        notice_tick(&tank, dt, setup_active() || touch_port_confirm_up() || touch_port_milestones() || touch_port_settings());
+        notice_tick(&tank, dt, setup_active() || touch_port_confirm_up() || touch_port_milestones() || touch_port_settings() || touch_port_shop());
         { int cue = notice_take_cue(); if (cue >= 0) audio_port_play(cue, AUDIO_PITCH_ONE); }
         audio_port_set_night(tank.night);
         { static bool loop_on;                     /* the bubble loop rides the setup's placement page */
@@ -359,15 +367,18 @@ static void tank_task(void *arg) {
                 render_milestones(&tank, fb[cur], TANK_W);
                 sel = -1;
             } else if (touch_port_settings()) {  /* settings page: brightness + volume */
-                render_settings(fb[cur], TANK_W, brightness_level(), audio_port_volume());
+                render_settings(&tank, fb[cur], TANK_W, brightness_level(), audio_port_volume());
                 sel = -1;
-            }
+            } else if (touch_port_shop()) {      /* the shop: sand dollars and what they buy */
+                render_shop(&tank, fb[cur], TANK_W);
+                sel = -1;
+            } else render_sd_toast(&tank, fb[cur], TANK_W);   /* the live tank: "+N" as dollars are earned */
             if (sel >= 0) {                      /* tapped fish: stats card + battery */
                 render_stats_card(&tank, sel, fb[cur], TANK_W);
                 if (s_bat_ok) render_battery(fb[cur], TANK_W, s_bat_frac, s_bat_chg);
-            } else if (s_bat_low && s_bat_ok && !touch_port_milestones() && !touch_port_settings())
+            } else if (s_bat_low && s_bat_ok && !touch_port_milestones() && !touch_port_settings() && !touch_port_shop())
                 render_battery(fb[cur], TANK_W, s_bat_frac, s_bat_chg);   /* low: the pill stays up */
-            if (!touch_port_milestones() && !touch_port_settings()) {   /* an announcement over the live tank */
+            if (!touch_port_milestones() && !touch_port_settings() && !touch_port_shop()) {   /* an announcement over the live tank */
                 const notice_t *nt = notice_current();
                 if (nt) render_notice(&tank, fb[cur], TANK_W, nt->kind, nt->fish, nt->bit, 1.0f - nt->age / NOTICE_UP_S);
             }

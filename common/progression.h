@@ -48,6 +48,15 @@ void progression_boot(tank_t *t);
  * eight-hour sleep should be worth 2 hours of growth") */
 #define SLEEP_GROWTH_FRAC 0.25f
 float progression_wake(tank_t *t, int64_t now_unix);
+/* live through one stretch of device sleep: tank_tick_sleep, growth at
+ * SLEEP_GROWTH_FRAC, and the tank's "first full night's sleep" milestone once
+ * a single stretch reaches FULL_NIGHT_S (progression_wake's path; the director's
+ * `sleep H` stages the same). */
+#define FULL_NIGHT_S (6 * 3600.0f)
+void progression_slept(tank_t *t, float seconds);
+/* the settings page changed something that rides in the save (the light's
+ * idle time / auto-off): an event save follows, coalesced like the others */
+void progression_settings_changed(void);
 /* call every frame after tank_tick */
 void progression_tick(tank_t *t, float dt);
 /* call on light-off / shutdown (autosaves on events + heartbeat anyway) */
@@ -124,6 +133,44 @@ int progression_next_fry(const tank_t *t, fry_req_t out[FRY_REQ_MAX], bool *stag
  * while lit; grass regrows by itself). */
 #define FRY_TIP_LINES 5
 const char *const *progression_fry_tip(int kind);
+
+/* ---- sand dollars (2026-09-15): the points behind the shop ----
+ * Care earns them, the shop page (render_shop) spends them. Every award is
+ * detected in progression_tick from what the tank already counts - a MEAL
+ * (player_feedings), a stage reached (MS_REACHED_*), a birth (do_arrival),
+ * full trust (10.0, once per fish), every SD_CHORE_EVERY algae colonies
+ * removed and inches of grass trimmed (tank.c's counters) - and the ledger
+ * in tank_t (sd_paid_fish, sd_colonies_paid, sd_inches_paid) keeps a save
+ * from paying twice. A tank saved before the shop is paid what it already
+ * earned on its first boot with it, once (Strato: "yes, pay it once"). */
+#define SD_MEAL        2
+#define SD_STAGE_JUV   5
+#define SD_STAGE_ADULT 10
+#define SD_STAGE_ELDER 25
+#define SD_BIRTH       20
+#define SD_TRUST       15
+#define SD_CHORE       25          /* per SD_CHORE_EVERY colonies / inches */
+#define SD_CHORE_EVERY 100
+#define SD_PRICE_PLANT 40
+#define SD_PRICE_SNAIL 80
+typedef struct {
+    uint32_t    bit;               /* SD_ITEM_* */
+    const char *name;              /* <= 12 chars, the pixel font */
+    const char *words, *words2;    /* what it does, two lines of <= 25 chars */
+    int         price;
+} sd_item_t;
+extern const sd_item_t SD_ITEMS[SD_ITEM_COUNT];
+/* the shop's sale: false when the balance is short or it is already owned;
+ * true = unlocked, placed in the tank (tank_plant_place / tank_snail_place)
+ * and saved at once */
+bool progression_buy(tank_t *t, int item);
+/* dollars awarded since the last call (the toast over the live tank) */
+int  progression_sd_take_award(void);
+/* director / tests: dollars from nowhere (negative takes them away) */
+void progression_sd_grant(tank_t *t, int n);
+/* the earn table for the shop page: one line per source, "+N WORDS" */
+#define SD_EARN_LINES 6
+const char *const *progression_sd_earn_lines(void);
 
 /* population ceiling. Compile-time so the device can ship lower until its
  * advisor latency is measured (docs/progression-next.md): firmware passes

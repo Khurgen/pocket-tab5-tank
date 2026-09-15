@@ -5,6 +5,7 @@
 #include "render.h"
 #include "icons.h"
 #include "progression.h"
+#include "tank_events.h"
 #include <math.h>
 #include <string.h>
 #include <stdio.h>
@@ -270,6 +271,52 @@ static void draw_algae(ctx_t *c, const tank_t *t) {
         }
 }
 
+/* a sprite from the icon bank drawn IN the scene: dimmed with the night
+ * like everything else (blit_icon is for UI, undimmed), optionally mirrored
+ * (a creature facing left). Centred on (cx, cy). */
+static void blit_sprite(ctx_t *c, float cx, float cy, const icon_t *ic, bool flip) {
+    int x0 = (int)(cx - ic->w / 2.0f), y0 = (int)(cy - ic->h / 2.0f);
+    for (int j = 0; j < ic->h; j++)
+        for (int i = 0; i < ic->w; i++) {
+            int a = ic->a[j * ic->w + i];
+            if (!a) continue;
+            uint16_t v = ic->rgb[j * ic->w + i];
+            uint32_t rgb = (uint32_t)((v >> 11) << 3) << 16 | (uint32_t)(((v >> 5) & 63) << 2) << 8 | (uint32_t)((v & 31) << 3);
+            px_blend(c, x0 + (flip ? ic->w - 1 - i : i), y0 + j, rgb, a);
+        }
+}
+/* the same, turned to `angle` (radians, clockwise on screen) about its
+ * centre: every pixel of the box around it samples the nearest source
+ * pixel. The glass snail's head leads the way it crawls (Strato). */
+static void blit_sprite_rot(ctx_t *c, float cx, float cy, const icon_t *ic, float angle) {
+    float ca = cosf(angle), sa = sinf(angle);
+    int r = (int)((ic->w > ic->h ? ic->w : ic->h) * 0.72f) + 1;
+    for (int dy = -r; dy <= r; dy++)
+        for (int dx = -r; dx <= r; dx++) {
+            float sx = ca * dx + sa * dy + ic->w * 0.5f, sy = -sa * dx + ca * dy + ic->h * 0.5f;   /* inverse rotation */
+            int i = (int)sx, j = (int)sy;
+            if (sx < 0 || sy < 0 || i >= ic->w || j >= ic->h) continue;
+            int a = ic->a[j * ic->w + i];
+            if (!a) continue;
+            uint16_t v = ic->rgb[j * ic->w + i];
+            uint32_t rgb = (uint32_t)((v >> 11) << 3) << 16 | (uint32_t)(((v >> 5) & 63) << 2) << 8 | (uint32_t)((v & 31) << 3);
+            px_blend(c, (int)(cx + dx), (int)(cy + dy), rgb, a);
+        }
+}
+/* the snail (the shop, 2026-09-15; Strato's two sprites): UPRIGHT on the
+ * floor - a side view, mirrored to face the way it walks, drawn in the
+ * scene with the fish (vignetted, behind the front fronds) - or flat ON
+ * THE GLASS, its underside to the viewer, drawn after the algae like the
+ * film itself (it is on the pane). A slow bob while it crawls. */
+static void draw_snail(ctx_t *c, const tank_t *t, bool upright_pass) {
+    if (!(t->sd_unlocks & SD_ITEM_SNAIL) || t->snail_x < 0) return;
+    bool upright = tank_snail_upright(t);
+    if (upright != upright_pass) return;
+    if (upright) blit_sprite(c, t->snail_x, t->snail_y, &icon_snail_upright, cosf(t->snail_heading) < 0);
+    else         blit_sprite_rot(c, t->snail_x, t->snail_y + fast_sin(t->clock * 2.2f) * 0.6f, &icon_snail_glass,
+                                 t->snail_heading - 1.5708f);   /* the art faces down: turn it to the heading */
+}
+
 /* optional per-stage frame profiling (render.h) */
 int64_t (*render_clock_us)(void) = NULL;
 int64_t render_prof_us[7];
@@ -350,14 +397,14 @@ static inline uint32_t water_rgb(int y) {
  * frond covers OTHER than water changes: a fish behind a front-layer frond
  * no longer shows through at 14%. */
 #define VEG_ALPHA 220
-static uint16_t g_veg_row[2][TANK_H];
+static uint16_t g_veg_row[4][TANK_H];   /* grass pair, then the sword plant's yellow-green pair */
 static float    g_veg_row_dim = -1;
 static void veg_tint_fill(float dim) {
-    static const uint32_t frond[2] = { 0x3f8b55, 0x2e7d4f };
+    static const uint32_t frond[4] = { 0x3f8b55, 0x2e7d4f, 0x8dbb48, 0x6c9d38 };
     if (g_veg_row_dim == dim) return;
     for (int y = 0; y < TANK_H; y++) {
         uint32_t w = water_rgb(y);
-        for (int k = 0; k < 2; k++)
+        for (int k = 0; k < 4; k++)
             g_veg_row[k][y] = rgb565(mix(w, frond[k], VEG_ALPHA / 255.0f), dim);
     }
     g_veg_row_dim = dim;
@@ -372,6 +419,11 @@ static void veg_tint_fill(float dim) {
 static void draw_veg(ctx_t *c, const tank_t *t, int b, int seed, int layer, bool final) {
     veg_tint_fill(c->dim);
     int n; tank_veg_bed(t, b, NULL, NULL, NULL, &n);
+    /* the sword plant (bed 3, the shop): broad lanceolate leaves - a narrow
+       stem, 7 px half-width at 40% of the way up, a point at the tip - a
+       lazier sway, its own yellow-green pair */
+    bool sword = tank_veg_kind(t, b) == VEG_KIND_SWORD;
+    float root = 2.4f, tip = 0.4f, amp = sword ? 2.5f : 4.0f;
     for (int i = 0; i < n; i++) {
         if ((i & 1) != layer) continue;
         float bx;
@@ -380,7 +432,7 @@ static void draw_veg(ctx_t *c, const tank_t *t, int b, int seed, int layer, bool
         int segs = tank_veg_frond(t, b, i, &bx);
         if (segs < 1) segs = 1;                    /* nubs: always a bit of green */
         if (segs > VEG_MAX_SEGS) segs = VEG_MAX_SEGS;
-        float sway = fast_sin(t->clock * 0.9f + (i + seed) * 1.7f) * 4;
+        float sway = fast_sin(t->clock * (sword ? 0.6f : 0.9f) + (i + seed) * 1.7f) * amp;
         /* the swaying chain of segment centres (the frond's spine) */
         float xs[VEG_MAX_SEGS + 1];
         for (int seg = 0; seg <= segs; seg++)
@@ -389,7 +441,7 @@ static void draw_veg(ctx_t *c, const tank_t *t, int b, int seed, int layer, bool
          * toward the tip: the same silhouette the old chain of overlapping
          * ellipses drew (their union was a 5 px ribbon), at ~a quarter fewer
          * pixels and without a sqrt per row. Full canopy = ~1000 segments. */
-        const uint16_t *pal = g_veg_row[(i + seed) & 1];
+        const uint16_t *pal = g_veg_row[(sword ? 2 : 0) + ((i + seed) & 1)];
         int y_bot = (int)(TANK_H - 16 + VEG_SEG_RY);
         int y_top = (int)(TANK_H - 16 - (segs - 1) * VEG_SEG_DY - VEG_SEG_RY);
         for (int y = y_bot; y >= y_top; y--) {
@@ -400,8 +452,10 @@ static void draw_veg(ctx_t *c, const tank_t *t, int b, int seed, int layer, bool
              * 0.4 at the tip): the old fixed 0.07/segment thinned every frond
              * to nothing at 29 segments, a hidden height cap now that fronds
              * grow to the ceiling (VEG_SEGS_FULL) */
-            float half = 2.4f - 2.0f * sp / (segs > 1 ? segs - 1 : 1);
-            if (half < 0.4f) half = 0.4f;
+            float u = sp / (segs > 1 ? segs - 1 : 1);
+            float half = sword ? 1.2f + 6.0f * (u < 0.4f ? u / 0.4f : (1 - u) / 0.6f)
+                               : root - (root - tip) * u;
+            if (half < tip) half = tip;
             int k = (int)sp; float fr = sp - k;
             float cx = xs[k] + (xs[k + 1] - xs[k]) * fr;
             src_t s; s.v = pal[y];                              /* opaque: only .v is read */
@@ -500,7 +554,7 @@ void render_tank(const tank_t *t, uint16_t *fb, int stride) {
     int64_t p0 = PROF_MARK();
     bool cached = g_scene && g_dirty && stride == TANK_W;
     if (cached) memset(g_dirty, 0, TANK_H * DIRTY_WORDS_PER_ROW * sizeof(uint32_t));
-    struct { short x0, y0, x1, y1; } rects[4 + MAX_FOOD + MAX_BUBBLE + N_FISH_MAX + VEG_BEDS];
+    struct { short x0, y0, x1, y1; } rects[5 + MAX_FOOD + MAX_BUBBLE + N_FISH_MAX + VEG_BEDS_MAX];
     int nr = 0;
 #define DYN_RECT(cx0, cy0, cx1, cy1) do { if (cached && nr < (int)(sizeof rects / sizeof rects[0])) { \
         rects[nr].x0 = (short)(cx0); rects[nr].y0 = (short)(cy0); \
@@ -529,8 +583,8 @@ void render_tank(const tank_t *t, uint16_t *fb, int stride) {
        and out with tank_t.veg_growth until the keeper trims them (slash the
        canopy). Geometry comes from tank_veg_bed so physics and pixels agree.
        The alternating FRONT fronds draw after the fish, below. */
-    static const int veg_seed[VEG_BEDS] = { 0, 7, 3 };
-    for (int b = 0; b < VEG_BEDS; b++)
+    static const int veg_seed[VEG_BEDS_MAX] = { 0, 7, 3, 5 };
+    for (int b = 0; b < tank_veg_beds(t); b++)
         draw_veg(&c, t, b, veg_seed[b], 0, cached);
         /* no DYN_RECT: with the scene cache each frond span vignettes itself */
     PROF_ADD(2, p0);
@@ -567,10 +621,15 @@ void render_tank(const tank_t *t, uint16_t *fb, int stride) {
         g_bb_on = false;
         if (g_bb_x1 >= g_bb_x0) DYN_RECT(g_bb_x0, g_bb_y0, g_bb_x1, g_bb_y1);
     }
+    /* the snail on the floor (upright): in the scene, under the front fronds */
+    if (tank_snail_upright(t)) {
+        draw_snail(&c, t, true);
+        DYN_RECT((int)t->snail_x - 17, (int)t->snail_y - 17, (int)t->snail_x + 17, (int)t->snail_y + 17);
+    }
     /* vegetation, FRONT layer: the alternating fronds drawn over the fish,
        so a fish inside a canopy is woven through it (each span applies its
        own vignette and untags itself, so the fish rects below skip it) */
-    for (int b = 0; b < VEG_BEDS; b++)
+    for (int b = 0; b < tank_veg_beds(t); b++)
         draw_veg(&c, t, b, veg_seed[b], 1, cached);
     PROF_ADD(4, p0);
     /* porthole vignette: darken corners toward AMOLED black. With a scene
@@ -638,6 +697,7 @@ void render_tank(const tank_t *t, uint16_t *fb, int stride) {
      * cells for free) */
     PROF_ADD(5, p0);
     draw_algae(&c, t);
+    draw_snail(&c, t, false);                    /* on the glass, over the film */
     PROF_ADD(6, p0);
 #undef DYN_RECT
 }
@@ -1017,6 +1077,9 @@ int render_confirm_hit(float x, float y) {
 #define MSP_CLOSE_H   30
 #define MSP_SET_X     32                /* the SETTINGS button, bottom left, where the brightness row was */
 #define MSP_SET_W     116
+#define MSP_SD_X      36                /* the sand dollar on the TANK row (the shop), centred like the fish portraits */
+#define MSP_UPG_X     178               /* the UPGRADES button, centred between SETTINGS and CLOSE: the shop too (Strato, 2026-09-15) */
+#define MSP_UPG_W     116
 #define MSP_MODAL_X   56
 #define MSP_MODAL_Y   100
 #define MSP_MODAL_W   336
@@ -1173,8 +1236,15 @@ void render_milestones(const tank_t *t, uint16_t *fb, int stride) {
             }
         }
     }
-    /* the tank's row */
+    /* the tank's row: the sand dollar at the left (the fish rows' portrait
+       slot) opens the shop (2026-09-15) */
     for (int x = 24; x < TANK_W - 24; x++) px_blend(&c, x, MSP_TANK_Y - 4, MSP_DIM, 200);
+    blit_icon(&c, MSP_SD_X, MSP_TANK_Y, &icon_ms_sand_dollar, 255);
+    {   /* the balance under the coin (Strato, 2026-09-15), centred on it - the
+           only room: the divider and the last row sit above, 12 px to the left */
+        char bal[16]; snprintf(bal, sizeof bal, "%d", (int)t->sd_balance);
+        draw_text(&c, MSP_SD_X + (MSP_ICON - text_w(bal, 2)) / 2, MSP_TANK_Y + 34, 2, 0xffffff, bal);
+    }
     draw_text(&c, 92, MSP_TANK_Y + 2, 2, MSP_TEAL, "TANK");
     for (int k = 0; k < POP_CAP; k++)        /* population strip: who is here, who could still arrive */
         fish_glyph(&c, 96 + k * 14, MSP_TANK_Y + 30, 2.8f, k < t->n_fish ? MSP_TEAL : MSP_DIM);
@@ -1187,6 +1257,7 @@ void render_milestones(const tank_t *t, uint16_t *fb, int stride) {
        else never drops the page - too much to tap for that) */
     button(&c, MSP_CLOSE_X, MSP_CLOSE_Y, MSP_CLOSE_W, MSP_CLOSE_H, 0x1c2f36, MSP_TEAL, "CLOSE", 2);
     button(&c, MSP_SET_X, MSP_CLOSE_Y, MSP_SET_W, MSP_CLOSE_H, 0x1c2f36, MSP_TEAL, "SETTINGS", 2);   /* bottom left (2026-09-15) */
+    button(&c, MSP_UPG_X, MSP_CLOSE_Y, MSP_UPG_W, MSP_CLOSE_H, 0x1c2f36, MSP_TEAL, "UPGRADES", 2);   /* the shop, between them */
     /* a modal up: the page under it is out of reach (any tap only closes the
        modal), so it LOOKS out of reach - every pixel at half (Strato: with
        CLOSE lit it looked like you could still tap it). One shift per
@@ -1243,6 +1314,7 @@ int render_milestones_tap(const tank_t *t, float x, float y) {
     }
     if (x >= MSP_CLOSE_X - 8 && y >= MSP_CLOSE_Y - 4) return MS_TAP_CLOSE;      /* slop out to the glass edge */
     if (x < MSP_SET_X + MSP_SET_W + 8 && y >= MSP_CLOSE_Y - 4) return MS_TAP_SETTINGS;   /* the settings page */
+    if (y >= MSP_CLOSE_Y - 4) return MS_TAP_SHOP;                                        /* UPGRADES: the rest of the strip is the shop */
     int row = -1; bool tank_row = false, fry_row = false;
     fry_req_t req[FRY_REQ_MAX]; bool staged;
     int nreq = progression_next_fry(t, req, &staged);
@@ -1282,6 +1354,7 @@ int render_milestones_tap(const tank_t *t, float x, float y) {
             g_ms_fish = g_ms_icon ? -1 : t->n_fish - 1;
         } else return MS_TAP_NONE;
     } else if (tank_row) {
+        if (x < 88) return MS_TAP_SHOP;              /* the sand dollar: the shop page */
         if (k < 0) {
             snprintf(g_ms_title, sizeof g_ms_title, "TANK");
             snprintf(g_ms_caption, sizeof g_ms_caption, "%d OF %d FISH SO FAR", t->n_fish, POP_CAP);
@@ -1356,27 +1429,182 @@ void render_notice(const tank_t *t, uint16_t *fb, int stride, int kind, int fish
     rect_fill(&c, X + 2, Y + H - 4, (int)((W - 4) * frac_left), 2, 0x1c2f36);
 }
 
+/* ---- the shop (2026-09-15): sand dollars, and what they buy ----
+ * The milestones page's dress. A 64 px coin and the balance at the top, a
+ * row per item (SD_ITEMS), HOW TO EARN bottom left, CLOSE bottom right. A
+ * row opens the item's modal (the art at 2x, the words, the price, UNLOCK -
+ * dim when the balance is short, IN THE TANK once owned); HOW TO EARN a
+ * modal of the sources. The page dims under a modal like the milestones
+ * page. Fingers land low here too: the row bands run 8 px above and to the
+ * next row, the buttons' bands to the glass edge. */
+#define SHP_COIN_X    32
+#define SHP_COIN_Y    10
+#define SHP_ROW_Y0    98
+#define SHP_ROW_DY    56
+#define SHP_ROW_ICON  32
+#define SHP_BTN_X     300
+#define SHP_BTN_W     116
+#define SHP_BTN_H     32
+#define SHP_EARN_X    32
+#define SHP_EARN_W    150
+#define SHP_MODAL_Y   48
+#define SHP_MODAL_H   244
+#define SHP_EARN_MODAL_Y 40
+#define SHP_EARN_MODAL_H 224
+static int  g_shp_modal = -1;        /* the item whose modal is up, or -1 */
+static bool g_shp_earn;              /* the HOW TO EARN modal is up */
+static const icon_t *shop_icon(int item) { return item == 0 ? &icon_shop_plant : &icon_shop_snail; }
+static void price_tag(ctx_t *c, int x, int y, int price, uint32_t rgb) {   /* the small coin + the number */
+    blit_icon(c, x, y - 1, &icon_shop_sand_dollar_16, 255);
+    char n[16]; snprintf(n, sizeof n, "%d", price);
+    draw_text(c, x + 20, y, 2, rgb, n);
+}
+void render_shop(const tank_t *t, uint16_t *fb, int stride) {
+    ctx_t c = ctx_full(fb, stride, 1.0f);
+    rect_fill(&c, 0, 0, TANK_W, TANK_H, MSP_INK);
+    blit_icon(&c, SHP_COIN_X, SHP_COIN_Y, &icon_shop_sand_dollar_64, 255);
+    draw_text(&c, 112, SHP_COIN_Y + 6, 2, MSP_TEAL, "SAND DOLLARS");
+    char bal[16]; snprintf(bal, sizeof bal, "%d", (int)t->sd_balance);
+    draw_text(&c, 112, SHP_COIN_Y + 28, 4, 0xffffff, bal);
+    for (int x = 24; x < TANK_W - 24; x++) px_blend(&c, x, SHP_ROW_Y0 - 10, MSP_DIM, 200);
+    for (int i = 0; i < SD_ITEM_COUNT; i++) {
+        const sd_item_t *it = &SD_ITEMS[i];
+        int top = SHP_ROW_Y0 + i * SHP_ROW_DY;
+        bool owned = (t->sd_unlocks & it->bit) != 0, can = t->sd_balance >= it->price;
+        if (owned) blit_icon(&c, SHP_COIN_X, top, shop_icon(i), 255); else blit_icon_locked(&c, SHP_COIN_X, top, shop_icon(i));
+        draw_text(&c, 76, top + 2, 2, 0xffffff, it->name);
+        if (owned) draw_text(&c, 76, top + 20, 2, MSP_TEAL, "IN THE TANK");
+        else price_tag(&c, 76, top + 20, it->price, can ? MSP_TEAL : MSP_DIM);
+        if (owned)     button(&c, SHP_BTN_X, top, SHP_BTN_W, SHP_BTN_H, MSP_INK, MSP_DIM, "IN TANK", 2);
+        else if (can) { button(&c, SHP_BTN_X, top, SHP_BTN_W, SHP_BTN_H, MSP_TEAL, MSP_TEAL, "UNLOCK", 2);
+                        draw_text(&c, SHP_BTN_X + (SHP_BTN_W - text_w("UNLOCK", 2)) / 2, top + (SHP_BTN_H - 14) / 2, 2, MSP_INK, "UNLOCK"); }
+        else           button(&c, SHP_BTN_X, top, SHP_BTN_W, SHP_BTN_H, 0x1c2f36, MSP_DIM, "UNLOCK", 2);
+    }
+    draw_text(&c, (TANK_W - text_w("EARN THEM BY CARING FOR", 2)) / 2, 224, 2, 0x3f6a72, "EARN THEM BY CARING FOR");
+    draw_text(&c, (TANK_W - text_w("THE TANK AND THE FISH", 2)) / 2, 244, 2, 0x3f6a72, "THE TANK AND THE FISH");
+    button(&c, SHP_EARN_X, MSP_CLOSE_Y, SHP_EARN_W, MSP_CLOSE_H, 0x1c2f36, MSP_TEAL, "HOW TO EARN", 2);
+    button(&c, MSP_CLOSE_X, MSP_CLOSE_Y, MSP_CLOSE_W, MSP_CLOSE_H, 0x1c2f36, MSP_TEAL, "CLOSE", 2);
+    if (g_shp_modal < 0 && !g_shp_earn) return;
+    for (int y = 0; y < TANK_H; y++)                          /* the page out of reach under a modal */
+        for (int x = 0; x < TANK_W; x++) fb[y * stride + x] = (uint16_t)((fb[y * stride + x] >> 1) & 0x7bef);
+    const int X = MSP_MODAL_X, W = MSP_MODAL_W;
+    if (g_shp_earn) {
+        const int Y = SHP_EARN_MODAL_Y, H = SHP_EARN_MODAL_H;
+        rect_fill(&c, X, Y, W, H, 0x04141a);
+        rect_edge(&c, X, Y, W, H, MSP_TEAL); rect_edge(&c, X + 1, Y + 1, W - 2, H - 2, 0x1c2f36);
+        draw_text(&c, X + (W - text_w("HOW TO EARN", 3)) / 2, Y + 14, 3, 0xffffff, "HOW TO EARN");
+        const char *const *lines = progression_sd_earn_lines();
+        for (int i = 0; lines[i]; i++) draw_text(&c, X + 14, Y + 50 + i * 24, 2, MSP_TEAL, lines[i]);
+        draw_text(&c, X + (W - text_w("TAP TO CLOSE", 2)) / 2, Y + H - 24, 2, 0x3f6a72, "TAP TO CLOSE");
+        return;
+    }
+    const sd_item_t *it = &SD_ITEMS[g_shp_modal];
+    const int Y = SHP_MODAL_Y, H = SHP_MODAL_H;
+    bool owned = (t->sd_unlocks & it->bit) != 0, can = t->sd_balance >= it->price;
+    rect_fill(&c, X, Y, W, H, 0x04141a);
+    rect_edge(&c, X, Y, W, H, MSP_TEAL); rect_edge(&c, X + 1, Y + 1, W - 2, H - 2, 0x1c2f36);
+    blit_icon_scaled(&c, X + (W - 64) / 2, Y + 14, shop_icon(g_shp_modal), 2, true);
+    draw_text(&c, X + (W - text_w(it->name, 3)) / 2, Y + 88, 3, 0xffffff, it->name);
+    draw_text(&c, X + (W - text_w(it->words, 2)) / 2, Y + 118, 2, MSP_TEAL, it->words);
+    draw_text(&c, X + (W - text_w(it->words2, 2)) / 2, Y + 138, 2, MSP_TEAL, it->words2);
+    const int bx = X + (W - MSP_HOW_W) / 2, by = Y + H - 12 - MSP_HOW_H;
+    if (owned) draw_text(&c, X + (W - text_w("IN THE TANK", 2)) / 2, by + 8, 2, MSP_TEAL, "IN THE TANK");
+    else {
+        char line[32]; snprintf(line, sizeof line, "%d", it->price);
+        int pw = 20 + text_w(line, 2);
+        price_tag(&c, X + (W - pw) / 2, Y + 164, it->price, can ? 0xffffff : MSP_DIM);
+        if (!can) { snprintf(line, sizeof line, "YOU HAVE %d", (int)t->sd_balance);
+                    draw_text(&c, X + (W - text_w(line, 2)) / 2, Y + 184, 2, MSP_DIM, line); }
+        if (can) { button(&c, bx, by, MSP_HOW_W, MSP_HOW_H, MSP_TEAL, MSP_TEAL, "UNLOCK", 2);
+                   draw_text(&c, bx + (MSP_HOW_W - text_w("UNLOCK", 2)) / 2, by + (MSP_HOW_H - 14) / 2, 2, MSP_INK, "UNLOCK"); }
+        else button(&c, bx, by, MSP_HOW_W, MSP_HOW_H, 0x1c2f36, MSP_DIM, "UNLOCK", 2);
+    }
+}
+int render_shop_tap(const tank_t *t, float x, float y) {
+    if (g_shp_earn) { g_shp_earn = false; return SHOP_TAP_KEPT; }
+    if (g_shp_modal >= 0) {
+        int item = g_shp_modal; const sd_item_t *it = &SD_ITEMS[item];
+        bool owned = (t->sd_unlocks & it->bit) != 0, can = t->sd_balance >= it->price;
+        const int bx = MSP_MODAL_X + (MSP_MODAL_W - MSP_HOW_W) / 2, by = SHP_MODAL_Y + SHP_MODAL_H - 12 - MSP_HOW_H;
+        bool on_btn = x >= bx - MSP_HOW_SLOP_X && x < bx + MSP_HOW_W + MSP_HOW_SLOP_X && y >= by - MSP_HOW_SLOP_UP && y < by + MSP_HOW_H + MSP_HOW_SLOP_DN;
+        g_shp_modal = -1;
+        if (on_btn && !owned && can) return SHOP_TAP_BUY + item;
+        return SHOP_TAP_KEPT;
+    }
+    if (x >= MSP_CLOSE_X - 8 && y >= MSP_CLOSE_Y - 4) return SHOP_TAP_CLOSE;
+    if (x < SHP_EARN_X + SHP_EARN_W + 8 && y >= MSP_CLOSE_Y - 4) { g_shp_earn = true; return SHOP_TAP_KEPT; }
+    for (int i = 0; i < SD_ITEM_COUNT; i++) {
+        int top = SHP_ROW_Y0 + i * SHP_ROW_DY;
+        if (x >= 20 && y >= top - 8 && y < top + SHP_ROW_DY - 8) { g_shp_modal = i; return SHOP_TAP_KEPT; }
+    }
+    return SHOP_TAP_NONE;
+}
+void render_shop_leave(void) { g_shp_modal = -1; g_shp_earn = false; }
+
+/* the toast: "+N" by a coin, top centre, for TOAST_S on the tank clock */
+#define TOAST_S 2.5f
+static int   g_toast_n;
+static float g_toast_until = -1;
+void render_sd_toast(const tank_t *t, uint16_t *fb, int stride) {
+    int n = progression_sd_take_award();
+    if (n > 0) {
+        if (t->clock < g_toast_until) g_toast_n += n; else g_toast_n = n;
+        g_toast_until = t->clock + TOAST_S;
+    }
+    if (t->clock >= g_toast_until || t->clock < g_toast_until - TOAST_S - 1) return;   /* (a reset sends the clock back) */
+    ctx_t c = ctx_full(fb, stride, 1.0f);
+    char txt[16]; snprintf(txt, sizeof txt, "+%d", g_toast_n);
+    const int W = 30 + text_w(txt, 2), H = 22, X = (TANK_W - W) / 2, Y = 8;
+    for (int y = Y; y < Y + H; y++)
+        for (int x = X; x < X + W; x++) px_blend(&c, x, y, 0x04141a, 215);
+    rect_edge(&c, X, Y, W, H, MSP_TEAL);
+    blit_icon(&c, X + 5, Y + 3, &icon_shop_sand_dollar_16, 255);
+    draw_text(&c, X + 25, Y + 4, 2, 0xffffff, txt);
+}
+
 /* ---- settings page (2026-09-15) ----
  * The milestones page's foot used to carry the brightness row; Strato:
  * "a new UI for settings and leave milestones alone - we may need more
- * room there anyway". Two rows of segment buttons, generous hit bands
- * (fingers land low near the bezel, as on the milestones page). */
-#define SET_TITLE_Y   22
-#define SET_ROW1_Y    104            /* BRIGHTNESS */
-#define SET_ROW2_Y    184            /* VOLUME */
+ * room there anyway". Rows of segment buttons, generous hit bands (fingers
+ * land low near the bezel, as on the milestones page), and since the light
+ * became the idle detector's (the same evening) a LIGHTS OUT row - ON / OFF
+ * (MANUAL, the default = the double-tap on the glass; AUTO = the idle rule,
+ * the keeper's opt-in) with the idle time under it as one number: swipe it
+ * up or down, or tap the chevrons; the default is LIGHT_IDLE_S. */
+#define SET_TITLE_Y   14
+#define SET_ROW1_Y    58             /* BRIGHTNESS */
+#define SET_ROW2_Y    108            /* VOLUME */
+#define SET_NOTE_Y    146            /* "FISH ARE QUIET AT NIGHT" */
+#define SET_ROW3_Y    176            /* LIGHTS OUT */
 #define SET_LABEL_X   32
 #define SET_SEG_X     190            /* first segment */
 #define SET_SEG_W     76
 #define SET_SEG_DX    82
 #define SET_SEG_H     40
 #define SET_SEG_Y(row) ((row) - 10)  /* the segment sits on the label's line */
+/* the seconds selector: ONE number in the 4x font (28 px tall), chevrons
+ * above and below; a swipe up or down anywhere on it steps the whole value
+ * (2026-09-15 evening, Strato: "18, 17 ... 10, then 9 - not 19"; the first
+ * cut was three letter-wheel digits). Clamped live to LIGHT_IDLE_MIN_S ..
+ * LIGHT_IDLE_MAX_S. Sits well clear of the LIGHTS OUT segments: a finger
+ * aiming at the up chevron used to land on MANUAL. */
+#define SET_NUM_SCALE 4
+#define SET_NUM_H     (7 * SET_NUM_SCALE)
+#define SET_NUM_X     SET_SEG_X       /* the number's left edge (right-aligned in a 3-digit box) */
+#define SET_NUM_BOX_W (3 * 6 * SET_NUM_SCALE - SET_NUM_SCALE)
+#define SET_NUM_Y     266
+#define SET_NUM_GAP   30              /* chevron tip to the number */
+#define SET_AFTER_Y   (SET_NUM_Y + (SET_NUM_H - 14) / 2)
+#define SET_STEP_PX   15              /* drag travel per step */
+#define SET_LIGHT_BAND_END (SET_SEG_Y(SET_ROW3_Y) + SET_SEG_H + 8)   /* the segments' band stops just under them */
 static const char *const SET_BRIGHT[3] = { "30%", "60%", "100%" };
 static const int         SET_BRIGHT_PCT[3] = { 30, 60, 100 };
 static const char *const SET_VOLUME[3] = { "OFF", "QUIET", "NORMAL" };
+static const char *const SET_LIGHT[2]  = { "MANUAL", "AUTO" };   /* the default first */
 
-static void set_row(ctx_t *c, int row_y, const char *label, const char *const names[3], int chosen) {
+static void set_row(ctx_t *c, int row_y, const char *label, const char *const names[], int n, int chosen) {
     draw_text(c, SET_LABEL_X, row_y, 2, MSP_TEAL, label);
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < n; i++) {
         int x = SET_SEG_X + i * SET_SEG_DX, y = SET_SEG_Y(row_y);
         if (i == chosen) {                       /* lit: teal, ink lettering */
             button(c, x, y, SET_SEG_W, SET_SEG_H, MSP_TEAL, MSP_TEAL, names[i], 2);
@@ -1384,28 +1612,99 @@ static void set_row(ctx_t *c, int row_y, const char *label, const char *const na
         } else button(c, x, y, SET_SEG_W, SET_SEG_H, 0x1c2f36, MSP_DIM, names[i], 2);
     }
 }
-void render_settings(uint16_t *fb, int stride, int bright_pct, int volume) {
+static void set_chevron(ctx_t *c, int cx, int y, bool up, uint32_t rgb) {   /* the setup's, a size down */
+    for (int i = 0; i < 4; i++) {
+        int yy = up ? y + i * 3 : y - i * 3;
+        rect_fill(c, cx - 3 - i * 3, yy, 3, 3, rgb);
+        rect_fill(c, cx + i * 3, yy, 3, 3, rgb);
+    }
+}
+void render_settings(const tank_t *t, uint16_t *fb, int stride, int bright_pct, int volume) {
     ctx_t c = ctx_full(fb, stride, 1.0f);
     rect_fill(&c, 0, 0, TANK_W, TANK_H, MSP_INK);
     draw_text(&c, (TANK_W - text_w("SETTINGS", 3)) / 2, SET_TITLE_Y, 3, 0xffffff, "SETTINGS");
     int bi = bright_pct <= 30 ? 0 : bright_pct <= 60 ? 1 : 2;
-    set_row(&c, SET_ROW1_Y, "BRIGHTNESS", SET_BRIGHT, bi);
-    set_row(&c, SET_ROW2_Y, "VOLUME", SET_VOLUME, volume < 0 ? 0 : volume > 2 ? 2 : volume);
-    draw_text(&c, SET_LABEL_X, SET_ROW2_Y + 50, 2, MSP_DIM, "FISH ARE QUIET AT NIGHT");
+    set_row(&c, SET_ROW1_Y, "BRIGHTNESS", SET_BRIGHT, 3, bi);
+    set_row(&c, SET_ROW2_Y, "VOLUME", SET_VOLUME, 3, volume < 0 ? 0 : volume > 2 ? 2 : volume);
+    draw_text(&c, SET_LABEL_X, SET_NOTE_Y, 2, MSP_DIM, "FISH ARE QUIET AT NIGHT");
+    set_row(&c, SET_ROW3_Y, "LIGHTS OUT", SET_LIGHT, 2, t->light_auto ? 1 : 0);
+    if (t->light_auto) {
+        /* AUTO: AFTER [ n ] SEC, the number with its chevrons */
+        char num[8]; snprintf(num, sizeof num, "%d", t->light_idle_s);
+        int nw = text_w(num, SET_NUM_SCALE), nx = SET_NUM_X + SET_NUM_BOX_W - nw, cx = SET_NUM_X + SET_NUM_BOX_W / 2;
+        draw_text(&c, SET_LABEL_X, SET_AFTER_Y, 2, MSP_TEAL, "AFTER");
+        draw_text(&c, nx, SET_NUM_Y, SET_NUM_SCALE, 0xffffff, num);
+        rect_fill(&c, SET_NUM_X, SET_NUM_Y + SET_NUM_H + 6, SET_NUM_BOX_W, 3, 0x3f6a72);
+        set_chevron(&c, cx, SET_NUM_Y - SET_NUM_GAP, true, MSP_TEAL);
+        set_chevron(&c, cx, SET_NUM_Y + SET_NUM_H + SET_NUM_GAP + 3, false, MSP_TEAL);
+        draw_text(&c, SET_NUM_X + SET_NUM_BOX_W + 10, SET_AFTER_Y, 2, MSP_TEAL, "SEC");
+    } else {
+        /* MANUAL: how to work the light instead */
+        draw_text(&c, SET_LABEL_X, SET_NUM_Y - 8, 2, MSP_TEAL, "DOUBLE-TAP THE GLASS TO");
+        draw_text(&c, SET_LABEL_X, SET_NUM_Y + 14, 2, MSP_TEAL, "TURN THE LIGHT ON OR OFF");
+    }
     button(&c, MSP_CLOSE_X, MSP_CLOSE_Y, MSP_CLOSE_W, MSP_CLOSE_H, 0x1c2f36, MSP_TEAL, "CLOSE", 2);
 }
-static int set_segment(float x) {
+static int set_segment(float x, int n) {
     if (x < SET_SEG_X - 10) return -1;
     int i = (int)((x - SET_SEG_X + 3) / SET_SEG_DX);
-    return i < 0 ? 0 : i > 2 ? 2 : i;
+    return i < 0 ? 0 : i >= n ? n - 1 : i;
 }
+/* the hit test: what a TAP at (x,y) means. *value: BRIGHT the percent,
+ * VOLUME 0..2, LIGHT 1 = AUTO / 0 = MANUAL; the number's own hits carry no
+ * value (IDLE_UP / IDLE_DOWN the chevrons, IDLE_NUM the number itself). */
+enum { SET_HIT_IDLE_NUM = 100, SET_HIT_IDLE_UP, SET_HIT_IDLE_DOWN };
 int render_settings_tap(float x, float y, int *value) {
     if (x >= MSP_CLOSE_X - 8 && y >= MSP_CLOSE_Y - 4) return SET_TAP_CLOSE;
-    int seg = set_segment(x);
-    if (seg < 0) return SET_TAP_NONE;
     /* the row bands: from a little above each segment down to the next row
-       (fingers report low), the second down to the button strip */
-    if (y >= SET_SEG_Y(SET_ROW1_Y) - 12 && y < SET_SEG_Y(SET_ROW2_Y) - 12) { *value = SET_BRIGHT_PCT[seg]; return SET_TAP_BRIGHT; }
-    if (y >= SET_SEG_Y(SET_ROW2_Y) - 12 && y < MSP_CLOSE_Y - 4)             { *value = seg; return SET_TAP_VOLUME; }
+       (fingers report low); the LIGHTS OUT band ends just under its
+       segments so the number's up chevron below is its own */
+    int seg = set_segment(x, 3);
+    if (y >= SET_SEG_Y(SET_ROW1_Y) - 12 && y < SET_SEG_Y(SET_ROW2_Y) - 12) { if (seg < 0) return SET_TAP_NONE; *value = SET_BRIGHT_PCT[seg]; return SET_TAP_BRIGHT; }
+    if (y >= SET_SEG_Y(SET_ROW2_Y) - 12 && y < SET_SEG_Y(SET_ROW3_Y) - 12) { if (seg < 0) return SET_TAP_NONE; *value = seg; return SET_TAP_VOLUME; }
+    if (y >= SET_SEG_Y(SET_ROW3_Y) - 12 && y < SET_LIGHT_BAND_END)          { seg = set_segment(x, 2); if (seg < 0) return SET_TAP_NONE; *value = seg == 1; return SET_TAP_LIGHT; }
+    if (y >= SET_LIGHT_BAND_END && x >= SET_NUM_X - 30 && x < SET_NUM_X + SET_NUM_BOX_W + 30) {
+        *value = 0;
+        if (y < SET_NUM_Y - 8) return SET_HIT_IDLE_UP;                     /* the band above the number */
+        if (y < SET_NUM_Y + SET_NUM_H + 14) return SET_HIT_IDLE_NUM;      /* the number */
+        return SET_HIT_IDLE_DOWN;                                          /* below, down to the bezel */
+    }
     return SET_TAP_NONE;
+}
+static void set_step(tank_t *t, int dir) {
+    int v = t->light_idle_s + dir;
+    if (v < LIGHT_IDLE_MIN_S) v = LIGHT_IDLE_MIN_S;
+    if (v > LIGHT_IDLE_MAX_S) v = LIGHT_IDLE_MAX_S;
+    if (v != t->light_idle_s) { t->light_idle_s = v; tank_emit(TEV_WHEEL_TICK, -1); }
+}
+int render_settings_touch(tank_t *t, float x, float y, bool down, int *value) {
+    static bool s_down, s_spun; static float s_px, s_py, s_ly, s_acc; static int s_hit, s_hv;
+    int r = SET_TAP_NONE; *value = 0;
+    bool on_num = s_hit == SET_HIT_IDLE_NUM || s_hit == SET_HIT_IDLE_UP || s_hit == SET_HIT_IDLE_DOWN;
+    if (down && !s_down) {                                  /* press */
+        s_px = x; s_py = y; s_ly = y; s_acc = 0; s_spun = false;
+        s_hit = render_settings_tap(x, y, &s_hv);
+    } else if (down && on_num && t->light_auto) {            /* the number: vertical travel steps the value */
+        s_acc += y - s_ly;
+        while (s_acc <= -SET_STEP_PX) { set_step(t, +1); s_acc += SET_STEP_PX; s_spun = true; }   /* up = more seconds */
+        while (s_acc >=  SET_STEP_PX) { set_step(t, -1); s_acc -= SET_STEP_PX; s_spun = true; }
+        s_ly = y;
+    } else if (!down && s_down) {                           /* release: a tap, unless the number was swiped */
+        if (s_spun) { progression_settings_changed(); r = SET_TAP_IDLE; *value = t->light_idle_s; }
+        else {
+            int v = 0, h = render_settings_tap(x, y, &v);
+            float dx = x - s_px, dy = y - s_py;
+            if (h == s_hit && dx * dx + dy * dy < 24 * 24) {
+                if (h == SET_TAP_LIGHT) {                           /* MANUAL (0, the default) / AUTO (1); either way the light comes on */
+                    t->light_auto = v != 0; t->light_manual_off = false; progression_settings_changed();
+                    r = SET_TAP_LIGHT; *value = v;
+                } else if ((h == SET_HIT_IDLE_UP || h == SET_HIT_IDLE_DOWN) && t->light_auto) {
+                    set_step(t, h == SET_HIT_IDLE_UP ? +1 : -1); progression_settings_changed();
+                    r = SET_TAP_IDLE; *value = t->light_idle_s;
+                } else if (h == SET_TAP_CLOSE || h == SET_TAP_BRIGHT || h == SET_TAP_VOLUME) { r = h; *value = v; }
+            }
+        }
+    }
+    s_down = down;
+    return r;
 }

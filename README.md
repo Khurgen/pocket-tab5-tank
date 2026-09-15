@@ -159,11 +159,11 @@ fish with its sprite at its real size, its name and a growth strip, then a
 badge for each first it has chosen to do: first meal from you, first
 hold-approach, first reef, first bubbles, first follow, first dart. The
 tank's row below tracks the population and the firsts you share: first
-feeding, first trimming, first glass cleaning, first quiet night, first play
-session, the tank changed someone. A locked badge is the same picture as a
-gray silhouette; one earned since you last looked wears a ring. Tap a badge
-to read it (a small panel; tap again to dismiss); the CLOSE button at the
-bottom right leaves the page.
+feeding, first trimming, first glass cleaning, first full night's sleep,
+first play session, the tank changed someone. A locked badge is the same
+picture as a gray silhouette; one earned since you last looked wears a
+ring. Tap a badge to read it (a small panel; tap again to dismiss). At the
+foot of the page: SETTINGS, UPGRADES (the shop) and CLOSE.
 
 **The next fry.** While the tank can still grow, a NEW FRY row sits under
 the last fish: what the next arrival needs, as badges that light up when
@@ -178,6 +178,38 @@ done, the fry is born at the next light-on.
 ![The milestones page](docs/media/sim-milestones.png)
 ![The NEW FRY row, and a gate's tip](docs/media/sim-milestones-fry.png)
 ![A gate's HOW? tip](docs/media/sim-fry-how.png)
+
+**Sand dollars.** Caring for the tank earns points, and the shop spends
+them on things for the tank. A meal the fish eat from your hand pays 2; a
+fish growing up pays 5, 10 and 25 for juvenile, adult and elder; a fry
+born 20; a fish that comes to trust you completely 15; every hundred algae
+colonies you wipe away and every hundred inches of grass you cut pay 25,
+again and again. Nothing is ever needed and nothing is lost: a tank with no
+sand dollars is exactly the tank there was before. The coin on the
+milestones page's TANK row shows your balance, and it (or the UPGRADES
+button) opens the shop: a row per item with its price, UNLOCK when you can
+afford it, IN TANK once you own it, and HOW TO EARN for the list. Two
+things to buy so far. The **sword plant** (40) is a fourth bed of broad
+leaves on the open floor, trimmed and grown and counted as cover like the
+grass. The **snail** (80) grazes the glass clean cell by cell, crawling
+flat across the pane with its head leading, and walks the floor upright
+when there is nothing to eat; it keeps working while the tank sleeps, so
+the glass is thinner in the morning. The model sees neither: they reach
+the fish the way your own chores do, through cover and the film. Dollars
+earned while you watch show as a small "+N" over the water.
+
+![The shop](docs/media/sim-shop.png)
+![Unlocking the snail](docs/media/sim-shop-modal.png)
+![The sword plant and the snail on the glass, a +5 just earned](docs/media/sim-tank-shop.png)
+![The snail walking the floor](docs/media/sim-tank-snail.png)
+
+**The light.** Two quick taps on the glass turn the tank light off and on;
+in the dark the fish rest and the palette dims. The settings page has a
+LIGHTS OUT option, AUTO, that hands the light to the tank instead: it
+knows when it is being handled (the motion sensor, or a touch) and goes
+dark by itself after a chosen number of still seconds, so a tank left on
+the desk is asleep until you pick it up. Six hours of device sleep in one
+stretch earns the tank its first full night's sleep.
 
 **Habits and continuity.** The tank remembers where you feed it and greets
 the light coming on. A real-time clock tells it how long it was off, so a
@@ -248,23 +280,27 @@ from the top edge to feed, click a fish for its stats card, click the card
 for milestones, hold the button to rest a finger on the glass, three quick
 clicks to startle, two to toggle the light, drag across the glass to wipe
 algae, and stroke sideways through a bed to trim it. Keys: **F** feed at the
-mouse, **N** light, **A** auto light, **L** switch
+mouse, **N** light, **A** auto light, **H** handle the tank (moving the
+mouse over the window counts too), **L** switch
 between the rule stub and the LLM brain, **U** overlays, **M** milestones,
+**4** the shop, **D** fifty sand dollars to try it,
 **X** the reset prompt, **S** the first-run setup (or drops a birth's pages), **R** force an arrival
 (the birth flow opens), **Z** jump through seven
-hours of sleep, **G** grow the grass and algae now, **Q** quit.
+hours of sleep, **G** grow the grass and algae now, **V** volume, **B** the
+low-battery notice, **Q** quit.
 
 Flags: `--fresh` starts a new random tank, `--fast N` runs tended time N×
 faster so you can watch fish grow up, `--greedy` disables sampling,
 `--narrate` prints every decision as it's made, `--snapshot <prefix>` writes
-PPM frames of the tank, card, milestones page, reset prompt, the setup
-pages, and the three pages of a birth.
+PPM frames of the tank, card, milestones page, the shop, reset prompt, the
+setup pages, and the three pages of a birth.
 
 Headless checks, all of which run in CI-style without a window:
 `--selftest` (reflex layer), `--selftest-llm [min]` (the real model),
 `--selftest-pop` (arrivals, inherited looks, saves, the setup and birth flows), `--selftest-sleep` (sleep metabolism,
 the deep-sleep wake, and ravenous begging), `--selftest-hunger` (the hunger economy),
-`--selftest-tend` (grass, algae, trust holds), and `--bench` (render cost).
+`--selftest-tend` (grass, algae, trust holds), `--selftest-shop` (sand
+dollars, the shop, the plant, the snail), and `--bench` (render cost).
 
 ## Try it: firmware in QEMU
 
@@ -339,9 +375,9 @@ seven-minute prompt check before an overnight run is always worth it.
 ## Layout
 
 - `common/` — everything shared verbatim by sim and firmware: `tank.c`
-  (reflex layer), `render.c` (RGB565 software renderer, stats card,
-  milestones page, the reset prompt and its pixel font), `progression.c`
-  (the long game and persistence),
+  (reflex layer, the snail), `render.c` (RGB565 software renderer, stats
+  card, milestones page, the shop, the reset prompt and its pixel font),
+  `progression.c` (the long game, the sand dollars and persistence),
   `icons.c` (baked pixel art), `audio.c` (the sound mixer), `notice.c` (the
   milestone and low-battery announcements), `llm/` (4-bit engine, word
   tokenizer, the shared encoder)
@@ -355,7 +391,8 @@ seven-minute prompt check before an overnight run is always worth it.
   bundle; `tools/make_installer.py` assembles the upload folder
 - `tools/` — the icon baker, the sound bank builder, the installer
   assembler, and a serial bench client
-- `assets/icons/` — the pixel-art source for the stats card
+- `assets/icons/` — the pixel-art source for the stats card, the badges,
+  the shop and the snail
 - `assets/sounds/` — the cues (16 kHz mono) and their levels
 
 ## Documentation
@@ -393,15 +430,18 @@ seven-minute prompt check before an overnight run is always worth it.
   powered while the tank is in your hands, and a low-battery notice keeps
   the gauge on screen until it is charged; a settings page (from the
   milestones page) for brightness and volume, with a mute
+- ✅ The light follows the hand: an optional idle rule (the motion sensor
+  and touch) puts a tank left on the desk to sleep; the double-tap by
+  default
+- ✅ Sand dollars: care earns points, the shop spends them; a sword plant
+  and an algae-grazing snail to start
 - ✅ Browser installer: one click from Chrome or Edge, hosted at
   stratobuilds.com
 - 🔋 In progress: battery life. The deep-sleep floor and the awake draw with
   a full tank are being measured with the tank's own log; what is in flight
   and how to pick it up is in [docs/DEVICE.md](docs/DEVICE.md)
-- 🚧 Next: a points system for unlockables
-- 🚧 Next: biodiversity as the unlockables: new fish species, new plant
-  species, corals, and tank maintenance critters (snails for the algae,
-  urchins to keep the grass down)
+- 🚧 Next: more to unlock: new fish species, more plants, corals, and more
+  tank maintenance critters (urchins to keep the grass down)
 - 🚧 Next: more achievements and milestones
 
 ## The video series

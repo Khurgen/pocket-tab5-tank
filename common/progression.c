@@ -17,7 +17,7 @@ const char *const MS_NAMES[MS_FISH_COUNT] = {
 };
 const char *const TMS_NAMES[TMS_COUNT] = {
     "a pair", "a trio", "a quartet", "a quintet", "a sextet",
-    "first quiet night", "first play session", "the tank changed someone", "first feeding",
+    "first full night's sleep", "first play session", "the tank changed someone", "first feeding",
     "first trimming", "first glass cleaning",
 };
 
@@ -69,6 +69,22 @@ typedef struct {
     /* drift-pressure tail (2026-09-15, the CHANGE gate): older saves read
      * zeros, and the youngest simply starts earning it from this build on */
     float    drift_acc[N_FISH_MAX];
+    /* light settings tail (2026-09-15, the settings page): 0 seconds = the
+     * default (older saves); auto 0 = MANUAL, the double-tap (the default) */
+    uint16_t light_idle_s; uint8_t light_auto, light_manual_off;   /* auto 0 = MANUAL, the default */
+    /* sand dollar tail (2026-09-15, the shop): the balance, the lifetime
+     * total, the unlocks, the paid ledger, the two chore counters, the snail's
+     * spot and the sword plant's leaves. Older saves read zeros: no dollars,
+     * nothing bought, nothing paid - and the ledger then pays what the tank
+     * already earned on the first tick, once. */
+    int32_t  sd_balance, sd_earned;
+    uint32_t sd_unlocks;
+    uint32_t sd_paid_fish[N_FISH_MAX];
+    int32_t  sd_colonies_paid, sd_inches_paid;
+    int32_t  algae_colonies;
+    float    trim_px;
+    float    snail_x, snail_y;           /* 0 = not placed yet */
+    float    veg_h3[VEG_FRONDS_MAX];     /* bed 3: zeros = VEG_START when it is bought */
 } save_t;
 /* the smallest PTK2 save (pre-upkeep, 2026-08-30): anything shorter is not
  * ours. Every later build wrote sizeof(save_t) of its day - 448, 1112, 1304,
@@ -92,6 +108,8 @@ static bool  s_prev_night;
 static bool  s_booted;
 static bool  s_setup_pending;        /* the first-run flow still owed (setup.c) */
 static int   s_newborn = -1;         /* the arrival still owed its birth flow (setup.c), or -1 */
+static int   s_sd_pending;           /* dollars awarded and not yet shown (the toast) */
+static int32_t s_sd_prev_feedings = -1;   /* player_feedings at the last tick (-1 = adopt at the next) */
 
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
 static void mark_dirty(void) { if (!s_dirty) { s_dirty = true; s_dirty_since = 0; } }
@@ -104,6 +122,67 @@ int   progression_newborn(void)         { return s_newborn; }
 void  progression_newborn_done(tank_t *t) { s_newborn = -1; progression_save(t); }
 
 static void set_ms(fish_t *f, uint32_t bit) { if (!(f->ms_bits & bit)) { f->ms_bits |= bit; mark_dirty(); } }
+/* ---- sand dollars ---- */
+const sd_item_t SD_ITEMS[SD_ITEM_COUNT] = {
+    { SD_ITEM_PLANT, "SWORD PLANT", "BROAD LEAVES ON THE FLOOR.", "MORE COVER TO CALM THE FISH", SD_PRICE_PLANT },
+    { SD_ITEM_SNAIL, "SNAIL",       "GRAZES THE GLASS CLEAN,",   "EVEN WHILE THE TANK SLEEPS",  SD_PRICE_SNAIL },
+};
+static void sd_award(tank_t *t, int n) {
+    if (n <= 0) return;
+    t->sd_balance += n; t->sd_earned += n; s_sd_pending += n;
+    mark_dirty();
+}
+int  progression_sd_take_award(void) { int n = s_sd_pending; s_sd_pending = 0; return n; }
+void progression_sd_grant(tank_t *t, int n) {
+    if (n >= 0) sd_award(t, n);
+    else { t->sd_balance += n; if (t->sd_balance < 0) t->sd_balance = 0; mark_dirty(); }
+}
+/* the ledger against the tank: anything earned and not yet paid is paid now.
+ * Runs every tick, so it is also the back pay for a save from before the
+ * shop (paid bits all zero: the stages and the trust it already has, the
+ * hundreds its counters already passed - once). MEALS are the exception: a
+ * meal pays as it happens, so the count is adopted, not back-paid. */
+static void sd_tick(tank_t *t) {
+    for (int i = 0; i < t->n_fish; i++) {
+        fish_t *f = &t->fish[i]; uint32_t *paid = &t->sd_paid_fish[i];
+        if ((f->ms_bits & MS_REACHED_JUV)   && !(*paid & SD_PAID_JUV))   { *paid |= SD_PAID_JUV;   sd_award(t, SD_STAGE_JUV); }
+        if ((f->ms_bits & MS_REACHED_ADULT) && !(*paid & SD_PAID_ADULT)) { *paid |= SD_PAID_ADULT; sd_award(t, SD_STAGE_ADULT); }
+        if ((f->ms_bits & MS_REACHED_ELDER) && !(*paid & SD_PAID_ELDER)) { *paid |= SD_PAID_ELDER; sd_award(t, SD_STAGE_ELDER); }
+        if (f->trust >= 10.0f && !(*paid & SD_PAID_TRUST))               { *paid |= SD_PAID_TRUST; sd_award(t, SD_TRUST); }
+    }
+    if (s_sd_prev_feedings < 0) s_sd_prev_feedings = t->player_feedings;
+    if (t->player_feedings > s_sd_prev_feedings) sd_award(t, SD_MEAL * (t->player_feedings - s_sd_prev_feedings));
+    s_sd_prev_feedings = t->player_feedings;
+    int32_t hund = t->algae_colonies / SD_CHORE_EVERY;
+    if (hund > t->sd_colonies_paid) { sd_award(t, SD_CHORE * (hund - t->sd_colonies_paid)); t->sd_colonies_paid = hund; }
+    hund = (int32_t)(t->trim_px / PX_PER_INCH) / SD_CHORE_EVERY;
+    if (hund > t->sd_inches_paid) { sd_award(t, SD_CHORE * (hund - t->sd_inches_paid)); t->sd_inches_paid = hund; }
+}
+bool progression_buy(tank_t *t, int item) {
+    if (item < 0 || item >= SD_ITEM_COUNT) return false;
+    const sd_item_t *it = &SD_ITEMS[item];
+    if ((t->sd_unlocks & it->bit) || t->sd_balance < it->price) return false;
+    t->sd_balance -= it->price; t->sd_unlocks |= it->bit;
+    if (it->bit == SD_ITEM_PLANT) tank_plant_place(t);
+    if (it->bit == SD_ITEM_SNAIL) tank_snail_place(t);
+    progression_save(t);                                   /* a purchase sticks at once */
+    return true;
+}
+const char *const *progression_sd_earn_lines(void) {
+    static char lines[SD_EARN_LINES][30]; static const char *ptr[SD_EARN_LINES + 1]; static bool made;
+    if (!made) {
+        /* <= 25 chars each: the modal is 336 px wide at scale 2 */
+        snprintf(lines[0], 30, "+%d  EVERY MEAL EATEN", SD_MEAL);
+        snprintf(lines[1], 30, "+%d/%d/%d  A FISH GROWS UP", SD_STAGE_JUV, SD_STAGE_ADULT, SD_STAGE_ELDER);
+        snprintf(lines[2], 30, "+%d  A NEW FRY IS BORN", SD_BIRTH);
+        snprintf(lines[3], 30, "+%d  A FISH FULLY TRUSTS", SD_TRUST);
+        snprintf(lines[4], 30, "+%d  %d ALGAE COLONIES", SD_CHORE, SD_CHORE_EVERY);
+        snprintf(lines[5], 30, "+%d  %d IN OF GRASS CUT", SD_CHORE, SD_CHORE_EVERY);
+        for (int i = 0; i < SD_EARN_LINES; i++) ptr[i] = lines[i];
+        ptr[SD_EARN_LINES] = NULL; made = true;
+    }
+    return ptr;
+}
 static void set_tms(tank_t *t, uint32_t bit) { if (!(t->tank_ms_bits & bit)) { t->tank_ms_bits |= bit; mark_dirty(); } }
 
 static void apply_stage(fish_t *f, float age) {
@@ -143,8 +222,10 @@ static void do_arrival(tank_t *t) {
     }
     s_age[slot] = 0;
     t->fish[slot].ms_bits = MS_ARRIVED;
+    t->sd_paid_fish[slot] = 0;               /* a new ledger for the new fish */
     if (t->n_fish <= N_FISH_MAX) set_tms(t, POP_TMS[t->n_fish]);
     s_newborn = slot;                        /* owed its welcome: the birth flow (setup.c) */
+    sd_award(t, SD_BIRTH);
     mark_dirty();
 }
 
@@ -307,6 +388,7 @@ void progression_fresh(tank_t *t) {
     s_ravenous = false; s_ravenous_t = 0;
     s_setup_pending = true;          /* a new tank: welcome, names, colours */
     s_newborn = -1;
+    s_sd_prev_feedings = 0; s_sd_pending = 0;   /* a fresh ledger (tank_init zeroed the tank's) */
     s_booted = true;
     mark_dirty();
 }
@@ -360,7 +442,11 @@ static bool load_save(tank_t *t, int64_t *saved_unix) {
     s_setup_pending = sv.setup_pending != 0;
     s_newborn = sv.newborn_p1 && sv.newborn_p1 <= sv.n_fish ? sv.newborn_p1 - 1 : -1;
     if (sv.bubble_x > 0) tank_set_bubble_x(t, sv.bubble_x);
-    t->light_override = sv.light_override; t->light_on = sv.light_on;
+    t->light_idle_s = sv.light_idle_s ? sv.light_idle_s : LIGHT_IDLE_S;
+    t->light_auto = sv.light_auto != 0;
+    t->light_manual_off = !t->light_auto && sv.light_manual_off != 0;
+    t->light_override = false; t->light_on = true;   /* never restored (2026-09-15): a saved
+                                                      * override once froze a tank in permanent day */
     t->feed_spot_x = sv.feed_spot_x; t->player_feedings = sv.player_feedings;
     t->hold_approaches = sv.hold_approaches; t->tank_ms_bits = sv.tank_ms_bits;
     t->tank_ms_seen = sv.tank_ms_seen & t->tank_ms_bits;
@@ -372,6 +458,19 @@ static bool load_save(tank_t *t, int64_t *saved_unix) {
     tank_veg_sync(t);
     memcpy(t->algae, sv.algae, ALGAE_CELLS);
     t->trims = sv.trims; t->cells_cleaned = sv.cells_cleaned;
+    /* the sand dollar tail (zeros for an older save: the ledger back-pays) */
+    t->sd_balance = sv.sd_balance; t->sd_earned = sv.sd_earned; t->sd_unlocks = sv.sd_unlocks & ((1u << SD_ITEM_COUNT) - 1);
+    for (int i = 0; i < N_FISH_MAX; i++) t->sd_paid_fish[i] = i < t->n_fish ? sv.sd_paid_fish[i] : 0;
+    t->sd_colonies_paid = sv.sd_colonies_paid; t->sd_inches_paid = sv.sd_inches_paid;
+    t->algae_colonies = sv.algae_colonies; t->trim_px = sv.trim_px;
+    if (sv.snail_x > 0) { t->snail_x = sv.snail_x; t->snail_y = sv.snail_y; }
+    if (t->sd_unlocks & SD_ITEM_PLANT) {
+        if (sv.veg_h3[0] > 0) for (int i = 0; i < VEG_FRONDS_MAX; i++) t->veg_h[3][i] = sv.veg_h3[i];
+        else tank_plant_place(t);
+        tank_veg_sync(t);
+    }
+    s_sd_prev_feedings = t->player_feedings;         /* meals before this boot are not back-paid */
+    s_sd_pending = 0;
     s_arrival_pending = sv.arrival_pending;
     s_prev_night = t->night;
     return true;
@@ -390,6 +489,22 @@ void progression_boot(tank_t *t) {
     if (s_arrival_pending && !t->night && tank_nursery_bed(t) >= 0) do_arrival(t);   /* earned while you were away: here it is */
 }
 
+void progression_settings_changed(void) { mark_dirty(); }
+
+void progression_slept(tank_t *t, float seconds) {
+    if (seconds <= 0) return;
+    tank_tick_sleep(t, seconds);
+    for (int i = 0; i < t->n_fish; i++) {     /* and they grew, slowly, in the dark */
+        s_age[i] += seconds * SLEEP_GROWTH_FRAC;
+        apply_stage(&t->fish[i], s_age[i]); apply_growth(&t->fish[i]);
+    }
+    /* the tank milestone (2026-09-15, was "first quiet night" - every fish
+       resting under the old day/night cycle): one unbroken stretch of device
+       sleep as long as a night. The cap keeps a week's absence a single span. */
+    if (seconds >= FULL_NIGHT_S) set_tms(t, TMS_FIRST_FULL_NIGHT);
+    mark_dirty();
+}
+
 float progression_wake(tank_t *t, int64_t now_unix) {
     int64_t saved_unix;
     s_booted = true;
@@ -398,13 +513,8 @@ float progression_wake(tank_t *t, int64_t now_unix) {
     if (now_unix > 0 && saved_unix > 0 && now_unix > saved_unix) {
         int64_t span = now_unix - saved_unix;
         if (span > PROGRESSION_SLEEP_CAP_S) span = PROGRESSION_SLEEP_CAP_S;
-        tank_tick_sleep(t, (float)span);
-        for (int i = 0; i < t->n_fish; i++) {     /* and they grew, slowly, in the dark */
-            s_age[i] += (float)span * SLEEP_GROWTH_FRAC;
-            apply_stage(&t->fish[i], s_age[i]); apply_growth(&t->fish[i]);
-        }
+        progression_slept(t, (float)span);
         slept = span / 3600.0f;
-        mark_dirty();
     }
     if (s_arrival_pending && !t->night && tank_nursery_bed(t) >= 0) do_arrival(t);
     return slept;
@@ -414,7 +524,7 @@ void progression_tick(tank_t *t, float dt) {
     if (!s_booted) return;
     float aged = dt * progression_time_scale;                    /* growth: every awake second, lit or not */
     float tended = t->night ? 0 : aged;                          /* drift: pressure only while lit and lived-in */
-    int n_rest = 0, n_dart = 0; bool changed_someone = false;
+    int n_dart = 0; bool changed_someone = false;
     for (int i = 0; i < t->n_fish; i++) {
         fish_t *f = &t->fish[i];
         s_age[i] += aged;
@@ -435,10 +545,8 @@ void progression_tick(tank_t *t, float dt) {
         if (f->goal.id == GOAL_VISIT_BUBBLES && tank_dist(f->x, f->y, t->bubble_x, t->bubble_y) < 90) set_ms(f, MS_FIRST_BUBBLES);
         if (f->goal.id == GOAL_INSPECT_REEF && tank_dist(f->x, f->y, t->reef_x, t->reef_y) < 90) set_ms(f, MS_FIRST_REEF);
         if (f->goal.id == GOAL_FOLLOW_FRIEND && f->goal_age > 2.0f) set_ms(f, MS_FIRST_FOLLOW);
-        if (f->goal.id == GOAL_REST) n_rest++;
         if (f->goal.id == GOAL_DART_PLAY) n_dart++;
     }
-    if (t->n_fish >= 2 && n_rest == t->n_fish && t->night) set_tms(t, TMS_FIRST_QUIET_NIGHT);
     if (n_dart >= 2) set_tms(t, TMS_FIRST_PLAY_SESSION);
     if (changed_someone) set_tms(t, TMS_CHANGED_SOMEONE);
     if (t->player_feedings > 0) set_tms(t, TMS_FIRST_FEEDING);
@@ -450,6 +558,7 @@ void progression_tick(tank_t *t, float dt) {
         s_prev_trims = t->trims; s_prev_cleaned = t->cells_cleaned;
         mark_dirty();
     }
+    sd_tick(t);                                  /* the sand dollars owed for all of the above */
 
     /* ravenous: a starving tank with empty water begs at the surface (tank.c
      * renders the wait; the trickle holds off so the keeper's pellets are the
@@ -516,7 +625,8 @@ void progression_tick(tank_t *t, float dt) {
 void progression_save(tank_t *t) {
     save_t sv; memset(&sv, 0, sizeof sv);
     sv.magic = SAVE_MAGIC; sv.saved_unix = clock_port_now_unix(); sv.clock = t->clock;
-    sv.light_override = t->light_override; sv.light_on = t->light_on;
+    /* light_override / light_on stay zero in the save (2026-09-15) */
+    sv.light_idle_s = (uint16_t)t->light_idle_s; sv.light_auto = t->light_auto; sv.light_manual_off = t->light_manual_off;
     sv.arrival_pending = s_arrival_pending; sv.n_fish = (uint8_t)t->n_fish;
     sv.feed_spot_x = t->feed_spot_x; sv.player_feedings = t->player_feedings;
     sv.hold_approaches = t->hold_approaches; sv.tank_ms_bits = t->tank_ms_bits;
@@ -527,6 +637,12 @@ void progression_save(tank_t *t) {
     }
     memcpy(sv.algae, t->algae, ALGAE_CELLS);
     sv.trims = t->trims; sv.cells_cleaned = t->cells_cleaned;
+    sv.sd_balance = t->sd_balance; sv.sd_earned = t->sd_earned; sv.sd_unlocks = t->sd_unlocks;
+    for (int i = 0; i < N_FISH_MAX; i++) sv.sd_paid_fish[i] = t->sd_paid_fish[i];
+    sv.sd_colonies_paid = t->sd_colonies_paid; sv.sd_inches_paid = t->sd_inches_paid;
+    sv.algae_colonies = t->algae_colonies; sv.trim_px = t->trim_px;
+    sv.snail_x = t->snail_x > 0 ? t->snail_x : 0; sv.snail_y = t->snail_y > 0 ? t->snail_y : 0;
+    for (int i = 0; i < VEG_FRONDS_MAX; i++) sv.veg_h3[i] = (t->sd_unlocks & SD_ITEM_PLANT) ? t->veg_h[3][i] : 0;
     sv.setup_pending = s_setup_pending;
     sv.newborn_p1 = (uint8_t)(s_newborn >= 0 && s_newborn < t->n_fish ? s_newborn + 1 : 0);
     sv.bubble_x = t->bubble_x;

@@ -45,7 +45,12 @@
  * (every bed scalped) is a mild unease. Only a tank being truly smothered
  * presses back: two or more beds past VEG_SMOTHER height. Stress is already
  * in the advisor's schema, so the model reacts without any schema change. */
-#define VEG_BEDS   3                           /* reef bed + two decor beds */
+#define VEG_BEDS   3                           /* reef bed + two decor beds (the SAVE's
+                                                * bed count: baked into save_t's arrays) */
+#define VEG_BEDS_MAX 4                         /* + the shop's sword plant, bed 3 (2026-09-15:
+                                                * live only once bought; tank_veg_beds) */
+typedef enum { VEG_KIND_GRASS, VEG_KIND_SWORD } veg_kind_t;
+#define VEG_START  0.35f                       /* a fresh tank (and a bought plant): comfortable cover */
 #define VEG_NUB    0.03f                       /* trim floor: ~13 px green stubble */
 #define VEG_BARE   0.10f                       /* tallest bed under this = no cover
                                                 * anywhere: mild unease (relieved the
@@ -193,6 +198,12 @@ typedef struct tank {
                                     * passes LIGHT_IDLE_S (2026-09-15: the 240 s day/night
                                     * cycle is gone; a tank left on the desk goes dark and
                                     * the fish sleep, a pick-up or a touch wakes it). */
+    int      light_idle_s;         /* the keeper's idle time (settings page): seconds still
+                                    * before lights-out; LIGHT_IDLE_S by default, saved */
+    bool     light_auto;           /* settings LIGHTS OUT = AUTO: the idle rule turns the light
+                                    * off by itself. Off by default (Strato, 2026-09-15): the
+                                    * keeper's double-tap runs the light unless they opt in */
+    bool     light_manual_off;     /* MANUAL: the keeper's last double-tap left it off (saved) */
     bool     light_override;       /* director / sim took manual control of the light.
                                     * Not saved (a saved override once froze a tank in
                                     * permanent day and starved a milestone). */
@@ -224,15 +235,36 @@ typedef struct tank {
     float    slash_x0, slash_y0;   /* stroke start (the pre-engage travel is cut retroactively) */
     float    slash_h, slash_v;     /* travel this stroke: horizontal / vertical */
     /* upkeep state (persisted by progression.c) */
-    float    veg_h[VEG_BEDS][VEG_FRONDS_MAX]; /* per-frond height, VEG_NUB..1 (fraction
+    float    veg_h[VEG_BEDS_MAX][VEG_FRONDS_MAX]; /* per-frond height, VEG_NUB..1 (fraction
                                                * of the way from the floor to the surface) */
-    float    veg_growth[VEG_BEDS]; /* per-bed canopy = MEAN frond height, VEG_NUB..1,
+    float    veg_growth[VEG_BEDS_MAX]; /* per-bed canopy = MEAN frond height, VEG_NUB..1,
                                     * derived (tank.c veg_sync) - read-only outside;
                                     * set a bed with tank_veg_set */
     uint8_t  algae[ALGAE_CELLS];   /* glass film per cell, 0..255 */
     float    algae_acc;            /* seconds toward the next algae growth step */
     int32_t  trims;                /* lifetime bed trims (milestone + save) */
     int32_t  cells_cleaned;        /* lifetime algae cells wiped (milestone + save) */
+    /* the chore counters behind the sand dollars (2026-09-15): a COLONY is a
+     * connected patch of film the keeper's wipe took the last cell of (the
+     * snail's grazing never counts); trim_px is frond length actually cut,
+     * PX_PER_INCH to the inch. Both saved. */
+    int32_t  algae_colonies;
+    float    trim_px;
+    /* sand dollars (progression.c owns the economy; tank.c reads the unlocks):
+     * the balance, the lifetime total, what the shop has sold (SD_ITEM_*),
+     * and the ledger that keeps an award from paying twice - per fish (bits
+     * SD_PAID_*), and how many hundreds of colonies / inches have been paid.
+     * All saved. */
+    int32_t  sd_balance, sd_earned;
+    uint32_t sd_unlocks;
+    uint32_t sd_paid_fish[N_FISH_MAX];
+    int32_t  sd_colonies_paid, sd_inches_paid;
+    /* the snail (SD_ITEM_SNAIL): crawls the glass toward the nearest film and
+     * grazes it - the one creature in the tank that is not the model's. Its
+     * position is saved; heading / target are not. */
+    float    snail_x, snail_y, snail_heading;
+    int16_t  snail_cell;           /* the algae cell it is heading for, -1 = wandering */
+    float    snail_graze;          /* seconds on the current cell */
     /* keeper habits the tank remembers (persisted by progression.c) */
     float    feed_spot_x;          /* where the keeper usually feeds (EMA); <0 = unknown */
     int      player_feedings;      /* MEALS: feedings the fish ate from (2026-09-14, Strato: a tap
@@ -333,7 +365,12 @@ void  tank_tick_sleep(tank_t *t, float seconds);
  * is handling) - and a setup page or prompt holds the light (hold_light).
  * tank_toggle_light / tank_light_auto are the director's and the sim's
  * manual override (b-roll, tests); never saved. */
-#define LIGHT_IDLE_S 15.0f
+/* Settings' LIGHTS OUT = MANUAL (light_auto) turns the idle rule
+ * off and gives the keeper the old double-tap instead: two quick taps on the
+ * glass, then a pause, flip light_manual_off. AUTO clears it. */
+#define LIGHT_IDLE_S     15        /* the default, seconds (tank_t.light_idle_s) */
+#define LIGHT_IDLE_MIN_S 5
+#define LIGHT_IDLE_MAX_S 999       /* three digits on the settings wheel */
 void  tank_handled(tank_t *t);
 void  tank_toggle_light(tank_t *t);
 void  tank_light_auto(tank_t *t);
@@ -345,7 +382,8 @@ void  tank_light_auto(tank_t *t);
  *    strongly hungry fish keep to their own business.
  *  tank_touch_tap:  call once per tap. A tap on the water surface (y below
  *    FEED_ZONE_Y) is a FEED gesture: pellets drop there, nothing else happens.
- *    Elsewhere: 3+ quick taps =
+ *    Elsewhere: 2 quick taps then a pause flip the light - only with settings'
+ *    LIGHTS OUT on MANUAL (light_auto); 3+ quick taps =
  *    aggressive -> nearby fish flee the spot and stay spooked while taps
  *    continue (cooldown resets on each tap); after the cooldown, single taps
  *    are harmless again and it takes 3 quick taps to re-trigger. Spooking
@@ -415,5 +453,29 @@ void  tank_set_look(tank_t *t, int slot, uint32_t body, uint32_t accent);
  * column as a distance bucket and a bearing, never a position. */
 #define BUBBLE_X_DEFAULT (TANK_W * 0.8f)
 void  tank_set_bubble_x(tank_t *t, float x);
+
+/* ---- the shop (2026-09-15): sand dollars buy things for the tank ----
+ * The items are bits in tank_t.sd_unlocks; progression.c sells them
+ * (progression_buy) and tank.c gives them their place. A bought thing is in
+ * the tank for good. */
+enum { SD_ITEM_PLANT = 1u << 0, SD_ITEM_SNAIL = 1u << 1, SD_ITEM_COUNT = 2 };
+/* per-fish paid bits (sd_paid_fish) */
+enum { SD_PAID_JUV = 1u << 0, SD_PAID_ADULT = 1u << 1, SD_PAID_ELDER = 1u << 2, SD_PAID_TRUST = 1u << 3 };
+#define PX_PER_INCH 24.0f          /* the tank reads as ~15 in tall; a fish ~1.7 in */
+/* the live bed count: VEG_BEDS, or VEG_BEDS_MAX with the sword plant bought;
+ * every loop over beds runs to this. tank_veg_kind is the species (render). */
+int   tank_veg_beds(const tank_t *t);
+veg_kind_t tank_veg_kind(const tank_t *t, int b);
+/* the purchases land: the sword plant at VEG_START on the open floor; the
+ * snail on the glass, bottom left */
+void  tank_plant_place(tank_t *t);
+void  tank_snail_place(tank_t *t);
+/* the snail has two poses (Strato's sprites, 2026-09-15): UPRIGHT, walking
+ * the tank floor (nothing to graze: it comes down and ambles along the
+ * bottom, turning at the ends), and flat ON THE GLASS (crawling to film and
+ * grazing it, its underside to the viewer). snail_y is the sprite's centre;
+ * on the floor it is SNAIL_FLOOR_Y, the foot on the sand line. */
+#define SNAIL_FLOOR_Y (TANK_H - 24.0f)
+bool  tank_snail_upright(const tank_t *t);
 
 #endif

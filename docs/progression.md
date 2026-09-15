@@ -82,7 +82,7 @@ machine.*
     **cooldown timer** resets.
   - After cooldown, it takes **3 consecutive quick taps** to trigger flee
     mode again (single taps become harmless).
-- Double-tap reserved for the light toggle (see below).
+- (Double-tap toggled the light until 2026-09-15; the light is the idle detector's now, see below.)
 - Tap reactions are reflex-layer, not model decisions.
 
 ## Upkeep chores (2026-08-30, `tank_veg_bed`/`tank_grow_algae` in tank.c)
@@ -113,6 +113,33 @@ machine.*
 - Tank milestones: first trimming, first glass cleaning.
 - Neither chore ever counts toward the tap burst (no accidental startles).
 
+## Sand dollars and the shop (2026-09-15, `progression.c` SD_*, `render_shop`)
+
+The points layer over the chores and the care. **Care earns sand dollars,
+the shop spends them** on things for the tank; nothing is ever lost and
+nothing is ever needed - a tank with no dollars is exactly the tank there
+was before.
+
+- **Earned** (one table, `SD_*` in progression.h): a meal (a fish ate from
+  a keeper feeding) 2; a fish reaching juvenile / adult / elder 5 / 10 / 25;
+  a fry born 20; a fish at full trust (10.0) 15, once; every 100 algae
+  colonies removed 25; every 100 inches of grass cut 25. The chore counts
+  repeat: they are the standing income. Detected from what the tank already
+  counts, against a paid ledger in the save - nothing pays twice, and a
+  tank saved before the shop is back-paid once for the stages, the trust
+  and the hundreds it already had (meals are adopted, not back-paid).
+- **A colony** is a connected patch of film whose last cell went under the
+  keeper's wipe; **an inch** is 24 px of frond actually cut (the tank reads
+  as ~15 in tall). The snail's grazing counts for neither.
+- **The shop** opens from the sand dollar on the milestones page's TANK row.
+  Items: the SWORD PLANT (40) - a fourth bed of broad leaves on the open
+  floor, trimmed and grown and counted as cover like the grass - and the
+  SNAIL (80) - a rule-based grazer on the glass that thins the film cell by
+  cell, awake and through a night of drowse. Both are in the tank for good.
+  The model sees neither (schema v4 is frozen); they reach the fish through
+  cover and the film, as the keeper's own chores do.
+- Dollars earned during play show as a small "+N" toast over the live tank.
+
 ## IMU (motion)
 
 - **All-or-nothing**: only ship if it can be dialed in — tilting the tank must
@@ -121,10 +148,28 @@ machine.*
 
 ## Light discipline / sleep
 
+- **The keeper runs the light (2026-09-15).** By default (settings LIGHTS
+  OUT = MANUAL) the light stays on until a double-tap on the glass turns it
+  off, and another turns it on; that state is saved. The 240 s day/night
+  cycle is gone (a saved override had frozen a tank in permanent day).
+  The keeper can opt into AUTO: then the light is on while the device is
+  handled - moved (the IMU's motion detector) or touched - and goes off
+  after the idle time (15 s by default, `tank_handled`). A tank left on the
+  desk goes dark and the fish sleep; a pick-up or a touch lights it.
+  A setup page or prompt holds
+  the light on (`hold_light`); the director's `light` / `auto` are the only
+  override, never saved. The settings page (LIGHTS OUT) has the idle time on
+  one swipeable number (`light_idle_s`, default 15, floor 5) and AUTO /
+  MANUAL (the default): MANUAL is the double-tap (`light_manual_off`,
+  saved); AUTO (`light_auto`) is the idle rule.
 - Light off → fish retreat to the **seaweed/reef corner** and enter visible
   sleep mode. Obvious, readable behavior.
 - Doubles as a **stasis/pause mode**: light off ≈ pausing the tank without
-  powering down. (Progression effectively pauses while asleep.)
+  powering down. (Trait drift pauses while dark; growth does not.)
+- The tank milestone that lived here, "first quiet night" (every fish asleep
+  under the cycle), is now **"first full night's sleep"**: one stretch of
+  device sleep of at least `FULL_NIGHT_S` (6 h), credited at the wake
+  (`progression_slept`).
 
 ## Breeding
 

@@ -30,6 +30,13 @@ extern const icon_t icon_ms_first_play_session;
 extern const icon_t icon_ms_first_quiet_night;
 extern const icon_t icon_ms_first_reef;
 extern const icon_t icon_ms_first_trimming;
+extern const icon_t icon_ms_sand_dollar;
 extern const icon_t icon_ms_tank_changed_someone;
+extern const icon_t icon_shop_plant;
+extern const icon_t icon_shop_sand_dollar_16;
+extern const icon_t icon_shop_sand_dollar_64;
+extern const icon_t icon_shop_snail;
+extern const icon_t icon_snail_glass;
+extern const icon_t icon_snail_upright;
 
 #endif

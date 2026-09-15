@@ -125,11 +125,21 @@ static void show_state(const tank_t *t) {
              t->courting ? t->fish[t->court_a].name : "no", t->courting ? "+" : "",
              t->courting ? t->fish[t->court_b].name : "", t->court_active > 0 ? " (circling)" : "",
              progression_arrival_pending() ? "staged" : "-");
-    for (int b = 0; b < VEG_BEDS; b++) {           /* per-frond heights: which blades a sweep left standing */
-        char row[VEG_FRONDS_MAX * 5 + 1]; int len = 0, n; float x0;
+    ESP_LOGI(TAG, "sand dollars %d (earned %d) | shop:%s%s%s | colonies %d | %.1f in trimmed",
+             (int)t->sd_balance, (int)t->sd_earned, t->sd_unlocks & SD_ITEM_PLANT ? " plant" : "", t->sd_unlocks & SD_ITEM_SNAIL ? " snail" : "",
+             t->sd_unlocks ? "" : " -", (int)t->algae_colonies, t->trim_px / PX_PER_INCH);
+    if (t->sd_unlocks & SD_ITEM_SNAIL) {                /* where it is, what it is after */
+        int c = t->snail_cell, cells = 0; for (int i = 0; i < ALGAE_CELLS; i++) cells += t->algae[i] > 0;
+        ESP_LOGI(TAG, "snail at %.0f,%.0f heading %.0f deg | %s cell %d at %d,%d (film %d) | %d cells on the glass", t->snail_x, t->snail_y,
+                 t->snail_heading * 57.3f, c >= 0 ? "after" : "no target,", c, c >= 0 ? (c % ALGAE_COLS) * ALGAE_CELL + 8 : -1,
+                 c >= 0 ? (c / ALGAE_COLS) * ALGAE_CELL + 8 : -1, c >= 0 ? t->algae[c] : 0, cells);
+    }
+    for (int b = 0; b < tank_veg_beds(t); b++) {   /* per-frond heights: which blades a sweep left standing */
+        char row[VEG_FRONDS_MAX * 5 + 1]; int len = 0, n; float x0, f0, f1;
         tank_veg_bed(t, b, &x0, NULL, NULL, &n);
+        tank_veg_frond(t, b, 0, &f0); tank_veg_frond(t, b, 1, &f1);     /* the pitch: 12, the sword plant's 14 */
         for (int i = 0; i < n && len < (int)sizeof row - 5; i++) len += snprintf(row + len, sizeof row - len, " %.2f", t->veg_h[b][i]);
-        ESP_LOGI(TAG, "bed %d fronds (x from %.0f, pitch 12):%s", b, x0 + 6, row);
+        ESP_LOGI(TAG, "bed %d %s (x from %.0f, pitch %.0f):%s", b, b == 3 ? "leaves" : "fronds", x0 + 6, f1 - f0, row);
     }
     ESP_LOGI(TAG, "nursery bed %d (a bed >= %.2f) | parked real tank: %s", tank_nursery_bed(t), (double)VEG_NURSERY,
              nvs_has("bk") ? "YES (restore)" : "no (this IS the real tank)");
@@ -147,6 +157,7 @@ static void help(void) {
     ESP_LOGI(TAG, "STAGED TANKS (the real one is parked first): fresh (new tank, two fry) | stages (fry juv adult elder) | stage <fish|all> <fry|juv|adult|elder>");
     ESP_LOGI(TAG, "stash (park the real tank now) | restore (bring it back) | age <fish> <hours>");
     ESP_LOGI(TAG, "milestones [off] (the page, on cue; on the device: tap the open stats card)");
+    ESP_LOGI(TAG, "shop [off] (the sand dollar page) | dollars [n] (grant n; the balance and the chore counts) | buy plant|snail (at the price)");
     ESP_LOGI(TAG, "reset (the keeper's confirm prompt, as BOOT + tap opens it) | reset yes|no (answer it here) - YES WIPES EVERY SAVE, a parked tank too");
     ESP_LOGI(TAG, "setup [off] (the first-run flow: welcome, names, colours; off drops the panel - the birth flow too) | name <fish|idx> <newname> (up to %d letters, saved)", FISH_NAME_MAX);
     ESP_LOGI(TAG, "touch [bias <px>] (finger-landing correction: reported touches move up by px; not saved)");
@@ -206,24 +217,44 @@ static void run(tank_t *t, char *line) {
         else { int s = atoi(argv[1]); tank_grow_algae(t, s); ESP_LOGI(TAG, "algae +%d steps", s); }
     } else if (!strcmp(c, "veg") && argc > 2) {
         float g = atof(argv[2]);
-        if (!strcmp(argv[1], "all")) for (int b = 0; b < VEG_BEDS; b++) tank_veg_set(t, b, g);
-        else { int b = atoi(argv[1]); if (b >= 0 && b < VEG_BEDS) tank_veg_set(t, b, g); }
+        if (!strcmp(argv[1], "all")) for (int b = 0; b < tank_veg_beds(t); b++) tank_veg_set(t, b, g);
+        else { int b = atoi(argv[1]); if (b >= 0 && b < tank_veg_beds(t)) tank_veg_set(t, b, g); }
         ESP_LOGI(TAG, "veg %s -> %.2f", argv[1], g);
     } else if (!strcmp(c, "light")) {
         tank_toggle_light(t); ESP_LOGI(TAG, "light %s (manual)", t->light_on ? "on" : "off");
     } else if (!strcmp(c, "auto")) {
-        tank_light_auto(t); ESP_LOGI(TAG, "light back on the day/night cycle");
+        tank_light_auto(t); ESP_LOGI(TAG, "light back on the idle rule");
     } else if (!strcmp(c, "sleep") && argc > 1) {
         float h = atof(argv[1]);
         progression_slept(t, h * 3600.0f);      /* growth + the full-night badge, as a real wake would */
         ESP_LOGI(TAG, "slept %.1f h", h);
         show_state(t);
+    } else if (!strcmp(c, "imu")) {             /* a short trace of raw polls: is the table really still? */
+        int n = argc > 1 ? atoi(argv[1]) : 8; if (n < 1) n = 1; if (n > 40) n = 40;
+        for (int i = 0; i < n; i++) {               /* (the console runs in the tank task: poll here, the task is blocked) */
+            imu_port_poll(esp_timer_get_time());
+            int16_t a[3]; int m; imu_port_last(a, &m);
+            ESP_LOGI(TAG, "imu poll: g=[%6d %6d %6d] motion %5d %s", a[0], a[1], a[2], m, imu_port_moving() ? "MOVING" : "still");
+            vTaskDelay(pdMS_TO_TICKS(250));
+        }
     } else if (!strcmp(c, "settings")) {
         bool on = argc < 2 || strcmp(argv[1], "off");
         touch_port_show_settings(on); ESP_LOGI(TAG, "settings page %s", on ? "up (CLOSE ends it)" : "closed");
     } else if (!strcmp(c, "milestones")) {
         bool on = argc < 2 || strcmp(argv[1], "off");
         touch_port_show_milestones(on); ESP_LOGI(TAG, "milestones page %s", on ? "up (CLOSE button ends it)" : "closed");
+    } else if (!strcmp(c, "shop")) {                 /* the sand dollar page */
+        bool on = argc < 2 || strcmp(argv[1], "off");
+        touch_port_show_shop(on); ESP_LOGI(TAG, "shop page %s", on ? "up (CLOSE ends it)" : "closed");
+    } else if (!strcmp(c, "dollars")) {              /* dollars [n]: grant n (negative takes), or just the balance */
+        if (argc > 1) progression_sd_grant(t, atoi(argv[1]));
+        ESP_LOGI(TAG, "sand dollars %d (earned %d) | colonies %d | %.1f in trimmed", (int)t->sd_balance, (int)t->sd_earned,
+                 (int)t->algae_colonies, t->trim_px / PX_PER_INCH);
+    } else if (!strcmp(c, "buy") && argc > 1) {      /* buy plant|snail: the shop's sale, at the price */
+        int item = !strcmp(argv[1], "plant") ? 0 : !strcmp(argv[1], "snail") ? 1 : -1;
+        if (item < 0) ESP_LOGW(TAG, "buy plant|snail");
+        else if (progression_buy(t, item)) ESP_LOGI(TAG, "%s unlocked, %d sand dollars left", SD_ITEMS[item].name, (int)t->sd_balance);
+        else ESP_LOGW(TAG, "%s refused: owned, or %d < %d", SD_ITEMS[item].name, (int)t->sd_balance, SD_ITEMS[item].price);
     } else if (!strcmp(c, "pmic")) {
         if (argc > 2 && (!strcmp(argv[1], "on") || !strcmp(argv[1], "off")))
             ESP_LOGI(TAG, "rail %s %s: %s", argv[2], argv[1], battery_port_set_rail(argv[2], !strcmp(argv[1], "on")) ? "ok" : "REFUSED");

@@ -87,9 +87,29 @@ void render_milestones(const tank_t *t, uint16_t *fb, int stride);
  * badge / name / strip opened the detail modal, or the modal was up and
  * this tap closed it; MS_TAP_NONE = nothing here (the caller may try the
  * brightness row). */
-enum { MS_TAP_NONE = 0, MS_TAP_KEPT = 1, MS_TAP_CLOSE = 2, MS_TAP_SETTINGS = 3 };   /* SETTINGS: the button bottom left (2026-09-15) opens the settings page */
+enum { MS_TAP_NONE = 0, MS_TAP_KEPT = 1, MS_TAP_CLOSE = 2, MS_TAP_SETTINGS = 3,   /* SETTINGS: the button bottom left (2026-09-15) opens the settings page */
+       MS_TAP_SHOP = 4 };                                                          /* the sand dollar left of the TANK row opens the shop */
 int  render_milestones_tap(const tank_t *t, float x, float y);
 void render_milestones_leave(void);
+
+/* The shop (2026-09-15): the sand dollar page. The balance at the top, one
+ * row per item (SD_ITEMS: the art, the name, the price, UNLOCK / IN TANK), a
+ * HOW TO EARN button bottom left (a modal listing the sources) and CLOSE
+ * bottom right. A tap on a row opens the item's modal - the art at 2x, the
+ * words, the price, an UNLOCK button; render_shop_tap returns SHOP_TAP_BUY +
+ * item when that button is tapped (the caller calls progression_buy; a short
+ * balance was already a dim button), SHOP_TAP_CLOSE for the way out,
+ * SHOP_TAP_KEPT when a modal opened or closed. Page state is render-local;
+ * render_shop_leave clears it when the page closes. */
+enum { SHOP_TAP_NONE = 0, SHOP_TAP_KEPT = 1, SHOP_TAP_CLOSE = 2, SHOP_TAP_BUY = 16 };   /* BUY + item index */
+void render_shop(const tank_t *t, uint16_t *fb, int stride);
+int  render_shop_tap(const tank_t *t, float x, float y);
+void render_shop_leave(void);
+/* the sand dollar toast: dollars awarded during play (progression_sd_take_award)
+ * show as a small pill top centre of the live tank, "+N" beside the coin,
+ * for a few seconds; amounts that land while it is up add on. Call every
+ * frame the live tank is showing (never over a page). */
+void render_sd_toast(const tank_t *t, uint16_t *fb, int stride);
 
 /* Reset confirm (2026-09-11): a modal panel over the live tank - "RESET
  * TANK?", what it costs, a NO and a YES button, and a bar draining toward
@@ -112,13 +132,24 @@ int  render_confirm_hit(float x, float y);
 
 /* Settings page (2026-09-15; the brightness row left the milestones page
  * for it): BRIGHTNESS 30 / 60 / 100 % and VOLUME OFF / QUIET / NORMAL as
- * segment buttons - tap the one you want - and a CLOSE button bottom right.
- * render_settings_tap maps a tap: SET_TAP_BRIGHT with *value = the percent,
- * SET_TAP_VOLUME with *value = 0..2, SET_TAP_CLOSE, or nothing. The sim
- * draws it too, for parity. */
-enum { SET_TAP_NONE = 0, SET_TAP_CLOSE = 1, SET_TAP_BRIGHT = 2, SET_TAP_VOLUME = 3 };
-void render_settings(uint16_t *fb, int stride, int bright_pct, int volume);
+ * segment buttons - tap the one you want - then LIGHTS OUT MANUAL / AUTO
+ * (the keeper's double-tap on the glass - the default - or the idle rule)
+ * with the idle time
+ * under it as one number (swipe it up or down to step the seconds, or tap
+ * its chevrons; LIGHT_IDLE_S shows by default), and a CLOSE button bottom
+ * right.
+ * The platform feeds render_settings_touch EVERY FRAME while the page is up
+ * (x, y, finger down), as it feeds setup_touch: it classifies taps and the
+ * wheel's drags, applies the light settings to the tank itself (and marks
+ * the save), and returns what happened: SET_TAP_BRIGHT with *value = the
+ * percent, SET_TAP_VOLUME 0..2 (those two are the platform's to apply),
+ * SET_TAP_LIGHT (*value 1 = AUTO, the idle rule; 0 = MANUAL, the double-tap),
+ * SET_TAP_IDLE (*value = the seconds now set), SET_TAP_CLOSE, or nothing.
+ * render_settings_tap is the bare hit test (tests). */
+enum { SET_TAP_NONE = 0, SET_TAP_CLOSE = 1, SET_TAP_BRIGHT = 2, SET_TAP_VOLUME = 3, SET_TAP_LIGHT = 4, SET_TAP_IDLE = 5 };
+void render_settings(const tank_t *t, uint16_t *fb, int stride, int bright_pct, int volume);
 int  render_settings_tap(float x, float y, int *value);
+int  render_settings_touch(tank_t *t, float x, float y, bool down, int *value);
 
 /* UI primitives (2026-09-13) for panels built outside this file (the first-
  * run setup in common/setup.c): the confirm prompt's pixel font, flat rects
