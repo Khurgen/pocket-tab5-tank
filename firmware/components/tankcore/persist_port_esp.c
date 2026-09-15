@@ -9,10 +9,15 @@
 
 static const char *TAG = "persist";
 
-bool persist_port_load(void *buf, size_t len) {
+bool persist_port_load(void *buf, size_t max, size_t *got) {
     nvs_handle_t h; if (nvs_open("tank", NVS_READONLY, &h) != ESP_OK) return false;
-    size_t got = len; esp_err_t e = nvs_get_blob(h, "save", buf, &got); nvs_close(h);
-    return e == ESP_OK && got == len;
+    size_t len = 0; esp_err_t e = nvs_get_blob(h, "save", NULL, &len);   /* the stored length first */
+    if (e == ESP_OK && (len == 0 || len > max)) e = ESP_ERR_NVS_INVALID_LENGTH;   /* a newer build's save */
+    if (e == ESP_OK) e = nvs_get_blob(h, "save", buf, &len);
+    nvs_close(h);
+    if (e == ESP_OK) *got = len;
+    else if (e != ESP_ERR_NVS_NOT_FOUND) ESP_LOGW(TAG, "load failed: %s (%u bytes)", esp_err_to_name(e), (unsigned)len);
+    return e == ESP_OK;
 }
 bool persist_port_save(const void *buf, size_t len) {
     nvs_handle_t h; if (nvs_open("tank", NVS_READWRITE, &h) != ESP_OK) return false;

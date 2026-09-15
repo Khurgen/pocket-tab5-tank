@@ -132,6 +132,10 @@ void tank_make_fish(tank_t *t, int slot, int preset, float sociable, float bold,
     f->trust = 5.0f;
     f->goal.id = GOAL_EXPLORE; f->goal.urgency = 3; f->goal.confidence = 1; f->goal.runner_up = GOAL_COUNT;
     f->goal_age = 0; f->ask_age = 99; f->dart_timer = 0; f->dart_x = f->x; f->dart_y = f->y; f->hesitate = 0;
+    f->bored = 0; f->goal_prev = GOAL_COUNT; f->zone_last = -1; f->explore_set = false;
+    /* its own order of first visits - from the slot, not the tank's RNG, so a
+     * seeded run (the selftests) draws the same numbers it did before */
+    for (int z = 0; z < 6; z++) f->zone_seen[z] = -(float)((slot * 37 + z * 13) % 60);
     f->eaten = 0; f->eaten_player = 0;
     /* its own spot by the reef: bolder fish rest a little further out */
     f->rest_dx = 8 + slot * 24 + bold * 14; f->rest_dy = -slot * 9 - tank_randf(t, 0, 10);   /* a body apart (was 9 px per slot) */
@@ -667,7 +671,7 @@ void tank_tick_sleep(tank_t *t, float seconds) {
         f->hunger = clampf(f->hunger + SLEEP_HUNGER_PER_H * h, 0, 10);
         f->energy = clampf(f->energy + SLEEP_ENERGY_PER_H * h, 0, 10);
         f->stress = clampf(f->stress - SLEEP_STRESS_PER_H * h, 0, 10);
-        f->speed = 0; f->target_speed = 0;
+        f->speed = 0; f->target_speed = 0; f->bored = 0;  /* a night's sleep is a fresh start */
         f->goal_age += seconds; f->ask_age += seconds;  /* wake re-asks the advisor at once */
     }
     for (int i = 0; i < MAX_FOOD; i++)                  /* overnight pellets go stale */
@@ -684,6 +688,13 @@ void tank_tick_sleep(tank_t *t, float seconds) {
     if (steps > 600) steps = 600;                       /* bounded; the cap rules anyway */
     t->algae_acc -= steps * ALGAE_STEP_SLEEP_S;
     tank_grow_algae(t, steps);
+}
+
+/* the schema's 3 x 2 zone grid (advisor_core.c encodes the same), 0..5 */
+static int zone_of(float x, float y) {
+    int col = (int)(x / (TANK_W / 3.0f)); if (col > 2) col = 2; if (col < 0) col = 0;
+    int row = (int)(y / (TANK_H / 2.0f)); if (row > 1) row = 1; if (row < 0) row = 0;
+    return row * 3 + col;
 }
 
 /* ---- goal → target point + cruise speed (prototype targetForGoal, x0.55) ---- */
@@ -763,7 +774,36 @@ static target_t target_for_goal(tank_t *t, int idx, goal_id_t goal, bool glance)
         tg.y = t->reef_y - 35 + cosf(tm * 0.8f + f->wander + idx * 1.1f) * (15 + idx * 4);
         tg.speed = 15 + f->curiosity * 1.7f;
         break;
-    default: if (glance) tg.valid = false; break; /* EXPLORE keeps the wander target */
+    case GOAL_EXPLORE: {
+        /* a destination, not a drift (2026-09-14). Before this, explore was
+         * the wander target above - 50 px ahead of the nose with a wobble -
+         * a random walk that never left the neighbourhood, so an explore
+         * decision looked like idling (Strato: "they don't explore the tank
+         * very much"). Now the fish picks the zone it has seen least recently
+         * (one of the two stalest, so two explorers don't take the same line),
+         * cruises to a point inside it, and on arrival picks the next. The
+         * model still owns the goal; this is the reflex layer resolving the
+         * concrete target, as it does for every other goal. */
+        if (glance) { if (!f->explore_set) tg.valid = false; else { tg.x = f->explore_x; tg.y = f->explore_y; } break; }
+        if (!f->explore_set || tank_dist(f->x, f->y, f->explore_x, f->explore_y) < 26) {
+            int cur = zone_of(f->x, f->y), best = -1, second = -1;
+            for (int z = 0; z < 6; z++) {
+                if (z == cur) continue;
+                if (best < 0 || f->zone_seen[z] < f->zone_seen[best]) { second = best; best = z; }
+                else if (second < 0 || f->zone_seen[z] < f->zone_seen[second]) second = z;
+            }
+            int z = (second >= 0 && (xr(t) % 3) == 0) ? second : best;
+            int col = z % 3, row = z / 3;
+            f->explore_x = tank_randf(t, col * (TANK_W / 3.0f) + 40, (col + 1) * (TANK_W / 3.0f) - 40);
+            f->explore_y = tank_randf(t, row * (TANK_H / 2.0f) + 42, (row + 1) * (TANK_H / 2.0f) - 40);
+            f->explore_set = true;
+        }
+        /* the wander wobble bends the line so it reads as a swim, not a bee-line */
+        tg.x = f->explore_x + sinf(f->wander) * 18;
+        tg.y = f->explore_y + cosf(f->wander * 0.7f) * 12;
+        break;
+    }
+    default: if (glance) tg.valid = false; break;
     }
     float m = 23;
     tg.x = clampf(tg.x, m, TANK_W - m);
@@ -871,6 +911,27 @@ static void update_fish(tank_t *t, int idx, float dt) {
     f->wander += dt * (0.65f + f->curiosity * 0.04f) + sinf(t->clock + f->x * 0.01f) * dt * 0.12f;
     if (f->dart_timer > 0) f->dart_timer -= dt;
     f->goal_age += dt; f->ask_age += dt;
+    /* boredom: the same pastime goes stale (a minute to the top); a meal or a
+     * night's rest is never boring. A zone the fish has not seen for a while
+     * is a small relief - so a real explore across the tank roughly pays for
+     * itself, while an orbit at the bubble column or a tail-chase behind a
+     * friend only accrues. (A zone boundary under the orbit gives nothing:
+     * the zone has to be BORED_ZONE_STALE_S stale.) The new-goal relief is in
+     * tank_tick where goals change. The band is in state_signature, so a fish
+     * crossing into "bored" is re-asked - and the v4 model reads the value. */
+    {
+        goal_id_t g = f->goal.id;
+        bool leisure = g == GOAL_VISIT_BUBBLES || g == GOAL_FOLLOW_FRIEND || g == GOAL_INSPECT_REEF ||
+                       g == GOAL_DART_PLAY || g == GOAL_EXPLORE || (g == GOAL_REST && !t->night);
+        f->bored = clampf(f->bored + dt * (leisure ? BORED_PER_S : -BORED_RELIEF_PER_S), 0, 10);
+        int z = zone_of(f->x, f->y);
+        if (z != f->zone_last) {
+            if (f->zone_last >= 0 && t->clock - f->zone_seen[z] > BORED_ZONE_STALE_S)
+                f->bored = clampf(f->bored - BORED_NEW_ZONE, 0, 10);
+            f->zone_last = (int8_t)z;
+        }
+        f->zone_seen[z] = t->clock;
+    }
 
     target_t tg = target_for_goal(t, idx, f->goal.id, false);
     /* fish prefer shallow climb/dive angles while cruising; full vertical
@@ -1044,7 +1105,8 @@ static uint32_t state_signature(const tank_t *t, int idx) {
     int food = (fi < 0 || band3(f->hunger) == 0) ? 0 : fd < 70 ? 2 : 1;
     return (uint32_t)band3(f->hunger) | (uint32_t)band3(f->energy) << 2 | (uint32_t)band3(f->stress) << 4
          | (uint32_t)food << 6
-         | (uint32_t)t->night << 10 | (uint32_t)band3(f->curiosity) << 11;
+         | (uint32_t)t->night << 10 | (uint32_t)band3(f->curiosity) << 11
+         | (uint32_t)band3(f->bored) << 13;      /* a fish going stale is asked again (2026-09-14) */
 }
 
 void tank_tick(tank_t *t, float dt, advisor_fn advise) {
@@ -1135,6 +1197,11 @@ void tank_tick(tank_t *t, float dt, advisor_fn advise) {
                 t->ask_rr = (i + 1) % t->n_fish;
             }
             if (g.id < GOAL_COUNT && g.id != f->goal.id) {
+                /* a genuinely new pastime relieves boredom; bouncing back to
+                 * the one just left (bubbles -> friend -> bubbles) does not */
+                if (g.id != f->goal_prev) f->bored = clampf(f->bored - BORED_NEW_GOAL, 0, 10);
+                f->goal_prev = f->goal.id;
+                if (g.id == GOAL_EXPLORE) f->explore_set = false;   /* pick a fresh destination */
                 f->goal = g;
                 f->goal_age = 0;
                 /* visible deliberation, scaled by how torn the advisor was */

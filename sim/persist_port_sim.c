@@ -14,9 +14,11 @@ static const char *path(void) {
     snprintf(p, sizeof p, "%s/.cache/pocket-tank/tank.sav", getenv("HOME") ? getenv("HOME") : ".");
     return p;
 }
-bool persist_port_load(void *buf, size_t len) {
+bool persist_port_load(void *buf, size_t max, size_t *got) {
     FILE *f = fopen(path(), "rb"); if (!f) return false;
-    size_t n = fread(buf, 1, len, f); fclose(f); return n == len;
+    size_t n = fread(buf, 1, max, f); bool longer = fgetc(f) != EOF; fclose(f);
+    if (longer || n == 0) return false;          /* a newer build's save, or empty */
+    *got = n; return true;
 }
 bool persist_port_save(const void *buf, size_t len) {
     char dir[512]; snprintf(dir, sizeof dir, "%s/.cache/pocket-tank", getenv("HOME") ? getenv("HOME") : ".");

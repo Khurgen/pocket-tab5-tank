@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <ctype.h>
+#include <unistd.h>
 #include "tank.h"
 #include "advisor.h"
 #include "advisor_core.h"
@@ -151,7 +152,11 @@ static int selftest_pop(void) {
     progression_time_scale = 600;                 /* 10 minutes of tended time per second */
     int arrivals = 0, last_n = tank.n_fish;
     bool saw_court = false;                       /* the tell fires before the fry */
-    for (int i = 0; i < 60 * 60 * 6; i++) {       /* 6 sim-minutes */
+    /* 9 sim-minutes: the gates close in ~4 and the fry lands at the NEXT
+       light-on (240 s cycle), which since the boredom pass (2026-09-14: fish
+       roam, so fewer of the keeper's pellets get eaten and MEALS closes later)
+       can be the one at 480 s */
+    for (int i = 0; i < 60 * 60 * 9 && arrivals == 0; i++) {
         tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
         /* an attentive keeper: feeds often, rests a finger by a fish */
         if (i % 300 == 0) tank_feed(&tank, 150 + (i % 900) / 3, 2);
@@ -447,7 +452,10 @@ static int selftest_sleep(void) {
     if (food_n) { printf("FAIL: trickle fed a begging tank\n"); return 1; }
     /* the keeper arrives: starving fish DASH for the fresh pellets (the
      * frenzy presentation), and feeding everyone ends the state */
-    tank_feed(&tank, TANK_W * 0.5f, 4);
+    /* the pellets land 90 px to one side of where the school begs: the test
+       measures the DASH, and a fish that happens to be sitting under the
+       drop (a matter of begging phase) has nothing to dash for */
+    tank_feed(&tank, TANK_W * 0.5f + 90, 4);
     int fed_at = -1; float dash_speed = 0;
     for (int step = 1; step <= 2400 && fed_at < 0; step++) {   /* 40 s: one fish may gobble
                                                                      every pellet; the trickle
@@ -497,6 +505,27 @@ static int selftest_sleep(void) {
         }
         printf("selftest-sleep: deep-sleep wake lived through %.0f h (hunger 2.0 -> %.1f, bed 1 %.2f -> %.2f); grew %.0f s asleep, 240 s in the dark\n",
                h, hunger_wake, veg0, tank.veg_growth[1], grew);
+    }
+    /* an older build's save is shorter - whatever length that build's struct
+       had, padding included (the seen-masks build wrote 1440, the family
+       build looked for 1436 and replaced a live tank with two fry on
+       2026-09-14) - and must still come back: same fish, same name */
+    {
+        tank_set_name(&tank, 0, "Fez");
+        progression_save(&tank);
+        const char *sav = getenv("POCKET_TANK_SAVE");
+        static const long older[] = { 1440, 1436, 1408, 1304, 1112, 448 };
+        for (size_t k = 0; k < sizeof older / sizeof *older; k++) {
+            if (truncate(sav, older[k])) { printf("FAIL: could not truncate the save to %ld\n", older[k]); return 1; }
+            tank_init(&tank, 8);
+            progression_boot(&tank);
+            if (tank.n_fish != 2 || strcmp(tank.fish[0].name, older[k] >= 1304 + 4 + 8 ? "Fez" : tank_roster_name(tank.fish[0].preset))) {
+                printf("FAIL: a %ld-byte save came back as %d fish, %s\n", older[k], tank.n_fish, tank.n_fish ? tank.fish[0].name : "-"); return 1; }
+        }
+        if (truncate(sav, 100)) return 1;
+        tank_init(&tank, 8); progression_boot(&tank);
+        if (!progression_setup_pending()) { printf("FAIL: a 100-byte save is not ours\n"); return 1; }
+        printf("selftest-sleep: older saves (1440 .. 448 bytes) load; a 100-byte one starts fresh\n");
     }
     printf("selftest-sleep: dash %.0f px/s at the drop; fed and calmed %.1f s after pellets\n",
            dash_speed, fed_at / 60.0f);
@@ -849,6 +878,10 @@ static int selftest_llm(int minutes) {
      * column almost all the time"): goal shares, time near the column, how
      * often 3+ fish crowd it, and the drives the model is reading */
     long goal_ticks[GOAL_COUNT] = {0}, near_ticks = 0, crowd_ticks = 0, cluster_ticks = 0; double cur_sum = 0, hun_sum = 0, en_sum = 0;
+    /* exploration census (2026-09-14, the boredom pass): distinct zones a fish
+     * passes through per minute, the longest stretch on one goal, mean boredom */
+    uint8_t zmask[N_FISH_MAX] = {0}; long zones_sum = 0, zone_windows = 0;
+    float streak[N_FISH_MAX] = {0}, longest_streak = 0; double bored_sum = 0;
     for (int i = 0; i < ticks; i++) {
         tank_tick(&tank, 1.0f / 60.0f, advisor_llm);
         progression_tick(&tank, 1.0f / 60.0f);
@@ -860,12 +893,19 @@ static int selftest_llm(int minutes) {
             cur_sum += f->curiosity; hun_sum += f->hunger; en_sum += f->energy;
             if (tank_dist(f->x, f->y, tank.bubble_x, tank.bubble_y - 74) < 55) near_b++;
             if (tank_dist(f->x, f->y, tank.reef_x, tank.reef_y - 35) < 55) near_r++;
+            bored_sum += f->bored;
+            zmask[fi] |= (uint8_t)(1u << (int)(f->zone_last < 0 ? 0 : f->zone_last));
+            streak[fi] += 1.0f / 60.0f; if (streak[fi] > longest_streak) longest_streak = streak[fi];
             int others = 0;                        /* the visual complaint: bodies overlapping */
             for (int fj = 0; fj < tank.n_fish; fj++)
                 if (fj != fi && tank_dist(f->x, f->y, tank.fish[fj].x, tank.fish[fj].y) < 45) others++;
             if (others >= 2) cluster = 1;
         }
         near_ticks += near_b + near_r; if (near_b >= 3 || near_r >= 3) crowd_ticks++; cluster_ticks += cluster;
+        if ((i + 1) % 3600 == 0)
+            for (int fi = 0; fi < tank.n_fish; fi++) {
+                zones_sum += __builtin_popcount(zmask[fi]); zone_windows++; zmask[fi] = 0;
+            }
         if (i % (ticks / 4) == 0) {
             printf("  tick %5d goals:", i);
             for (int fi = 0; fi < tank.n_fish; fi++) printf(" %s", GOAL_NAMES[tank.fish[fi].goal.id]);
@@ -874,6 +914,7 @@ static int selftest_llm(int minutes) {
         for (int fi = 0; fi < tank.n_fish; fi++)
             if (tank.fish[fi].goal.id != last[fi]) {
                 last[fi] = tank.fish[fi].goal.id;
+                streak[fi] = 0;
                 changes++;
                 if (tank.fish[fi].goal.confidence < 0.6f) torn++;
                 if (changes <= 8)
@@ -892,6 +933,8 @@ static int selftest_llm(int minutes) {
            "a 3-fish cluster anywhere %.0f%% | mean curiosity %.1f hunger %.1f energy %.1f\n",
            100.0 * near_ticks / (ticks * tank.n_fish), 100.0 * crowd_ticks / ticks, 100.0 * cluster_ticks / ticks,
            cur_sum / (ticks * tank.n_fish), hun_sum / (ticks * tank.n_fish), en_sum / (ticks * tank.n_fish));
+    printf("census: explore - %.1f distinct zones per fish-minute | longest one-goal stretch %.0f s | mean bored %.1f\n",
+           zone_windows ? (double)zones_sum / zone_windows : 0.0, longest_streak, bored_sum / (ticks * tank.n_fish));
     return changes >= 4 ? 0 : 1;                  /* a live brain redirects fish */
 }
 

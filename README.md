@@ -20,7 +20,7 @@ the model isn't sure, the fish visibly *hesitates*.
 
 ```
 zone 2 hunger 7 energy 5 stress 2 curiosity 8 bold 4 social 6 stage adult
-trust 6 food near 12 shadow none friend mid 3 bubble mid 10 reef far 7
+trust 6 bored 3 food near 12 friend mid 3 bubble mid 10 reef far 7
 wall clear last explore time day  ->  seek_food urgency 8
 ```
 
@@ -51,13 +51,13 @@ no toolchain needed.
 | Model | gemma4:26b | pocket-tank 14.3M (dim 384, 8 layers, 8 heads) |
 | Parameters | ~26,000,000,000 | 14,300,000, about 1,818× fewer |
 | Size | ~18 GB (Q4_K_M) | 57 MB fp32 → **7.56 MB 4-bit** |
-| Vocabulary | ~262K tokens | **58 tokens** (a closed schema lexicon) |
+| Vocabulary | ~262K tokens | **54 tokens** (a closed schema lexicon) |
 | Runs on | A desktop GPU | ESP32-S3, from flash, no network |
-| Agreement | | 75% picks the teacher's goal (the teacher agrees with *itself* 82%) |
+| Agreement | | 72% picks the teacher's goal (the teacher agrees with *itself* 82%) |
 
-On the real board a decision takes about 3.6 s at 12 tokens per second, with
+On the real board a decision takes about 3.7 s at 12 tokens per second, with
 the tank rendering at 25 to 30 fps alongside it on the other core. Trained on
-51,162 teacher-labeled situations. Every measured number, learning curve, and
+51,613 teacher-labeled situations. Every measured number, learning curve, and
 the methodology: [docs/stats.md](docs/stats.md).
 
 ## How it's put together
@@ -85,15 +85,24 @@ layer only ever *performs* what the model chose, or stages presentations
 
 ## What the fish do
 
-Eight goals, from the browser prototype this project distills from:
-`seek_food`, `flee_shadow`, `follow_friend`, `inspect_reef`, `visit_bubbles`,
-`explore`, `rest`, `dart_play`. (The roaming shadow that `flee_shadow` answered
-was removed from the tank in September 2026; the token stays in the frozen
-schema and the state line always reads `shadow none`.) Each fish has four drives (hunger, energy,
-stress, curiosity), three personality traits (bold, sociable, lazy), a
-trust score toward you, and a life stage. All of it is in the state line, so
-a bold fish and a shy one answer the same situation differently, and the
-model was taught by example rather than by rules.
+Seven goals, from the browser prototype this project distills from:
+`seek_food`, `follow_friend`, `inspect_reef`, `visit_bubbles`, `explore`,
+`rest`, `dart_play`. (An eighth, `flee_shadow`, answered a roaming shadow
+that was removed from the tank in September 2026; the token stays in the
+vocabulary and the model was never taught to say it.) Each fish has five
+drives (hunger, energy, stress, curiosity, boredom), three personality
+traits (bold, sociable, lazy), a trust score toward you, and a life stage.
+All of it is in the state line, so a bold fish and a shy one answer the same
+situation differently, and the model was taught by example rather than by
+rules.
+
+**Boredom** is what keeps the tank moving. A fish that has been at the same
+pastime for about a minute goes stale, and the model was taught that a bored
+fish moves on, usually to explore a part of the tank it hasn't seen in a
+while; a fresh fish keeps doing what it was doing. Before this the fish
+would park at the bubble column, or follow each other in circles, for as
+long as you cared to watch. Boredom never outranks hunger, and a bored fish
+at night still rests.
 
 The model samples its own distribution instead of always taking the top
 answer. That restores the variety the teacher had and costs nothing on
@@ -114,8 +123,9 @@ scripted, and it is all persisted.
 **Growing up.** A new tank starts with two fry. Feed them and over days they
 grow through juvenile, adult, and elder. A fry is plain; its markings come
 in with its first growth spurt. Adults get a dorsal crest; elders
-get bigger and settle down. Nothing announces it. Aging only counts while the
-tank is lit and lived in.
+get bigger and settle down. Nothing announces it. Fish grow with time, lit
+or not, and at a quarter speed while the tank sleeps; a stage reached in
+the night is the morning's surprise.
 
 **Arrivals.** Take good care of the pair and the tank earns more fish, up to
 five, one at a time. Each arrival has conditions (trust, feedings, a fish
@@ -173,8 +183,9 @@ done, the fry is born at the next light-on.
 the light coming on. A real-time clock tells it how long it was off, so a
 tank left dark for a day wakes hungry. A short press on BOOT puts the
 device into deep sleep: the tank saves, the screen goes dark and the chip
-draws microamps. Another press wakes it, a three-second boot, and the fish
-have lived through the time away: hunger up, energy back, the grass and the
+draws microamps. Press again within a minute and a half and the tank simply
+resumes where it was; later, another press wakes it with a three-second
+boot, and the fish have lived through the time away: hunger up, energy back, the grass and the
 algae grown, a long night ending in begging at the surface. Holding BOOT
 powers the tank off entirely. Flip the device and the screen follows.
 
@@ -355,12 +366,14 @@ seven-minute prompt check before an overnight run is always worth it.
 - [docs/progression-next.md](docs/progression-next.md) — the design and the
   evidence behind it
 - [docs/retrain-v3.md](docs/retrain-v3.md) — the schema v3 retrain runbook
+- [docs/retrain-v4.md](docs/retrain-v4.md) — the schema v4 (boredom) retrain runbook and its numbers
+- [docs/DEVICE.md](docs/DEVICE.md) — what is in flight on the device, and the flash rule
 - [docs/memory_budget.md](docs/memory_budget.md) — flash, PSRAM, and SRAM plan
 - [docs/bringup.md](docs/bringup.md) — hardware bring-up checklist
 
 ## Status
 
-- ✅ Model: schema v3, 14.3M student, 4-bit export, evaluated
+- ✅ Model: schema v4 (boredom, no shadow), 14.3M student, 4-bit export, evaluated
 - ✅ Simulator: the full tank with progression, self-tests, snapshots
 - ✅ Firmware: running on the real board at 25 to 30 fps and 3.6 s per
   decision, with touch, sleep and power-off, auto-rotation, battery gauge
@@ -368,7 +381,7 @@ seven-minute prompt check before an overnight run is always worth it.
   economy, upkeep chores, milestones, the reset prompt, the first-run setup
   (place the bubbles, a letter wheel to name each fry, a body color to pick),
   births announced and named with a family page, deep sleep that lives
-  through the night at wake
+  through the night at wake, fish that get bored and go exploring
 - ✅ Browser installer: one click from Chrome or Edge, hosted at
   stratobuilds.com
 - 🚧 Next: a points system for unlockables

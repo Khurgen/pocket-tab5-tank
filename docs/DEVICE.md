@@ -1,0 +1,57 @@
+# The device: what is in flight, and the rules for touching it
+
+Read this before ANY action that resets the tank (flash, esptool, power-off).
+Battery measurements run in parallel with feature work; the tank's own
+battery log is the instrument, and a reset used to wipe it. On 2026-09-15
+the first full night of deep sleep on battery - the measurement the whole
+09-11 battery pass was waiting for - was lost when the morning's model flash
+reset the chip before anyone read the log.
+
+## Rules
+
+1. **Flash only through `tools/flash.sh`** (`--model` for the model partition
+   too). It runs `tools/preflight.py` first, which archives `batlog` + `state`
+   to `docs/batlog/<date_time>.txt`, and refuses to flash without the archive.
+   Commit the archive with the flash.
+2. **Any morning after a night on battery: `tools/preflight.py` first**, before
+   the director, before a flash, before anything. Then update the table below.
+3. **The log itself now survives resets** (batlog.c: RTC_NOINIT + magic + crc;
+   only a power-on / PMIC power-off clears it), so a forgotten preflight is no
+   longer fatal - but the archive is still the record between sessions.
+4. **Every session that starts a measurement writes it in the table below,
+   with what would spoil it.** Every session that ends one closes the row.
+   The table is the handoff between parallel workstreams; HANDOFF.md carries
+   the narrative, this file carries the state.
+
+## In flight on the device
+
+| started | what | spoiled by | status |
+|---|---|---|---|
+| 2026-09-15 | Deep-sleep current, first full night on battery (BOOT sleep, unplugged, read `batlog` at wake) | any reset before the read (now survives), a mid-night charge, waking it | **TO RUN** - 09-14/15's night was lost to the flash; needs another night |
+| 2026-09-15 | Awake draw with 4 fish + the boredom re-asks (09-14 batlog: 72-120 mA awake at 60% brightness, 96% -> 52% in an hour) | brightness changes, charging mid-window | open - measure a clean hour on battery, then look at ask cadence with 4-5 fish |
+
+## How to resume the battery work (everything needed is committed)
+
+1. **Deep-sleep night.** Wake the tank, unplug it, short-press BOOT, leave it
+   overnight. Morning: plug in, `tools/preflight.py` FIRST. The archive shows
+   the `sleep` and `wake` rows and the "asleep: N h, X mAh -> Y mA" line; the
+   gauge's %-scale runs ~0.6x (docs/HANDOFF.md, the battery pass), so compare
+   nights, don't trust the absolute. Target: the ESP32-S3 deep-sleep floor
+   with touch/codec rails still up on VCC3V3 - expect single-digit mA or
+   better; if it is not, `pmic` on the director dumps the rails.
+2. **Awake draw, 4 fish.** Unplug at a known SoC, leave the tank awake and
+   untouched for an hour at 60% brightness, preflight. Compare with 09-14's
+   72-120 mA. The lever is LLM duty: the boot log's "asks / decisions" line
+   (`t=...s 4 fish goals: ... | asks N decisions M`); with 4 fish the core is
+   ~84% busy (13.6 decisions/min x 3.7 s). Knobs: ADVISOR_MIN_INTERVAL /
+   ADVISOR_IDLE_CEILING and the state_signature bands in common/tank.h /
+   tank.c (the 09-11 pass cut asks 55% by calming the signature; the boredom
+   band of 2026-09-14 added ~2 asks/min/fish while idle).
+3. Record results in this table and in docs/stats.md; close the row.
+
+## Firmware on the tank right now
+
+- App: boredom reflex + explore-as-destination + v4 tokenizer + sleep timer
+  fix + batlog no-init (flashed 2026-09-15 ~06:25).
+- Model partition: v4m (model_q4_v4m.bin, flashed 2026-09-15 ~06:00).
+- Save: FeZ, mira, LArRY, pip (4 adults).

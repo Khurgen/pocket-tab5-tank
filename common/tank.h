@@ -137,6 +137,20 @@ typedef struct {
     float  dart_timer;      /* DART_PLAY burst countdown */
     float  dart_x, dart_y;
     float  hesitate;        /* seconds of visible deliberation left (0 = none) */
+    /* boredom (2026-09-14): how stale the current pastime is, 0..10 (schema
+     * v4 sends it to the model as `bored 0-9`). Rises while the fish keeps
+     * the same leisure goal, relieved by a genuinely new goal or by entering a
+     * zone it has not seen for a while; eating and night rest never bore.
+     * Not saved: a boot starts fresh. Strato (2026-09-14): "the fish often
+     * seem to get stuck in loops following_friend or playing in the bubble
+     * column ... a boredom component where a fish will be somewhat pushed to
+     * do something new". */
+    float  bored;
+    goal_id_t goal_prev;    /* the goal before the current one: returning to it is no relief */
+    int8_t zone_last;       /* schema zone 0..5 the fish was in last frame; -1 = none yet */
+    float  zone_seen[6];    /* tank clock when the fish was last in each zone */
+    float  explore_x, explore_y; /* explore's destination - a point in a stale zone */
+    bool   explore_set;     /* ... valid; cleared when explore is (re)chosen or reached */
     int    eaten;
     int    eaten_player;    /* pellets that came from the keeper's hand */
     bool   starve_flagged;  /* diagnostic: starving-ignored-food episode counted */
@@ -269,6 +283,13 @@ typedef goal_t (*advisor_fn)(const tank_t *t, int fish_idx, bool request);
  * Reactions still come through the 2 s change path - hunger band, food
  * appearing, night - and the urgent path (2026-09-11). */
 #define ADVISOR_IDLE_CEILING 45.0f   /* 5 fish x 3.65 s per decision at 25 s would still be 70% busy */
+
+/* boredom (fish_t.bored; the same numbers live in model/gen_traces.py) */
+#define BORED_PER_S        0.15f  /* 0 -> 9 in a minute on one pastime */
+#define BORED_NEW_GOAL     4.0f   /* relief for a goal that is not the one just left */
+#define BORED_NEW_ZONE     1.5f   /* relief for entering a zone unseen for BORED_ZONE_STALE_S */
+#define BORED_ZONE_STALE_S 20.0f
+#define BORED_RELIEF_PER_S 0.3f   /* while eating, or resting at night */
 
 void  tank_init(tank_t *t, uint32_t seed);
 /* Population. tank_init leaves the tank empty (n_fish = 0); the progression

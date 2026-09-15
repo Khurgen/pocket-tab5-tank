@@ -24,7 +24,7 @@ import train_tokenizer as tok  # noqa: E402
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("inputs", nargs="+", help="raw jsonl files or globs")
-    ap.add_argument("--schema", type=int, choices=(2, 3), default=3)
+    ap.add_argument("--schema", type=int, choices=(2, 3, 4), default=3)
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
     tok.set_schema(args.schema)
@@ -68,6 +68,12 @@ def main():
     for g, c in sorted(goals.items(), key=lambda kv: -kv[1]):
         flag = "  <-- check the prompt (v2 incident was 45%)" if c / n > 0.40 else ""
         print(f"    {g:14s} {c:6d}  {100 * c / n:4.1f}%{flag}")
+    if args.schema >= 4:
+        bored = sum(1 for o in kept if any(f" bored {d} " in o["state"] for d in "6789"))
+        rut = sum(1 for o in kept if any(f" bored {d} " in o["state"] for d in "789")
+                  and o["goal"].split()[0] == o["state"].split(" last ")[1].split()[0])
+        print(f"  v4 coverage: bored 6-9 {bored} ({100 * bored / n:.1f}%); bored 7-9 that REPEAT last: {rut} "
+              f"(the teacher should rarely do this)")
     if args.schema >= 3:
         none = sum(1 for o in kept if " friend none " in o["state"] + " ")
         calm = sum(1 for o in kept if "shadow near" in o["state"] and any(f"stress {d}" in o["state"] for d in "0123"))

@@ -9,6 +9,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 #define BATLOG_CELL_MAH 200
+/* at boot, before the first sample: validates the RTC ring (magic + crc) and
+   returns how many samples came through the reset - 0 after a power-on */
+int  batlog_init(void);
 void batlog_add(int pct, int mv, int bright, bool asleep, const char *why);
 void batlog_print(void);
 void batlog_clear(void);

@@ -21,6 +21,11 @@ Panel (per schema line, identity randomized unless the case pins it):
   lonely    friend none, content (must not flee / seek food)        x30
   starving  hunger 9, food near (expect seek_food ~1.0)             x30
   trust     content, trust 9 vs trust 0 (v3 only; expect a shade, not a flip) x40
+  v4 (--schema 4; the shadow cases are skipped, bored cases added):
+  bored9bub  content, bored 9, last visit_bubbles (expect a change, explore up) x40
+  bored9fol  social 8, friend near, bored 9, last follow_friend (expect a change) x40
+  bored0bub  content, bored 0, last visit_bubbles (expect last mostly KEPT)     x40
+  nightbored night, bored 9, last rest (expect rest - boredom never wakes the tank) x30
 """
 import argparse
 import concurrent.futures as cf
@@ -36,7 +41,7 @@ def state(rng, schema, **pin):
     f = dict(zone=rng.randint(1, 6), hunger=rng.randint(0, 3), energy=rng.randint(5, 9), stress=rng.randint(0, 2),
              curiosity=rng.randint(3, 8), bold=rng.randint(2, 7), social=rng.randint(2, 6),
              stage=rng.choice(["juv", "adult", "adult", "elder"]), trust=rng.randint(2, 7),
-             food="none", shadow="none", friend=f"{rng.choice(['near','mid'])} {rng.randint(1,12)}",
+             bored=rng.randint(0, 2), food="none", shadow="none", friend=f"{rng.choice(['near','mid'])} {rng.randint(1,12)}",
              bubble=f"{rng.choice(['near','mid','far'])} {rng.randint(1,12)}",
              reef=f"{rng.choice(['mid','far'])} {rng.randint(1,12)}", wall="clear",
              last=rng.choice(["explore", "inspect_reef", "visit_bubbles", "rest"]), time="day")
@@ -44,6 +49,9 @@ def state(rng, schema, **pin):
     ident = f"hunger {f['hunger']} energy {f['energy']} stress {f['stress']} curiosity {f['curiosity']} bold {f['bold']} social {f['social']} stage {f['stage']}"
     tail = (f"food {f['food']} shadow {f['shadow']} friend {f['friend']} bubble {f['bubble']} reef {f['reef']} "
             f"wall {f['wall']} last {f['last']} time {f['time']}")
+    if schema >= 4:
+        return (f"zone {f['zone']} {ident} trust {f['trust']} bored {f['bored']} food {f['food']} friend {f['friend']} "
+                f"bubble {f['bubble']} reef {f['reef']} wall {f['wall']} last {f['last']} time {f['time']}")
     if schema >= 3:
         return f"zone {f['zone']} {ident} trust {f['trust']} {tail}"
     name = rng.choice(["mira", "bolt", "kelp", "nori"])
@@ -61,19 +69,25 @@ def panel(rng, schema, n):
     add("bold9", 40, bold=9, energy=9, hunger=rng.randint(0, 2))
     add("bold1", 40, bold=1, energy=9, hunger=rng.randint(0, 2))
     add("content", 40)
-    add("shadowcalm", 40, shadow=f"near {rng.randint(1,12)}", stress=rng.randint(0, 3))
+    if schema < 4:
+        add("shadowcalm", 40, shadow=f"near {rng.randint(1,12)}", stress=rng.randint(0, 3))
     add("lonely", 30, friend="none")
     add("starving", 30, hunger=9, food=f"near {rng.randint(1,12)}")
     if schema >= 3:
         add("trust9", 20, trust=9)
         add("trust0", 20, trust=0)
+    if schema >= 4:
+        add("bored9bub", 40, bored=9, last="visit_bubbles", bubble=f"near {rng.randint(1,12)}")
+        add("bored9fol", 40, bored=9, last="follow_friend", social=8, friend=f"near {rng.randint(1,12)}")
+        add("bored0bub", 40, bored=0, last="visit_bubbles", bubble=f"near {rng.randint(1,12)}")
+        add("nightbored", 30, bored=9, last="rest", time="night", energy=rng.randint(3, 6), reef=f"near {rng.randint(1,12)}")
     return P
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--schema", type=int, choices=(2, 3), default=3)
-    ap.add_argument("--host", default="http://localhost:11434")
+    ap.add_argument("--schema", type=int, choices=(2, 3, 4), default=3)
+    ap.add_argument("--host", default="http://192.168.0.139:11434")
     ap.add_argument("--model", default="gemma4:26b")
     ap.add_argument("--prompt-file", default=None, help="candidate system prompt (default: gen_traces' prompt for the schema)")
     ap.add_argument("--n", type=int, default=40, help="calls per major case (default 40 -> ~320 calls)")
@@ -85,6 +99,7 @@ def main():
         txt = open(args.prompt_file).read().strip()
         gt.SYSTEM_PROMPT = txt
         gt.SYSTEM_PROMPT_V3 = txt
+        gt.SYSTEM_PROMPT_V4 = txt
     rng = random.Random(args.seed)
     P = panel(rng, args.schema, args.n)
     print(f"{len(P)} calls to {args.model} @ {args.host} ({args.workers} workers) ...", flush=True)
@@ -121,11 +136,23 @@ def main():
         ("P(follow | social 1)", *rate("social1", "follow_friend"), "<= 0.05", lambda v: v <= 0.05),
         ("P(dart | bold 9, energetic)", *rate("bold9", "dart_play"), ">= 0.10", lambda v: v >= 0.10),
         ("P(dart | bold 1, energetic)", *rate("bold1", "dart_play"), "<= 0.03", lambda v: v <= 0.03),
-        ("P(flee | shadow near, calm)", *rate("shadowcalm", "flee_shadow"), ">= 0.80", lambda v: v >= 0.80),
         ("P(seek_food | starving)", *rate("starving", "seek_food"), ">= 0.95", lambda v: v >= 0.95),
-        ("P(flee | lonely, no shadow)", *rate("lonely", "flee_shadow"), "== 0", lambda v: v <= 0.02),
         ("P(seek_food | lonely, not hungry)", *rate("lonely", "seek_food"), "<= 0.05", lambda v: v <= 0.05),
     ]
+    if args.schema < 4:
+        checks += [
+            ("P(flee | shadow near, calm)", *rate("shadowcalm", "flee_shadow"), ">= 0.80", lambda v: v >= 0.80),
+            ("P(flee | lonely, no shadow)", *rate("lonely", "flee_shadow"), "== 0", lambda v: v <= 0.02),
+        ]
+    else:
+        checks += [
+            ("P(bubbles again | bored 9, last bubbles)", *rate("bored9bub", "visit_bubbles"), "<= 0.15", lambda v: v <= 0.15),
+            ("P(explore | bored 9, last bubbles)", *rate("bored9bub", "explore"), ">= 0.25", lambda v: v >= 0.25),
+            ("P(follow again | bored 9, last follow)", *rate("bored9fol", "follow_friend"), "<= 0.15", lambda v: v <= 0.15),
+            ("P(bubbles kept | bored 0, last bubbles)", *rate("bored0bub", "visit_bubbles"), ">= 0.40", lambda v: v >= 0.40),
+            ("P(rest | night, bored 9, last rest)", *rate("nightbored", "rest"), ">= 0.70", lambda v: v >= 0.70),
+            ("P(flee | any v4 case)", (sum(d.get("flee_shadow", 0) for d in results.values()) / max(1, sum(sum(d.values()) for d in results.values()))), sum(sum(d.values()) for d in results.values()), "== 0", lambda v: v <= 0.001),
+        ]
     for name, v, n, want, ok in checks:
         print(f"  {'OK ' if ok(v) else 'BAD'}  {name:36s} = {v:.2f}  (n={n}, want {want})")
     # attractor check: no single goal should own the content fish
@@ -135,7 +162,8 @@ def main():
     if args.schema >= 3:
         print(f"       trust 9: [{top('trust9')}]\n       trust 0: [{top('trust0')}]")
     print("\n  per case:")
-    for case in ("social9", "social1", "bold9", "bold1", "content", "shadowcalm", "lonely", "starving", "trust9", "trust0"):
+    for case in ("social9", "social1", "bold9", "bold1", "content", "shadowcalm", "lonely", "starving", "trust9", "trust0",
+                 "bored9bub", "bored9fol", "bored0bub", "nightbored"):
         if case in results:
             print(f"    {case:10s} {top(case)}")
 

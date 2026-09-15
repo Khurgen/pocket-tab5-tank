@@ -4,7 +4,7 @@ Numbers feed docs/progression-next.md. Run: ~/.venvs/pocket-tank/bin/python mode
 import sys, os, json, random, math, argparse
 MODEL_DIR = os.path.dirname(os.path.abspath(__file__))
 _ap = argparse.ArgumentParser()
-_ap.add_argument("--schema", type=int, choices=(2, 3), default=2)
+_ap.add_argument("--schema", type=int, choices=(2, 3, 4), default=2)
 _ap.add_argument("--ckpt", default=None, help="checkpoint (default: ckpt_v2w.pt / ckpt_v3.pt)")
 _ap.add_argument("--data", default=None, help="clean jsonl to sample real states from")
 _args = _ap.parse_args()
@@ -15,7 +15,7 @@ from export import load_checkpoint
 import train_tokenizer as tok
 
 torch.manual_seed(0); random.seed(0)
-model = load_checkpoint(_args.ckpt or os.path.join(MODEL_DIR, "out", "ckpt_v2w.pt" if _args.schema == 2 else "ckpt_v3.pt"))
+model = load_checkpoint(_args.ckpt or os.path.join(MODEL_DIR, "out", {2: "ckpt_v2w.pt", 3: "ckpt_v3m.pt", 4: "ckpt_v4m.pt"}[_args.schema]))
 GOALS = ["seek_food","flee_shadow","visit_bubbles","follow_friend","explore","rest","dart_play","inspect_reef"]
 GID = [tok.encode(g)[0] for g in GOALS]
 
@@ -57,7 +57,12 @@ print(f"P(sample != greedy) at T=1: {1-sum(top1s)/n:.0%}")
 # ---------- 2. synthetic probes ----------
 def S(name="mira", zone=2, hunger=3, energy=6, stress=1, curiosity=6, bold=5, social=5, stage="adult",
       food="none", shadow="none", friend="bolt mid 3", bubble="mid 10", reef="far 7", wall="clear", last="explore", time="day",
-      trust=5):
+      trust=5, bored=1):
+    if _args.schema >= 4:
+        fr = friend if friend == "none" else friend.split(" ", 1)[1]
+        return (f"zone {zone} hunger {hunger} energy {energy} stress {stress} curiosity {curiosity} "
+                f"bold {bold} social {social} stage {stage} trust {trust} bored {bored} food {food} friend {fr} "
+                f"bubble {bubble} reef {reef} wall {wall} last {last} time {time}")
     if _args.schema >= 3:
         fr = friend if friend == "none" else friend.split(" ", 1)[1]     # v3: no friend names
         return (f"zone {zone} hunger {hunger} energy {energy} stress {stress} curiosity {curiosity} "
@@ -95,11 +100,25 @@ print("  -- stage sweep --")
 for st in ("fry","juv","adult","elder"):
     p,_ = goal_probs(S(hunger=2, energy=7, stress=0, curiosity=7, stage=st)); print(f"    {st:5}: {fmt(p)}  H={ent(p):.2f}")
 
-print("\n== shadow far 6 (distant predator): P(flee) by identity ==")
-for bold,stage in ((0,"fry"),(0,"adult"),(5,"adult"),(9,"adult"),(9,"juv")):
+if _args.schema >= 4:
+    print("\n== boredom (v4): content fish at the bubbles, bored 0..9 -> P(bubbles again) / P(explore) ==")
+    for b in range(10):
+        p,_ = goal_probs(S(hunger=2, energy=7, stress=0, curiosity=7, bubble="near 12", last="visit_bubbles", bored=b))
+        print(f"    bored {b}: P(bubbles)={p[2]:.2f} P(explore)={p[4]:.2f}  {fmt(p)}")
+    print("  social 8 fish following a friend, bored 0 / 5 / 9:")
+    for b in (0, 5, 9):
+        p,_ = goal_probs(S(hunger=2, energy=7, stress=0, curiosity=6, social=8, friend="bolt near 12", last="follow_friend", bored=b))
+        print(f"    bored {b}: P(follow)={p[3]:.2f} P(explore)={p[4]:.2f}  {fmt(p)}")
+    print("  night, elder, bored 9, last rest (boredom must not wake the tank):")
+    p,_ = goal_probs(S(hunger=2, energy=5, stress=0, time="night", stage="elder", last="rest", bored=9)); print(f"    {fmt(p)}")
+    print("  starving, bored 9 (boredom never outranks hunger):")
+    p,_ = goal_probs(S(hunger=9, food="near 12", bored=9, last="seek_food")); print(f"    P(seek_food)={p[0]:.2f}  {fmt(p)}")
+    print("  P(flee_shadow) anywhere above (should be ~0): the goal token is in the vocab, never a label")
+print("\n== shadow far 6 (distant predator): P(flee) by identity ==" if _args.schema < 4 else "\n== (shadow probes skipped: no shadow in v4) ==")
+for bold,stage in ((0,"fry"),(0,"adult"),(5,"adult"),(9,"adult"),(9,"juv")) if _args.schema < 4 else ():
     p,_ = goal_probs(S(hunger=3, shadow="far 6", bold=bold, stage=stage)); print(f"  bold {bold} {stage:5}: P(flee)={p[1]:.2f}  {fmt(p)}")
-print("  shadow mid 12:")
-for bold in (0,5,9):
+if _args.schema < 4: print("  shadow mid 12:")
+for bold in (0,5,9) if _args.schema < 4 else ():
     p,_ = goal_probs(S(hunger=3, shadow="mid 12", bold=bold)); print(f"  bold {bold}: P(flee)={p[1]:.2f}  {fmt(p)}")
 
 print("\n== night, content ==")
@@ -110,12 +129,13 @@ print("\n== OOD check: 'friend none' (17/28312 in training) vs friend present ==
 for fr in ("bolt mid 3", "none"):
     p,mass = goal_probs(S(hunger=2, energy=7, stress=0, curiosity=7, friend=fr)); print(f"  friend {fr:10}: {fmt(p)}  H={ent(p):.2f} goalmass={mass:.3f}")
     p,mass = goal_probs(S(hunger=9, food="near 12", friend=fr)); print(f"  starving, friend {fr:10}: {fmt(p)} goalmass={mass:.3f}")
-    p,mass = goal_probs(S(hunger=3, shadow="near 12", friend=fr)); print(f"  shadow near, friend {fr:10}: {fmt(p)} goalmass={mass:.3f}")
+    if _args.schema < 4:
+        p,mass = goal_probs(S(hunger=3, shadow="near 12", friend=fr)); print(f"  shadow near, friend {fr:10}: {fmt(p)} goalmass={mass:.3f}")
 
 # ---------- 3. shadow / hunger / name probes ----------
 def P(state): return goal_probs(state)[0]
-print("shadow near, varying stress / clock / bold / last:")
-for kw in [dict(shadow="near 12"), dict(shadow="near 12", stress=5), dict(shadow="near 12", stress=8),
+if _args.schema < 4: print("shadow near, varying stress / clock / bold / last:")
+for kw in [] if _args.schema >= 4 else [dict(shadow="near 12"), dict(shadow="near 12", stress=5), dict(shadow="near 12", stress=8),
            dict(shadow="near 6"), dict(shadow="near 3", stress=4), dict(shadow="near 12", bold=0),
            dict(shadow="near 12", bold=9), dict(shadow="near 12", last="flee_shadow"),
            dict(shadow="near 12", stress=5, bold=0, stage="fry"), dict(shadow="mid 12", stress=5),

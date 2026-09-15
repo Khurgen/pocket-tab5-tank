@@ -37,12 +37,12 @@ def main():
     ap.add_argument("--count", type=int, default=20)
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--teacher", action="store_true", help="also query Ollama and score agreement")
-    ap.add_argument("--host", default="http://localhost:11434")
+    ap.add_argument("--host", default="http://192.168.0.139:11434")
     ap.add_argument("--model", default="gemma4:26b")
     ap.add_argument("--run-bin", default=os.path.join(HERE, "runw"))
     ap.add_argument("--model-bin", default=os.path.join(HERE, "out", "model.bin"))
     ap.add_argument("--tok-bin", default=os.path.join(HERE, "out", "tokenizer.bin"))
-    ap.add_argument("--schema", type=int, choices=(2, 3), default=2, help="state line schema of the model under test")
+    ap.add_argument("--schema", type=int, choices=(2, 3, 4), default=2, help="state line schema of the model under test")
     args = ap.parse_args()
     gt.SCHEMA = args.schema
 

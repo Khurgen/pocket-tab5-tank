@@ -89,32 +89,102 @@ static void enter_poweroff(void);
 static bool s_btn_armed; static int64_t s_btn_low_since;   /* sleep_button_poll state */
 static bool s_btn_used;   /* this press opened the reset prompt: no drowse, no power-off from it */
 
-/* Sleep = DEEP sleep (2026-09-14; until then a RAM-alive light-sleep drowse
- * that woke every few minutes to tick the fish - measured at ~1.6 %/h of the
- * cell and stuck there, the chip + PSRAM + panel-in-reset being the floor).
- * Now: save, quiesce the IMU, drop the panel and touch, arm BOOT (ext0, low)
- * and power the chip down to microamps - RAM and PSRAM gone. Waking is a
- * boot: app_main sees the ext0 (or, from the director's `deepsleep N`, the
- * timer) wake cause and calls progression_wake, which restores the save and
- * lives through the dark stretch since it was written in one tank_tick_sleep
- * (hunger up, energy back, grass and algae grown) - the same physiology the
- * drowse ticked in slices. A wake press still held ~1.5 s after boot goes to
- * power-off, as the drowse wake did. */
+/* Sleep (2026-09-14, revised the same day after Strato found a quick
+ * sleep/wake "feels like a soft boot"): two stages.
+ *  1. GRACE, 90 s: save, panel and touch off, IMU quiesced, then RAM-alive
+ *     LIGHT sleep with BOOT (GPIO, level low) and a timer armed. A press in
+ *     this window resumes IN PLACE - the fish exactly where they were,
+ *     mid-goal - after crediting the nap to tank_tick_sleep. Costs what the
+ *     old drowse did, for 90 s at most.
+ *  2. DEEP sleep once the grace passes: BOOT armed as ext0, chip down to
+ *     microamps, RAM and PSRAM gone. Waking is a boot: app_main sees the
+ *     ext0 (or the director's timer) wake cause and calls progression_wake -
+ *     restore the save, then ONE tank_tick_sleep for the real time since it
+ *     was written (the grace included; nothing ticked during it) - and then
+ *     puts every fish back where it fell asleep, on the goal it had, from a
+ *     snapshot kept in RTC slow memory (survives deep sleep, not power-off:
+ *     after a cold boot the fish may scatter, and that is fine). A wake
+ *     press still held ~1.5 s into the boot goes to power-off. */
+#define SLEEP_GRACE_US (90LL * 1000000)
 static int battery_pct(void) { float f; bool c; return battery_port_read(&f, &c) ? (int)(f * 100 + 0.5f) : -1; }
+typedef struct { float x, y, heading; uint8_t goal, valid; } fish_snap_t;
+RTC_DATA_ATTR static fish_snap_t s_snap[N_FISH_MAX]; RTC_DATA_ATTR static int s_snap_n;
+static void snap_log(const char *what) {          /* "FeZ 156,238/explore mira ..." */
+    char line[N_FISH_MAX * 40] = ""; size_t l = 0;
+    for (int i = 0; i < tank.n_fish && l + 40 < sizeof line; i++)
+        l += snprintf(line + l, sizeof line - l, "%s%s %.0f,%.0f/%s", i ? " " : "", tank.fish[i].name,
+                      tank.fish[i].x, tank.fish[i].y, GOAL_NAMES[tank.fish[i].goal.id]);
+    ESP_LOGI(TAG, "%s: %s", what, line);
+}
+static void snapshot_fish(void) {
+    s_snap_n = tank.n_fish;
+    for (int i = 0; i < tank.n_fish; i++) {
+        const fish_t *f = &tank.fish[i];
+        s_snap[i] = (fish_snap_t){ f->x, f->y, f->heading, (uint8_t)f->goal.id, 1 };
+    }
+    snap_log("sleep snapshot");
+}
+static int restore_fish(void) {
+    int n = 0;
+    for (int i = 0; i < tank.n_fish && i < s_snap_n; i++) {
+        const fish_snap_t *s = &s_snap[i];
+        if (!s->valid || s->x < 0 || s->x > TANK_W || s->y < 0 || s->y > TANK_H) continue;
+        fish_t *f = &tank.fish[i];
+        f->x = s->x; f->y = s->y; f->heading = s->heading;
+        if (s->goal < GOAL_COUNT) f->goal.id = (goal_id_t)s->goal;
+        n++;
+    }
+    s_snap_n = 0;
+    snap_log("wake restored");
+    return n;
+}
 static void enter_sleep_for(int wake_after_s) {
     int pct0 = battery_pct(), mv0 = battery_port_vbat_mv();
-    ESP_LOGI(TAG, "sleep: save, panel off, deep sleep (BOOT wakes%s) | battery %d%% %d mV",
-             wake_after_s > 0 ? ", or the timer" : "", pct0, mv0);
+    ESP_LOGI(TAG, "sleep: save, panel off, %d s grace then deep sleep (BOOT wakes%s) | battery %d%% %d mV",
+             wake_after_s > 0 ? wake_after_s : (int)(SLEEP_GRACE_US / 1000000), wake_after_s > 0 ? ", or the timer" : "", pct0, mv0);
     touch_port_confirm_answer(-1);              /* an open reset prompt is a NO */
     progression_save(&tank);
+    snapshot_fish();
     batlog_add(pct0, mv0, display_port_brightness(), true, "sleep");
     imu_port_sleep();          /* quiesce BEFORE the rails cycle (latch-up guard) */
     display_port_sleep();
-    while (!gpio_get_level(BTN_SLEEP)) vTaskDelay(pdMS_TO_TICKS(10));   /* ext0 is level-triggered: never arm it held */
+    while (!gpio_get_level(BTN_SLEEP)) vTaskDelay(pdMS_TO_TICKS(10));   /* wake triggers are level-low: never arm them held */
     vTaskDelay(pdMS_TO_TICKS(30));
+    /* stage 1: the grace, RAM alive */
+    gpio_wakeup_enable(BTN_SLEEP, GPIO_INTR_LOW_LEVEL);
+    esp_sleep_enable_gpio_wakeup();
+    esp_sleep_enable_timer_wakeup(wake_after_s > 0 ? (int64_t)wake_after_s * 1000000 : SLEEP_GRACE_US);
+    int64_t t0 = esp_timer_get_time();
+    esp_light_sleep_start();
+    esp_sleep_wakeup_cause_t why = esp_sleep_get_wakeup_cause();
+    gpio_wakeup_disable(BTN_SLEEP);
+    /* wake sources are STICKY in ESP-IDF (s_config.wakeup_triggers): the
+     * grace's 90 s timer would otherwise follow us into deep sleep and boot
+     * the tank 90 s later - which it did (2026-09-14: every sleep since the
+     * two-stage change lasted exactly 3 minutes; the batlog showed sleep ->
+     * wake pairs 0:03 apart). Drop everything, then arm stage 2's own. */
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+    if (why == ESP_SLEEP_WAKEUP_GPIO) {         /* a quick wake: resume in place */
+        int64_t held0 = esp_timer_get_time();
+        while (!gpio_get_level(BTN_SLEEP)) {    /* the wake press, still down */
+            if (esp_timer_get_time() - held0 >= 1500000) { enter_poweroff(); break; }
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        float napped = (esp_timer_get_time() - t0) / 1e6f;
+        tank_tick_sleep(&tank, napped);         /* the nap counts, tiny as it is */
+        display_port_wake();
+        imu_port_wake();
+        batlog_add(battery_pct(), battery_port_vbat_mv(), 0, true, "nap");
+        s_snap_n = 0; s_btn_armed = false; s_btn_low_since = 0;   /* require a fresh press */
+        ESP_LOGI(TAG, "wake within the grace: resumed in place after %.0f s", napped);
+        return;
+    }
+    /* stage 2: the grace passed - deep sleep. The save (written before the
+       grace) plus the RTC clock cover the whole dark stretch at the wake. */
+    ESP_LOGI(TAG, "grace over: deep sleep (BOOT only%s)", wake_after_s > 0 ? ", or the timer" : "");
     rtc_gpio_pullup_en(BTN_SLEEP); rtc_gpio_pulldown_dis(BTN_SLEEP);
     esp_sleep_enable_ext0_wakeup(BTN_SLEEP, 0);
-    if (wake_after_s > 0) esp_sleep_enable_timer_wakeup((int64_t)wake_after_s * 1000000);
+    if (wake_after_s > 0) esp_sleep_enable_timer_wakeup((int64_t)wake_after_s * 1000000);   /* director test: the same span again */
     esp_deep_sleep_start();
 }
 static void enter_sleep(void) { enter_sleep_for(0); }
@@ -287,6 +357,8 @@ void app_main(void) {
                           .pull_up_en = GPIO_PULLUP_ENABLE };
     gpio_config(&btn);
     if (nvs_flash_init() != ESP_OK) { nvs_flash_erase(); nvs_flash_init(); }
+    { int carried = batlog_init();       /* the battery log survives every reset but a power-on */
+      if (carried) ESP_LOGI(TAG, "batlog: %d samples carried through the reset (director `batlog` reads them)", carried); }
     brightness_init();
     assert_plan();
     for (int i = 0; i < PLAN_FB_COUNT; i++) {
@@ -352,6 +424,8 @@ void app_main(void) {
                  cause == ESP_SLEEP_WAKEUP_TIMER ? "timer" : "BOOT", h < 0 ? "no clock, " : "", h < 0 ? 0.0f : h,
                  tank.n_fish ? tank.fish[0].hunger : 0.0f, battery_pct(), battery_port_vbat_mv());
         batlog_add(battery_pct(), battery_port_vbat_mv(), 0, true, "wake");
+        int put_back = restore_fish();       /* where they fell asleep, on the goal they had */
+        ESP_LOGI(TAG, "wake: %d of %d fish put back where they were", put_back, tank.n_fish);
         /* the wake press still held ~1.5 s into the boot = power-off (as the drowse wake did) */
         int64_t held0 = esp_timer_get_time();
         while (cause == ESP_SLEEP_WAKEUP_EXT0 && !gpio_get_level(BTN_SLEEP)) {

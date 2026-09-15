@@ -17,6 +17,7 @@ firmware will too (simpler than BPE). Training doc: <BOS> state -> goal.
 
 Usage: python3 train_tokenizer.py [--out out/tokenizer.bin] [--verify out/v2_clean.jsonl]
        python3 train_tokenizer.py --schema 3          # out/tokenizer_v3.bin (no names, + trust)
+       python3 train_tokenizer.py --schema 4          # out/tokenizer_v4.bin (no shadow, + bored)
 The schema is chosen by --schema, or by the POCKET_SCHEMA environment variable
 when imported (train.py / probe_dist.py): POCKET_SCHEMA=3 python train.py ...
 """
@@ -36,10 +37,16 @@ SCHEMA = int(os.environ.get("POCKET_SCHEMA", "2"))
 def lexicon_for(schema):
     head = (["fish", "mira", "bolt", "kelp", "nori", "zone"] if schema == 2
             else ["zone"])                                   # v3: names carry no signal - dropped
-    ident = ["hunger", "energy", "stress", "curiosity", "bold", "social", "stage",
-             "fry", "juv", "adult", "elder"] + (["trust"] if schema >= 3 else [])
+    ident = (["hunger", "energy", "stress", "curiosity", "bold", "social", "stage",
+              "fry", "juv", "adult", "elder"] + (["trust"] if schema >= 3 else [])
+             + (["bored"] if schema >= 4 else []))
+    # v4: the shadow field is gone (the predator left the game 2026-09-13).
+    # `flee_shadow` STAYS in the lexicon - it is never a v4 label, so the
+    # student learns ~0 probability for it - because common/tank.c keeps
+    # GOAL_FLEE_SHADOW in its enum and advisor_core_init wants a token id for
+    # every goal. One unused embedding row is cheaper than a C special case.
     return (head + ident
-            + ["food", "shadow", "friend", "bubble", "reef", "wall",
+            + ["food"] + (["shadow"] if schema < 4 else []) + ["friend", "bubble", "reef", "wall",
                "none", "near", "mid", "far", "clear",
                "last", "time", "day", "night"]
             + [str(i) for i in range(0, 13)]                 # drives 0-9, clock 1-12
@@ -101,13 +108,13 @@ def verify(paths):
 def main():
     ap = argparse.ArgumentParser()
     here = os.path.dirname(os.path.abspath(__file__))
-    ap.add_argument("--schema", type=int, choices=(2, 3), default=SCHEMA)
+    ap.add_argument("--schema", type=int, choices=(2, 3, 4), default=SCHEMA)
     ap.add_argument("--out", default=None)
     ap.add_argument("--verify", default=None)
     args = ap.parse_args()
     set_schema(args.schema)
     if args.out is None:
-        args.out = os.path.join(here, "out", "tokenizer.bin" if args.schema == 2 else "tokenizer_v3.bin")
+        args.out = os.path.join(here, "out", "tokenizer.bin" if args.schema == 2 else f"tokenizer_v{args.schema}.bin")
     if args.verify is None:
         args.verify = os.path.join(here, "out", f"v{args.schema}_traces*.jsonl")
     os.makedirs(os.path.dirname(args.out), exist_ok=True)

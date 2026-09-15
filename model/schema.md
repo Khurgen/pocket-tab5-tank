@@ -1,7 +1,8 @@
 # State & Goal Schema — v2, FROZEN
 
-**Status: v2 FROZEN** (v1 approved 2026-08-19; v2 personality/stage fields approved
-2026-08-20 for the progression layer — see `docs/progression.md`). The tokenizer and
+**Status: v4 SHIPS (2026-09-15, see the v4 section at the bottom); v3 and v2 remain
+readable by their kept artifacts.** (v1 approved 2026-08-19; v2 personality/stage
+fields approved 2026-08-20 for the progression layer — see `docs/progression.md`.) The tokenizer and
 all training data depend on this exact encoding. Do not change field order,
 vocabulary, or value ranges without regenerating every trace and retraining.
 `gen_traces.py` implements this spec and must stay in sync.
@@ -156,3 +157,49 @@ v2-converted + v3 (`POCKET_SCHEMA=3 train.py`). **v3 is now the encoding the sim
 and firmware emit** (`common/llm/advisor_core.c`, selected by the ` trust` token in
 the loaded tokenizer); v2 remains readable by the v2 artifacts kept in model/out
 (`*_v2.bin`).
+
+---
+
+## v4 — SHIPPED 2026-09-15 (model v4m; the boredom cycle; shadow out, `bored` in)
+
+Two changes, one data cycle. Encoders: `gen_traces.py --schema 4` and
+`common/llm/advisor_core.c` (selected automatically when the loaded tokenizer
+contains ` bored`). Tokenizer: `train_tokenizer.py --schema 4` → vocab **54**
+(one word out, one in).
+
+1. **`shadow` dropped.** The predator left the game on 2026-09-13 (the state
+   line has read `shadow none` ever since). The `flee_shadow` goal token STAYS
+   in the lexicon - it is never a v4 label, so the student learns ~0 for it -
+   because `tank.c` keeps `GOAL_FLEE_SHADOW` and `advisor_core_init` wants a
+   token id for every goal; one idle embedding row beats a C special case.
+2. **`bored <0-9>`** inserted after `trust`: how stale the fish's current
+   pastime is (reflex layer `fish_t.bored` 0..10, clamped). Rises while the
+   fish keeps the same leisure goal (a minute to the top), relieved by a goal
+   that is not the one just left (BORED_NEW_GOAL) or by entering a zone unseen
+   for 20 s (BORED_NEW_ZONE); eating and night rest never bore; a night's sleep
+   resets it. Its band is in the re-ask signature. Why: the device's fish sat
+   in follow-the-friend and bubble-column loops (Strato, 2026-09-14) - the
+   teacher's own labels put visit_bubbles at 50-67% of every content state,
+   and nothing in the line said "you have been doing this for ages".
+
+```
+zone <1-6> hunger <0-9> energy <0-9> stress <0-9> curiosity <0-9>
+bold <0-9> social <0-9> stage fry|juv|adult|elder trust <0-9> bored <0-9>
+food <dist> <clock>|none friend <dist> <clock>|none
+bubble <dist> <clock>|none reef <dist> <clock>|none wall <dist> <clock>|clear
+last <goal> time day|night
+```
+
+Example:
+
+```
+zone 2 hunger 7 energy 5 stress 2 curiosity 8 bold 4 social 6 stage adult trust 5 bored 3 food near 12 friend mid 3 bubble mid 10 reef far 7 wall clear last explore time day
+```
+
+Goal output unchanged (`<goal> urgency <0-9>`; `flee_shadow` never emitted by
+the v4 teacher - its JSON enum excludes it). Old data converts mechanically
+(`convert_to_v4.py`): names / friend name dropped, `trust 5` where missing, the
+shadow field removed, every pair with a shadow IN VIEW or a flee label dropped
+(28,247 of the 51,162 v2+v3 pairs survive), `bored 0-2` inserted - those labels
+were made under "keep the last goal while it makes sense", the fresh-fish rule.
+Bored 3-9 behaviour comes only from v4 teacher data. Runbook: docs/retrain-v4.md.

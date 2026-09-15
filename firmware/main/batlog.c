@@ -3,16 +3,43 @@
 #include "esp_log.h"
 #include "progression.h"     /* clock_port_now_unix: the RTC's wall clock */
 #include <string.h>
+#include <stddef.h>
 #include "esp_attr.h"
 
-/* RTC slow memory: the ring lives through deep sleep (zeroed only by a
-   power-on reset), so a night's entry and wake samples sit side by side */
+/* RTC slow memory, NO-INIT section (2026-09-15): the ring lives through
+   deep sleep AND every other reset - a reflash, a software reset, a
+   watchdog - and is discarded only when the magic + checksum say the RAM
+   is garbage (a true power-on, or a PMIC power-off). It was RTC_DATA_ATTR
+   before, which ESP-IDF zeroes on any reset that is not a deep-sleep wake:
+   the first full night of deep sleep on battery (2026-09-14/15) was wiped
+   by the morning's app flash before anyone read it. */
 #define N 96
+#define BATLOG_MAGIC 0xB47106A1u
 typedef struct { int64_t us; int16_t pct, mv; uint8_t bright, asleep; char why[8]; } sample_t;
-RTC_DATA_ATTR static sample_t s_ring[N]; RTC_DATA_ATTR static int s_n, s_head;
+typedef struct { uint32_t magic; sample_t ring[N]; int n, head; uint32_t crc; } log_t;
+RTC_NOINIT_ATTR static log_t s_log;
+#define s_ring s_log.ring
+#define s_n    s_log.n
+#define s_head s_log.head
 
-void batlog_clear(void) { s_n = s_head = 0; }
+static uint32_t crc_of(const log_t *l) {     /* FNV-1a over everything but the crc field */
+    const uint8_t *b = (const uint8_t *)l; uint32_t h = 2166136261u;
+    for (size_t i = 0; i < offsetof(log_t, crc); i++) { h ^= b[i]; h *= 16777619u; }
+    return h;
+}
+static bool valid(void) {
+    return s_log.magic == BATLOG_MAGIC && s_log.n >= 0 && s_log.n <= N &&
+           s_log.head >= 0 && s_log.head < N && s_log.crc == crc_of(&s_log);
+}
+static void seal(void) { s_log.magic = BATLOG_MAGIC; s_log.crc = crc_of(&s_log); }
+
+void batlog_clear(void) { s_n = s_head = 0; seal(); }
+int batlog_init(void) {
+    if (!valid()) { batlog_clear(); return 0; }
+    return s_n;
+}
 void batlog_add(int pct, int mv, int bright, bool asleep, const char *why) {
+    if (!valid()) batlog_clear();
     sample_t *s = &s_ring[s_head];
     /* wall clock in us (the PCF85063 sets it at every boot), so the stamp
        survives deep sleep - esp_timer restarts from zero at each wake;
@@ -23,6 +50,7 @@ void batlog_add(int pct, int mv, int bright, bool asleep, const char *why) {
     s->bright = (uint8_t)bright; s->asleep = asleep;
     strncpy(s->why, why ? why : "", sizeof s->why - 1); s->why[sizeof s->why - 1] = 0;
     s_head = (s_head + 1) % N; if (s_n < N) s_n++;
+    seal();
 }
 void batlog_print(void) {
     if (!s_n) { ESP_LOGI("batlog", "no samples yet"); return; }

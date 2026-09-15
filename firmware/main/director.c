@@ -105,9 +105,9 @@ static void clear_pellets(tank_t *t) {
 static void show_state(const tank_t *t) {
     for (int i = 0; i < t->n_fish; i++) {
         const fish_t *f = &t->fish[i];
-        ESP_LOGI(TAG, "%d %-6s %-5s age %.1fh size %.2f hunger %.1f energy %.1f stress %.1f curiosity %.1f trust %.1f  %s",
+        ESP_LOGI(TAG, "%d %-6s %-5s age %.1fh size %.2f hunger %.1f energy %.1f stress %.1f curiosity %.1f trust %.1f  %s at %.0f,%.0f",
                  i, f->name, STAGE_NAMES[f->stage], progression_age_s(t, i) / 3600.0f, f->size,
-                 f->hunger, f->energy, f->stress, f->curiosity, f->trust, GOAL_NAMES[f->goal.id]);
+                 f->hunger, f->energy, f->stress, f->curiosity, f->trust, GOAL_NAMES[f->goal.id], f->x, f->y);
     }
     int pellets = 0, cells = 0;
     for (int i = 0; i < MAX_FOOD; i++) pellets += t->food[i].alive;
@@ -146,7 +146,7 @@ static void help(void) {
     ESP_LOGI(TAG, "touch [bias <px>] (finger-landing correction: reported touches move up by px; not saved)");
     ESP_LOGI(TAG, "pmic (AXP2101 dump) | pmic on|off <aldo1|aldo2..4|bldo1|bldo2|cpusldo|dcdc2..5|dldo1|dldo2> (experiments; boot trims the unused ones) | pmic trim");
     ESP_LOGI(TAG, "bright <0-255> (panel now; not saved) | level 100|60|30 (the keeper's setting, saved)");
-    ESP_LOGI(TAG, "batlog [clear] (the tank's own battery log: SoC/VBAT every 5 min awake, 30 min asleep, mA derived - read it after a night on battery) | codec (ES8311 registers) | deepsleep [N] (sleep now; wake after N s, or BOOT)");
+    ESP_LOGI(TAG, "batlog [clear] (the tank's own battery log: SoC/VBAT every 5 min awake, 30 min asleep, mA derived - read it after a night on battery) | codec (ES8311 registers) | deepsleep [N] (sleep now: N s grace then deep sleep with an N s timer wake; BOOT wakes either)");
     ESP_LOGI(TAG, "overgrown (grass to the ceiling + fouled glass; fish stress climbs) | court (pair circles the reef now and every ~minute; fry at the next light-on) | arrive (the fry, now)");
 }
 

@@ -7,7 +7,7 @@
 
 static q4_model_t *g_model;
 static word_tok_t  g_tok;
-static int   g_schema;                /* 2 | 3 */
+static int   g_schema;                /* 2 | 3 | 4 */
 static int   g_goal_ids[GOAL_COUNT];  /* token id of each goal word */
 static uint32_t g_rng = 0x9E3779B9u;
 static float g_last_p[GOAL_COUNT];
@@ -69,7 +69,15 @@ void advisor_core_encode(const tank_t *t, int idx, char *out, size_t n) {
     else snprintf(wall_s, sizeof wall_s, "clear");
 
     int bold9 = (int)(f->bold * 9.0f + 0.5f), soc9 = (int)(f->sociable * 9.0f + 0.5f);
-    if (g_schema >= 3)
+    if (g_schema >= 4)
+        snprintf(out, n,
+            "zone %d hunger %d energy %d stress %d curiosity %d bold %d social %d stage %s trust %d bored %d "
+            "food %s friend %s bubble %s reef %s wall %s last %s time %s",
+            row * 3 + col + 1, drive9(f->hunger), drive9(f->energy), drive9(f->stress), drive9(f->curiosity),
+            bold9, soc9, STAGE_NAMES[f->stage], drive9(f->trust), drive9(f->bored),
+            food_s, friend_s, bubble_s, reef_s, wall_s,
+            GOAL_NAMES[f->goal.id], t->night ? "night" : "day");
+    else if (g_schema >= 3)
         snprintf(out, n,
             "zone %d hunger %d energy %d stress %d curiosity %d bold %d social %d stage %s trust %d "
             "food %s shadow %s friend %s bubble %s reef %s wall %s last %s time %s",
@@ -98,7 +106,8 @@ bool advisor_core_init(const uint8_t *model_bin, size_t model_len,
     for (int i = 0; i < GOAL_COUNT; i++) g_goal_ids[i] = -1;
     for (int id = 0; id < g_tok.vocab_size; id++) {
         const char *p = word_tok_piece(&g_tok, id);
-        if (strcmp(p, " trust") == 0) g_schema = 3;
+        if (strcmp(p, " trust") == 0 && g_schema < 3) g_schema = 3;
+        if (strcmp(p, " bored") == 0) g_schema = 4;      /* v4: no shadow, + bored */
         for (int g = 0; g < GOAL_COUNT; g++)
             if (p[0] == ' ' && strcmp(p + 1, GOAL_NAMES[g]) == 0) g_goal_ids[g] = id;
     }

@@ -67,11 +67,14 @@ typedef struct {
      * zeros read as "none". */
     uint8_t  newborn_p1, parent_p1[N_FISH_MAX][2], pad_fam[3];
 } save_t;
-#define SAVE_CORE_SIZE   offsetof(save_t, veg_growth)   /* pre-upkeep PTK2 size */
-#define SAVE_UPKEEP_SIZE offsetof(save_t, veg_h)        /* 2026-08-30 .. 09-04 size */
-#define SAVE_FROND_SIZE  offsetof(save_t, setup_pending) /* 2026-09-04 .. 09-13 size */
-#define SAVE_IDENT_SIZE  offsetof(save_t, ms_seen)       /* identity tail, before the seen masks */
-#define SAVE_SEEN_SIZE   offsetof(save_t, newborn_p1)    /* seen masks, before the family tail (2026-09-13 .. 09-14) */
+/* the smallest PTK2 save (pre-upkeep, 2026-08-30): anything shorter is not
+ * ours. Every later build wrote sizeof(save_t) of its day - 448, 1112, 1304,
+ * 1408, 1440, 1456 ... - and load_save takes ANY such length, so a tail only
+ * ever appends and never needs its size recorded here. (Until 2026-09-14 the
+ * load walked a fixed list of tail offsets; the seen-masks build's 1440 was
+ * 1436 padded to the int64's alignment, no offset matched, and the birth-flow
+ * flash replaced a live tank with two fry.) */
+#define SAVE_CORE_SIZE   offsetof(save_t, veg_growth)
 
 float progression_time_scale = 1.0f;
 
@@ -324,27 +327,10 @@ void progression_set_age(tank_t *t, int idx, float seconds) {
 static bool load_save(tank_t *t, int64_t *saved_unix) {
     save_t sv; memset(&sv, 0, sizeof sv);
     *saved_unix = 0;
-    bool loaded = persist_port_load(&sv, sizeof sv);
-    if (!loaded) {                       /* pre-family save: load that prefix */
-        memset(&sv, 0, sizeof sv);
-        loaded = persist_port_load(&sv, SAVE_SEEN_SIZE);
-    }
-    if (!loaded) {                       /* pre-seen-masks save: load that prefix */
-        memset(&sv, 0, sizeof sv);
-        loaded = persist_port_load(&sv, SAVE_IDENT_SIZE);
-    }
-    if (!loaded) {                       /* pre-identity save: load that prefix */
-        memset(&sv, 0, sizeof sv);
-        loaded = persist_port_load(&sv, SAVE_FROND_SIZE);
-    }
-    if (!loaded) {                       /* pre-frond upkeep save: load that prefix */
-        memset(&sv, 0, sizeof sv);
-        loaded = persist_port_load(&sv, SAVE_UPKEEP_SIZE);
-    }
-    if (!loaded) {                       /* pre-upkeep PTK2 save: load the prefix */
-        memset(&sv, 0, sizeof sv);
-        loaded = persist_port_load(&sv, SAVE_CORE_SIZE);
-    }
+    /* an older build's shorter save fills a prefix; the zeroed rest reads as
+     * every later tail's defaults (see the tail comments in save_t) */
+    size_t got = 0;
+    bool loaded = persist_port_load(&sv, sizeof sv, &got) && got >= SAVE_CORE_SIZE && got <= sizeof sv;
     if (!loaded || sv.magic != SAVE_MAGIC || sv.n_fish < 2 || sv.n_fish > N_FISH_MAX) return false;
     *saved_unix = sv.saved_unix;
     t->n_fish = 0;

@@ -186,3 +186,53 @@ Current v3 prompt vs a v3.1 candidate (v2 prompt + minimal trust): follow | soci
 Neither prompt is clean; the bubble attractor is the teacher's own taste on calm
 states, and v2's social cliff came as much from the "social" perturbation mix as
 from wording. Conclusion: no v3.1 regeneration; v3m's cliffs come from the v2 labels.
+
+
+## Schema v4 data cycle (boredom; shadow out) — 2026-09-15
+
+Overnight generation on the Mac Mini (gemma4:26b, 3 workers, launched 19:37
+after a restart for a 55%-night state skew, 8 h cap): **23,366 clean v4
+pairs** (0 malformed, 0 off-vocabulary), ~49 decisions/min; bored 6-9 in 24%
+of states, `friend none` 421. Mixed with the v2+v3 data re-encoded as v4
+(28,247 of 51,162 survive: 12,725 shadow-in-view + 10,190 flee labels
+dropped, `bored 0-2` inserted) = **51,613 pairs**, 14.3M student, 5,000
+iters, best val loss 0.791, 4-bit 7.56 MB, vocab 54.
+
+Teacher labels (v4 pairs only): seek_food 35%, explore 20%, rest 17%,
+follow_friend 12%, inspect_reef 9%, visit_bubbles 8%, dart_play 0.7%.
+Teacher prompt check (450 calls, 3 tries): every behaviour check OK on the
+shipped prompt; the only flag left is the content attractor (reef 0.50 on a
+calm fish with nothing to do).
+
+| measure | v3m (previous ship) | **v4m** |
+|---|---|---|
+| teacher agreement (n=60, seed 777) | 75% (ceiling 82%) | **72%** (43/60; local gemma4 as the judge) |
+| teacher label == student greedy / in top-2 (own data) | 79% / 93% | **81% / 94%** |
+| bored 0 -> 9 at the bubbles: P(bubbles again) | n/a | **0.25 -> 0.00** (0.16 at 3, 0.07 at 5, 0.01 at 6) |
+| bored 0 -> 9 at the bubbles: P(explore) | n/a | **0.06 -> 1.00** (0.32 at 5, 0.81 at 6, 0.98 at 7) |
+| social 8 following, bored 0 / 5 / 9: P(follow) | n/a | 0.85 / 0.71 / 0.33 (explore 0.59 at 9) |
+| night elder, bored 9, last rest -> rest | n/a | **0.99** |
+| starving + bored 9 -> seek_food | n/a | 0.97 |
+| starving, min P(seek_food) over 18 identities | 0.82 | **0.86** |
+| starving + `friend none` -> seek_food | 0.98 | 0.98 |
+| social 0->9: P(follow), mean over 6 content states | 0.01->0.52 | 0.04->0.49 |
+| bold 0->9: P(dart), same | 0.02->0.40 | 0.03->0.20 |
+| elder at night -> rest | 0.98 | 0.93 |
+| P(flee_shadow) anywhere | (trained goal) | ~0 (token kept, never a label) |
+
+Sim census (`fishsim --selftest-llm`, 4 fish, 60 sim-s, same seed):
+
+| | v3m, old explore (09-14 morning) | v3m + boredom reflex | **v4m + boredom reflex** |
+|---|---|---|---|
+| fish-time at a landmark (55 px) | 76% | 59% | 64% |
+| 3+ fish crowding one landmark | 67% | 34% | 46% |
+| distinct zones per fish-minute | – | 1.5 | **2.8** |
+| mean bored | – | 3.3 | 2.8 |
+
+Five real-time minutes (`--selftest-llm 5`, the honest window for a
+one-minute drive), v4m + boredom reflex: goal share explore **28%**,
+follow_friend 23%, inspect_reef 17%, rest 15%, visit_bubbles 14%, seek_food
+3%, dart_play 1%; fish-time at a landmark **34%**, 3+ fish crowding one
+**10%**, a 3-fish cluster anywhere 18%; **4.0 distinct zones per
+fish-minute**, longest one-goal stretch 103 s, mean bored 3.3; 63 goal
+changes (29 torn), 119 asks, 0 survival overrides in 300 s.
