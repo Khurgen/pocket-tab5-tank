@@ -375,8 +375,9 @@ seven-minute prompt check before an overnight run is always worth it.
 
 - ✅ Model: schema v4 (boredom, no shadow), 14.3M student, 4-bit export, evaluated
 - ✅ Simulator: the full tank with progression, self-tests, snapshots
-- ✅ Firmware: running on the real board at 25 to 30 fps and 3.6 s per
-  decision, with touch, sleep and power-off, auto-rotation, battery gauge
+- ✅ Firmware: running on the real board at 25 to 30 fps and 3.7 s per
+  decision, with touch, auto-rotation, a battery gauge and log, two-stage
+  sleep (resume in place within 90 s, deep sleep after) and power-off
 - ✅ The living tank: growth, arrivals with courtship, trust, the hunger
   economy, upkeep chores, milestones, the reset prompt, the first-run setup
   (place the bubbles, a letter wheel to name each fry, a body color to pick),
@@ -384,6 +385,9 @@ seven-minute prompt check before an overnight run is always worth it.
   through the night at wake, fish that get bored and go exploring
 - ✅ Browser installer: one click from Chrome or Edge, hosted at
   stratobuilds.com
+- 🔋 In progress: battery life. The deep-sleep floor and the awake draw with
+  a full tank are being measured with the tank's own log; what is in flight
+  and how to pick it up is in [docs/DEVICE.md](docs/DEVICE.md)
 - 🚧 Next: a points system for unlockables
 - 🚧 Next: biodiversity as the unlockables: new fish species, new plant
   species, corals, and tank maintenance critters (snails for the algae,
