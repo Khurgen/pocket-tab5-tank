@@ -107,7 +107,8 @@ enum {
 /* tank-level milestone bits */
 enum {
     TMS_PAIR = 1u << 0, TMS_TRIO = 1u << 1, TMS_QUARTET = 1u << 2, TMS_QUINTET = 1u << 3,
-    TMS_SEXTET = 1u << 4, TMS_FIRST_QUIET_NIGHT = 1u << 5, TMS_FIRST_PLAY_SESSION = 1u << 6,
+    TMS_SEXTET = 1u << 4, TMS_FIRST_FULL_NIGHT = 1u << 5,   /* the device slept a full night (was: quiet night, until 2026-09-15) */
+    TMS_FIRST_PLAY_SESSION = 1u << 6,
     TMS_CHANGED_SOMEONE = 1u << 7, TMS_FIRST_FEEDING = 1u << 8,
     TMS_FIRST_TRIM = 1u << 9, TMS_FIRST_CLEANING = 1u << 10,
     TMS_COUNT = 11
@@ -186,9 +187,15 @@ typedef struct tank {
     float    bubble_x, bubble_y;   /* bubble column anchor */
     float    reef_x, reef_y;
     float    clock;                /* seconds since start */
-    float    day_phase;            /* 0..1 within the day/night cycle */
-    bool     night;
-    bool     light_override;       /* user took manual control of the light */
+    bool     night;                /* the tank light is off: fish rest, the palette dims */
+    float    idle_s;               /* seconds since the device was last HANDLED - moved
+                                    * (IMU) or touched. The light goes off once this
+                                    * passes LIGHT_IDLE_S (2026-09-15: the 240 s day/night
+                                    * cycle is gone; a tank left on the desk goes dark and
+                                    * the fish sleep, a pick-up or a touch wakes it). */
+    bool     light_override;       /* director / sim took manual control of the light.
+                                    * Not saved (a saved override once froze a tank in
+                                    * permanent day and starved a milestone). */
     bool     light_on;
     /* touch / tap interaction (docs/progression.md). Reflex-layer only: the
      * advisor never sees taps directly, only their effect on stress. */
@@ -249,10 +256,9 @@ typedef struct tank {
                                     * owns entry/exit; tank.c renders both
                                     * phases; ends when everyone has eaten. */
     bool     hold_light;           /* platform: a setup page or a prompt is up - the
-                                    * day/night cycle pauses and the light stays on
+                                    * light stays on however still the device is
                                     * (2026-09-13, Strato: the tank went dark mid-name).
                                     * Not saved; a light override still wins. */
-    float    held_s;               /* seconds the cycle has been paused, lifetime */
     int8_t   stage_fish;           /* setup: this fish is being named / coloured - it swims
                                     * a slow loop at (stage_x, stage_y), the clear spot the
                                     * page leaves for it, so it is never behind the UI
@@ -319,19 +325,27 @@ void  tank_tick(tank_t *t, float dt, advisor_fn advise);
  * fish make no decisions, so the advisor contract is untouched. Safe to call
  * with hours at a time. */
 void  tank_tick_sleep(tank_t *t, float seconds);
-/* Tank light: overrides the day/night cycle (the device maps a touch gesture
- * to this). tank_light_auto returns to the automatic cycle. */
+/* Tank light (2026-09-15). It is on while the device is being handled and
+ * goes off LIGHT_IDLE_S after the last handling - the tank sitting still on
+ * a desk is night: the fish rest, the palette dims, the panel dims. The
+ * platform calls tank_handled whenever the device moves (the IMU's motion
+ * detector) - a touch counts by itself (every tank_touch_* / tank_feed call
+ * is handling) - and a setup page or prompt holds the light (hold_light).
+ * tank_toggle_light / tank_light_auto are the director's and the sim's
+ * manual override (b-roll, tests); never saved. */
+#define LIGHT_IDLE_S 15.0f
+void  tank_handled(tank_t *t);
 void  tank_toggle_light(tank_t *t);
 void  tank_light_auto(tank_t *t);
 
 /* Touch input (platform feeds these; sim = mouse, device = FT3168):
  *  tank_touch_hold: call EVERY FRAME while a finger rests on the glass at x,y.
  *    After ~3 s of contact, high-trust fish drift over to investigate (the
- *    delay keeps taps/double-taps from twitching the school); low-trust or
+ *    delay keeps taps from twitching the school); low-trust or
  *    strongly hungry fish keep to their own business.
  *  tank_touch_tap:  call once per tap. A tap on the water surface (y below
  *    FEED_ZONE_Y) is a FEED gesture: pellets drop there, nothing else happens.
- *    Elsewhere: 2 quick taps then a pause toggles the light; 3+ quick taps =
+ *    Elsewhere: 3+ quick taps =
  *    aggressive -> nearby fish flee the spot and stay spooked while taps
  *    continue (cooldown resets on each tap); after the cooldown, single taps
  *    are harmless again and it takes 3 quick taps to re-trigger. Spooking

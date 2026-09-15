@@ -14,7 +14,10 @@ bool touch_port_confirm_up(void) { return s_cf; }
 float touch_port_confirm_frac(void) { return s_cf ? 1.0f : 0.0f; }
 int  touch_port_confirm_take(void) { int a = s_cf_ans; s_cf_ans = 0; return a; }
 bool touch_port_pressed_since(int64_t us) { (void)us; return false; }
-bool touch_port_take_brightness_tap(void) { return false; }
+static bool s_set;
+bool touch_port_settings(void) { return s_set; }
+void touch_port_show_settings(bool on) { s_set = on; }
+int  touch_port_take_setting(int *value) { (void)value; return 0; }
 void touch_port_dismiss(void) { s_ms = false; }
 void touch_port_set_bias(int px) { (void)px; }
 int  touch_port_bias(void) { return 0; }

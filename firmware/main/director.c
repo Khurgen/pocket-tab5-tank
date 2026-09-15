@@ -117,9 +117,10 @@ static void show_state(const tank_t *t) {
     int pellets = 0, cells = 0;
     for (int i = 0; i < MAX_FOOD; i++) pellets += t->food[i].alive;
     for (int i = 0; i < ALGAE_CELLS; i++) cells += t->algae[i] > 0;
-    ESP_LOGI(TAG, "pellets %d | trickle %s | ravenous %d | %s%s | veg %.2f %.2f %.2f | algae cells %d/%d | courting %s%s%s%s | arrival %s",
+    ESP_LOGI(TAG, "pellets %d | trickle %s | ravenous %d | %s%s idle %.0fs | veg %.2f %.2f %.2f | algae cells %d/%d | courting %s%s%s%s | arrival %s",
              pellets, t->trickle_off ? "OFF" : "on", (int)t->ravenous,
              t->night ? "night" : "day", t->light_override ? " (manual)" : "",
+             t->idle_s,
              t->veg_growth[0], t->veg_growth[1], t->veg_growth[2], cells, ALGAE_CELLS,
              t->courting ? t->fish[t->court_a].name : "no", t->courting ? "+" : "",
              t->courting ? t->fish[t->court_b].name : "", t->court_active > 0 ? " (circling)" : "",
@@ -214,9 +215,12 @@ static void run(tank_t *t, char *line) {
         tank_light_auto(t); ESP_LOGI(TAG, "light back on the day/night cycle");
     } else if (!strcmp(c, "sleep") && argc > 1) {
         float h = atof(argv[1]);
-        tank_tick_sleep(t, h * 3600.0f);
+        progression_slept(t, h * 3600.0f);      /* growth + the full-night badge, as a real wake would */
         ESP_LOGI(TAG, "slept %.1f h", h);
         show_state(t);
+    } else if (!strcmp(c, "settings")) {
+        bool on = argc < 2 || strcmp(argv[1], "off");
+        touch_port_show_settings(on); ESP_LOGI(TAG, "settings page %s", on ? "up (CLOSE ends it)" : "closed");
     } else if (!strcmp(c, "milestones")) {
         bool on = argc < 2 || strcmp(argv[1], "off");
         touch_port_show_milestones(on); ESP_LOGI(TAG, "milestones page %s", on ? "up (CLOSE button ends it)" : "closed");

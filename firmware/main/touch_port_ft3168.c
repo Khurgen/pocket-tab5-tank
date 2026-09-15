@@ -33,7 +33,8 @@ static float s_fx[N_FISH_MAX], s_fy[N_FISH_MAX];  /* fish positions at press tim
 static int s_sel = -1; static int64_t s_sel_us;   /* tapped fish -> stats card */
 static bool s_ms;                                 /* milestones page up (its CLOSE button ends it) */
 static bool s_cf; static int64_t s_cf_us; static int s_cf_ans;   /* reset confirm prompt */
-static bool s_bright_tap;                         /* milestones page: brightness row tapped */
+static bool s_set;                                /* settings page up (CLOSE ends it) */
+static int  s_set_what, s_set_val;                /* a segment tapped: SET_TAP_* + value, for main */
 #define CONFIRM_TIMEOUT_US (20LL * 1000000)
 static bool s_inverted;                           /* screen 180-flipped: mirror into tank space */
 /* Fingers land a little BELOW where the eye aims - the pad rolls onto the
@@ -94,7 +95,7 @@ void touch_port_poll(tank_t *t) {
             else ESP_LOGI(TAG, "setup done: %s + %s", t->fish[0].name, t->fish[1].name);
         }
     }
-    bool modal = s_ms || s_cf || su;                         /* a page or a prompt owns the glass */
+    bool modal = s_ms || s_set || s_cf || su;                         /* a page or a prompt owns the glass */
     if (touched) { s_lx = tx; s_ly = ty; if (!modal) tank_touch_drag(t, tx, ty); }  /* stroke = wipe/slash */
     if (touched && !modal && now - s_press_us > 300000 && fabsf(ty - s_py) < 30) tank_touch_hold(t, tx, ty);
     if (!touched && s_down) {
@@ -118,15 +119,21 @@ void touch_port_poll(tank_t *t) {
         }
         if (now - s_press_us < 350000 && dx * dx + dy * dy < 24 * 24) {
             if (notice_current()) { notice_dismiss(); ESP_LOGI(TAG, "tap closed the announcement"); goto released; }
+            if (s_set) {                                            /* the settings page: segments, CLOSE */
+                int v = 0, r = render_settings_tap(s_px, s_py, &v);
+                ESP_LOGI(TAG, "settings tap at %.0f,%.0f -> %s%s", s_px, s_py, r == SET_TAP_CLOSE ? "CLOSE" : r == SET_TAP_BRIGHT ? "brightness " : r == SET_TAP_VOLUME ? "volume " : "nothing",
+                         r == SET_TAP_BRIGHT ? (v == 30 ? "30" : v == 60 ? "60" : "100") : r == SET_TAP_VOLUME ? (v == 0 ? "off" : v == 1 ? "quiet" : "normal") : "");
+                if (r == SET_TAP_CLOSE) s_set = false;
+                else if (r) { s_set_what = r; s_set_val = v; }
+                goto released;
+            }
             if (s_ms) {                                             /* the page: badges open a modal, the CLOSE
                                                                        button ends it, the brightness row cycles */
-                int r = render_milestones_tap(t, s_px, s_py);     /* CLOSE button / detail modal / nothing */
-                bool row = r == MS_TAP_NONE && render_brightness_row_hit(s_px, s_py);
+                int r = render_milestones_tap(t, s_px, s_py);     /* CLOSE / SETTINGS button, detail modal, nothing */
                 ESP_LOGI(TAG, "page tap at %.0f,%.0f (release %.0f,%.0f) -> %s", s_px, s_py, s_lx, s_ly,
-                         r == MS_TAP_CLOSE ? "CLOSE" : r == MS_TAP_KEPT ? "detail" : row ? "brightness row" : "nothing");
-                if (row) { s_bright_tap = true; goto released; }
-                if (r != MS_TAP_CLOSE) goto released;              /* only the button leaves the page */
-                s_ms = false; s_sel = -1;
+                         r == MS_TAP_CLOSE ? "CLOSE" : r == MS_TAP_SETTINGS ? "SETTINGS" : r == MS_TAP_KEPT ? "detail" : "nothing");
+                if (r != MS_TAP_CLOSE && r != MS_TAP_SETTINGS) goto released;   /* only a button leaves the page */
+                s_ms = false; s_sel = -1; s_set = r == MS_TAP_SETTINGS;
                 progression_ack_milestones(t); render_milestones_leave();   /* everything shown is now "seen" */
                 goto released;
             }
@@ -163,12 +170,12 @@ released:
 int touch_port_selected(void) { return s_sel; }
 bool touch_port_milestones(void) { return s_ms; }
 void touch_port_show_milestones(bool on) { if (s_ms && !on) render_milestones_leave(); s_ms = on; }
-void touch_port_dismiss(void) { s_sel = -1; if (s_ms) render_milestones_leave(); s_ms = false; }
+void touch_port_dismiss(void) { s_sel = -1; if (s_ms) render_milestones_leave(); s_ms = false; s_set = false; }
 
 /* ---- reset confirm prompt ---- */
 void touch_port_confirm_open(void) {
     s_cf = true; s_cf_us = esp_timer_get_time(); s_cf_ans = 0;
-    s_sel = -1; s_ms = false;                     /* it replaces the card / the page */
+    s_sel = -1; s_ms = false; s_set = false;      /* it replaces the card / the pages */
     ESP_LOGI(TAG, "reset prompt up (YES / NO on the glass; NO by itself in %d s)", (int)(CONFIRM_TIMEOUT_US / 1000000));
 }
 bool touch_port_confirm_answer(int ans) {
@@ -184,4 +191,6 @@ float touch_port_confirm_frac(void) {
 }
 int  touch_port_confirm_take(void)  { int a = s_cf_ans; s_cf_ans = 0; return a; }
 bool touch_port_pressed_since(int64_t us) { return s_down && s_press_us > us; }
-bool touch_port_take_brightness_tap(void) { bool b = s_bright_tap; s_bright_tap = false; return b; }
+bool touch_port_settings(void) { return s_set; }
+void touch_port_show_settings(bool on) { s_set = on; if (on) { s_ms = false; s_sel = -1; } }
+int  touch_port_take_setting(int *value) { int w = s_set_what; *value = s_set_val; s_set_what = 0; return w; }

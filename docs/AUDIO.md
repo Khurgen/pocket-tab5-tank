@@ -11,8 +11,9 @@ the tree and both firmware configs build (board 1.1 MB with the 580 KB
 bank embedded, QEMU with the stub). The codec bring-up sequence is written
 from the ES8311 user guide and the Espressif driver, unverified on the
 bench: the first flash is the test. `docs/HANDOFF.md` has the bench list.
-Not built: the volume row on the milestones page (director `snd
-off|quiet|normal` sets and saves the level for now).
+Volume + mute: the settings page (2026-09-15 night; from the milestones
+page's SETTINGS button) - BRIGHTNESS 30/60/100 and VOLUME OFF/QUIET/NORMAL
+as segment buttons; director `snd off|quiet|normal` still works.
 
 ## 1. What to hand over (sound files)
 
@@ -218,8 +219,9 @@ void audio_port_sleep(void);                          // amp low, codec down, AL
   cues play at -12 dB. Drowse/sleep: nothing, and `audio_port_sleep()` runs
   before the sleep call.
 - **Volume:** three levels, saved in NVS (`tank/snd`). Default: normal.
-  A row next to brightness on the milestones page is still TO DO; until
-  then the director sets it (`snd off|quiet|normal`), the sim's V key too. Director: `snd <id>`, `snd off`,
+  Set on the settings page (render_settings; the milestones page's SETTINGS
+  button opens it), by the director (`snd off|quiet|normal`), or the sim's
+  V key. Picking QUIET or NORMAL plays the confirm cue at that level. Director: `snd <id>`, `snd off`,
   `snd list` for b-roll; the existing `codec` dump stays.
 - **Sim parity:** `sim/` gets the same `audio_port.h` on SDL2 audio
   (`SDL_QueueAudio`, 16 kHz s16). Same bank, same mixer code in `common/`

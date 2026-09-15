@@ -391,7 +391,8 @@ seven-minute prompt check before an overnight run is always worth it.
   fish coming to your finger), plus a welcome, a birth fanfare and
   milestone chimes with an on-screen announcement; the codec is only
   powered while the tank is in your hands, and a low-battery notice keeps
-  the gauge on screen until it is charged
+  the gauge on screen until it is charged; a settings page (from the
+  milestones page) for brightness and volume, with a mute
 - ✅ Browser installer: one click from Chrome or Edge, hosted at
   stratobuilds.com
 - 🔋 In progress: battery life. The deep-sleep floor and the awake draw with

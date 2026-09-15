@@ -235,7 +235,7 @@ void tank_init(tank_t *t, uint32_t seed) {
         b->wobble = tank_randf(t, 0, TAU);
     }
     t->reef_x   = TANK_W * 0.15f; t->reef_y   = TANK_H * 0.85f;
-    t->clock = 0; t->day_phase = 0; t->night = false;
+    t->clock = 0; t->night = false; t->idle_s = 0;
     t->light_override = false; t->light_on = true;
     t->hold_active = false; t->hold_time = 0; t->hold_approached = false;
     t->tap_count = 0; t->tap_burst_t = 99; t->startled = false;
@@ -244,7 +244,7 @@ void tank_init(tank_t *t, uint32_t seed) {
     t->courting = false; t->court_a = t->court_b = -1;
     t->court_cool = 30; t->court_active = 0;
     t->ravenous = false; t->trickle_off = false;
-    t->stage_fish = -1; t->hold_light = false; t->held_s = 0;
+    t->stage_fish = -1; t->hold_light = false;
     t->drag_active = false; t->drag_has_prev = false; t->drag_dist = 0;
     for (int b = 0; b < VEG_BEDS; b++) {
         /* a fresh tank's canopy has a natural profile: fronds within +-0.04
@@ -527,10 +527,12 @@ static void wipe_algae(tank_t *t, float x0, float y0, float x1, float y1) {
 }
 
 void tank_touch_hold(tank_t *t, float x, float y) {
+    tank_handled(t);
     t->hold_active = true; t->hold_x = x; t->hold_y = y;
 }
 
 void tank_touch_drag(tank_t *t, float x, float y) {
+    tank_handled(t);
     t->drag_active = true;
     if (!t->drag_has_prev) {
         /* stroke start: a slash must BEGIN on a plant - within SLASH_START_PX
@@ -577,6 +579,7 @@ void tank_touch_drag(tank_t *t, float x, float y) {
 }
 
 void tank_feed(tank_t *t, float x, int n) {
+    tank_handled(t);
     x = clampf(x, 25, TANK_W - 25);
     int dropped = 0;
     for (int i = 0; i < MAX_FOOD && n > 0; i++) {
@@ -593,6 +596,7 @@ void tank_feed(tank_t *t, float x, int n) {
 }
 
 void tank_touch_tap(tank_t *t, float x, float y) {
+    tank_handled(t);
     if (y < FEED_ZONE_Y) { tank_feed(t, x, 3); return; }     /* surface tap = feed */
     if (t->tap_burst_t > TAP_WINDOW) t->tap_count = 0;
     t->tap_count++; t->tap_burst_t = 0; t->tap_x = x; t->tap_y = y;
@@ -616,10 +620,10 @@ void tank_touch_tap(tank_t *t, float x, float y) {
 /* per-frame bookkeeping for the touch state machine */
 static void touch_tick(tank_t *t, float dt) {
     t->tap_burst_t += dt;
-    if (!t->startled && t->tap_count == 2 && t->tap_burst_t > TAP_WINDOW) {
-        tank_toggle_light(t); t->tap_count = 0;     /* double-tap, then pause */
-    }
-    if (t->tap_count >= 3 && t->tap_burst_t > TAP_WINDOW) t->tap_count = 0;
+    /* (until 2026-09-15 two taps then a pause toggled the light; a saved
+       override then froze a tank in permanent day - the light is the idle
+       detector's now, see tank_handled) */
+    if (t->tap_count >= 2 && t->tap_burst_t > TAP_WINDOW) t->tap_count = 0;
     if (t->startled) {
         t->startle_cooldown -= dt;
         if (t->startle_cooldown <= 0) { t->startled = false; t->tap_count = 0; }
@@ -680,11 +684,13 @@ static void touch_tick(tank_t *t, float dt) {
     t->drag_active = false;
 }
 
+void tank_handled(tank_t *t) { t->idle_s = 0; }
+
 void tank_toggle_light(tank_t *t) {
-    /* first toggle takes over from the auto cycle at the current state */
-    if (!t->light_override) { t->light_override = true; t->light_on = t->night; }
+    /* first toggle takes over from the idle detector at the current state
+       (the on/off cue comes from tank_tick, where the flip lands) */
+    if (!t->light_override) { t->light_override = true; t->light_on = !t->night; }
     else t->light_on = !t->light_on;
-    tank_emit(t->light_on ? TEV_LIGHT_ON : TEV_LIGHT_OFF, -1);
 }
 
 void tank_light_auto(tank_t *t) { t->light_override = false; }
@@ -716,6 +722,7 @@ void tank_tick_sleep(tank_t *t, float seconds) {
         f->speed = 0; f->target_speed = 0; f->bored = 0;  /* a night's sleep is a fresh start */
         f->goal_age += seconds; f->ask_age += seconds;  /* wake re-asks the advisor at once */
     }
+    t->idle_s = 0;                                      /* the wake press is handling: lights up */
     for (int i = 0; i < MAX_FOOD; i++)                  /* overnight pellets go stale */
         if (t->food[i].alive && (t->food[i].age += seconds) > 45) t->food[i].alive = false;
     /* the garden grows fastest in a dark, untended tank: waking to a taller
@@ -1157,12 +1164,14 @@ static uint32_t state_signature(const tank_t *t, int idx) {
 
 void tank_tick(tank_t *t, float dt, advisor_fn advise) {
     t->clock += dt;
-    /* 240s day/night cycle: 160s day, 80s night; a user light override wins.
-     * While the keeper is on a setup page or a prompt the cycle waits (the
-     * clock still runs for the animation) and the light stays on. */
-    if (t->hold_light) t->held_s += dt;
-    t->day_phase = fmodf(t->clock - t->held_s, 240.0f) / 240.0f;
-    t->night = t->light_override ? !t->light_on : !t->hold_light && t->day_phase > 0.6667f;
+    /* the light: on while the device is handled, off LIGHT_IDLE_S after the
+     * last touch or movement (tank_handled) - a tank left on the desk goes
+     * dark and the fish sleep. A setup page or a prompt holds it on; the
+     * director's / sim's manual override wins over both. */
+    t->idle_s += dt;
+    bool was_night = t->night;
+    t->night = t->light_override ? !t->light_on : !t->hold_light && t->idle_s > LIGHT_IDLE_S;
+    if (t->night != was_night) tank_emit(t->night ? TEV_LIGHT_OFF : TEV_LIGHT_ON, -1);
 
     touch_tick(t, dt);
 

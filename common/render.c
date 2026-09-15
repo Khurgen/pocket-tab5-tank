@@ -996,34 +996,6 @@ int render_confirm_hit(float x, float y) {
     return 0;
 }
 
-/* ---- brightness row (milestones page foot) ---- */
-#define BRIGHT_ROW_Y 326
-static bool ms_modal_up(void);                    /* a milestones modal is up: the page under it is dimmed */
-#define HALF_RGB(rgb) (((rgb) >> 1) & 0x7f7f7f)
-void render_brightness_row(uint16_t *fb, int stride, int pct) {
-    ctx_t c = ctx_full(fb, stride, 1.0f);
-    bool dim = ms_modal_up();                     /* drawn after the page, so it dims itself */
-    uint32_t teal = dim ? HALF_RGB(0x9fd8e2) : 0x9fd8e2, grey = dim ? HALF_RGB(0x2a3f45) : 0x2a3f45, white = dim ? 0x7f7f7f : 0xffffff;
-    const char *label = "BRIGHTNESS";
-    draw_text(&c, 40, BRIGHT_ROW_Y, 2, teal, label);
-    int x = 40 + text_w(label, 2) + 16;
-    static const int lv[3] = { 30, 60, 100 };
-    for (int i = 0; i < 3; i++) {                     /* three rising bars, lit up to the level */
-        int h = 6 + i * 4;
-        rect_fill(&c, x + i * 30, BRIGHT_ROW_Y + 14 - h, 22, h, pct >= lv[i] ? teal : grey);
-    }
-    char buf[8]; snprintf(buf, sizeof buf, "%d%%", pct);
-    draw_text(&c, x + 3 * 30 - 2, BRIGHT_ROW_Y, 2, white, buf);   /* 6 px off the last bar, clear of CLOSE at 100% */
-}
-bool render_brightness_row_hit(float x, float y) {
-    /* the row's x span (caption, bars, number: 40..~330, with slop) and the
-       whole strip below the tank's milestone row down to the glass edge -
-       the row sits where the bezel curves and finger reports drift there.
-       NOT the full width: a tap low on the RIGHT still closes the page (a
-       first version took the whole band and a closing tap cycled the level). */
-    return x >= 24 && x < 314 && y >= 318;   /* the row's own span; the CLOSE button owns the right */
-}
-
 /* ---- milestones page (2026-09-13 redesign: an achievement wall) ----
  * Rows of 40 px: the fish (render_fish_preview at its real size, so growth
  * shows), its name, a growth strip, then six 32 px badges at a 40 px pitch.
@@ -1043,6 +1015,8 @@ bool render_brightness_row_hit(float x, float y) {
 #define MSP_CLOSE_Y   312
 #define MSP_CLOSE_W   92
 #define MSP_CLOSE_H   30
+#define MSP_SET_X     32                /* the SETTINGS button, bottom left, where the brightness row was */
+#define MSP_SET_W     116
 #define MSP_MODAL_X   56
 #define MSP_MODAL_Y   100
 #define MSP_MODAL_W   336
@@ -1059,7 +1033,7 @@ static const badge_t FISH_BADGES[6] = {
 };
 static const badge_t TANK_BADGES[6] = {
     { TMS_FIRST_FEEDING, &icon_ms_first_feeding },    { TMS_FIRST_TRIM, &icon_ms_first_trimming },
-    { TMS_FIRST_CLEANING, &icon_ms_first_glass_cleaning }, { TMS_FIRST_QUIET_NIGHT, &icon_ms_first_quiet_night },
+    { TMS_FIRST_CLEANING, &icon_ms_first_glass_cleaning }, { TMS_FIRST_FULL_NIGHT, &icon_ms_first_quiet_night },
     { TMS_FIRST_PLAY_SESSION, &icon_ms_first_play_session }, { TMS_CHANGED_SOMEONE, &icon_ms_tank_changed_someone },
 };
 static const char *const STAGE_WORDS[4] = { "FRY", "JUVENILE", "ADULT", "ELDER" };
@@ -1073,7 +1047,6 @@ static const icon_t *g_ms_icon;      /* the badge's art, or NULL */
 static int  g_ms_fish = -1;          /* a fish's own sprite instead, or -1 */
 static bool g_ms_fry;                /* the fry-to-be (a silhouette) instead */
 static int  g_ms_kind = -1;          /* a gate's modal: its kind (the HOW? button shows), or -1 */
-static bool ms_modal_up(void) { return g_ms_caption[0] != 0; }
 static bool g_ms_tip;                /* the gate's tip page is up instead of its modal */
 /* a gate's modal is taller (two sentence lines, progress, the HOW? button)
    so it sits higher than the badge modal, clear of the CLOSE button */
@@ -1213,6 +1186,7 @@ void render_milestones(const tank_t *t, uint16_t *fb, int stride) {
     /* the way out: a CLOSE button in the prompt's calm dress (a tap anywhere
        else never drops the page - too much to tap for that) */
     button(&c, MSP_CLOSE_X, MSP_CLOSE_Y, MSP_CLOSE_W, MSP_CLOSE_H, 0x1c2f36, MSP_TEAL, "CLOSE", 2);
+    button(&c, MSP_SET_X, MSP_CLOSE_Y, MSP_SET_W, MSP_CLOSE_H, 0x1c2f36, MSP_TEAL, "SETTINGS", 2);   /* bottom left (2026-09-15) */
     /* a modal up: the page under it is out of reach (any tap only closes the
        modal), so it LOOKS out of reach - every pixel at half (Strato: with
        CLOSE lit it looked like you could still tap it). One shift per
@@ -1268,6 +1242,7 @@ int render_milestones_tap(const tank_t *t, float x, float y) {
         render_milestones_leave(); return MS_TAP_KEPT;   /* any other tap: back to the page */
     }
     if (x >= MSP_CLOSE_X - 8 && y >= MSP_CLOSE_Y - 4) return MS_TAP_CLOSE;      /* slop out to the glass edge */
+    if (x < MSP_SET_X + MSP_SET_W + 8 && y >= MSP_CLOSE_Y - 4) return MS_TAP_SETTINGS;   /* the settings page */
     int row = -1; bool tank_row = false, fry_row = false;
     fry_req_t req[FRY_REQ_MAX]; bool staged;
     int nreq = progression_next_fry(t, req, &staged);
@@ -1276,8 +1251,8 @@ int render_milestones_tap(const tank_t *t, float x, float y) {
         if (row < 0) row = 0;
         if (row == t->n_fish && nreq > 0) fry_row = true;   /* the NEW FRY row */
         else if (row >= t->n_fish) return MS_TAP_NONE;      /* an empty row */
-    } else if (y >= MSP_TANK_Y - 6 && y < 318) tank_row = true;   /* down to the brightness strip: fingers near the
-                                                                   bottom bezel report LOW (see render_brightness_row_hit) */
+    } else if (y >= MSP_TANK_Y - 6 && y < MSP_CLOSE_Y - 4) tank_row = true;   /* down to the button strip: fingers near the
+                                                                              bottom bezel report LOW */
     else return MS_TAP_NONE;
     int k;                                           /* badge column, or -1 for the name / strip cluster */
     if (x >= MSP_BADGE_X0 - 4 && x < MSP_BADGE_X0 + 6 * MSP_BADGE_DX) {
@@ -1379,4 +1354,58 @@ void render_notice(const tank_t *t, uint16_t *fb, int stride, int kind, int fish
     if (frac_left < 0) frac_left = 0;
     if (frac_left > 1) frac_left = 1;
     rect_fill(&c, X + 2, Y + H - 4, (int)((W - 4) * frac_left), 2, 0x1c2f36);
+}
+
+/* ---- settings page (2026-09-15) ----
+ * The milestones page's foot used to carry the brightness row; Strato:
+ * "a new UI for settings and leave milestones alone - we may need more
+ * room there anyway". Two rows of segment buttons, generous hit bands
+ * (fingers land low near the bezel, as on the milestones page). */
+#define SET_TITLE_Y   22
+#define SET_ROW1_Y    104            /* BRIGHTNESS */
+#define SET_ROW2_Y    184            /* VOLUME */
+#define SET_LABEL_X   32
+#define SET_SEG_X     190            /* first segment */
+#define SET_SEG_W     76
+#define SET_SEG_DX    82
+#define SET_SEG_H     40
+#define SET_SEG_Y(row) ((row) - 10)  /* the segment sits on the label's line */
+static const char *const SET_BRIGHT[3] = { "30%", "60%", "100%" };
+static const int         SET_BRIGHT_PCT[3] = { 30, 60, 100 };
+static const char *const SET_VOLUME[3] = { "OFF", "QUIET", "NORMAL" };
+
+static void set_row(ctx_t *c, int row_y, const char *label, const char *const names[3], int chosen) {
+    draw_text(c, SET_LABEL_X, row_y, 2, MSP_TEAL, label);
+    for (int i = 0; i < 3; i++) {
+        int x = SET_SEG_X + i * SET_SEG_DX, y = SET_SEG_Y(row_y);
+        if (i == chosen) {                       /* lit: teal, ink lettering */
+            button(c, x, y, SET_SEG_W, SET_SEG_H, MSP_TEAL, MSP_TEAL, names[i], 2);
+            draw_text(c, x + (SET_SEG_W - text_w(names[i], 2)) / 2, y + (SET_SEG_H - 14) / 2, 2, MSP_INK, names[i]);
+        } else button(c, x, y, SET_SEG_W, SET_SEG_H, 0x1c2f36, MSP_DIM, names[i], 2);
+    }
+}
+void render_settings(uint16_t *fb, int stride, int bright_pct, int volume) {
+    ctx_t c = ctx_full(fb, stride, 1.0f);
+    rect_fill(&c, 0, 0, TANK_W, TANK_H, MSP_INK);
+    draw_text(&c, (TANK_W - text_w("SETTINGS", 3)) / 2, SET_TITLE_Y, 3, 0xffffff, "SETTINGS");
+    int bi = bright_pct <= 30 ? 0 : bright_pct <= 60 ? 1 : 2;
+    set_row(&c, SET_ROW1_Y, "BRIGHTNESS", SET_BRIGHT, bi);
+    set_row(&c, SET_ROW2_Y, "VOLUME", SET_VOLUME, volume < 0 ? 0 : volume > 2 ? 2 : volume);
+    draw_text(&c, SET_LABEL_X, SET_ROW2_Y + 50, 2, MSP_DIM, "FISH ARE QUIET AT NIGHT");
+    button(&c, MSP_CLOSE_X, MSP_CLOSE_Y, MSP_CLOSE_W, MSP_CLOSE_H, 0x1c2f36, MSP_TEAL, "CLOSE", 2);
+}
+static int set_segment(float x) {
+    if (x < SET_SEG_X - 10) return -1;
+    int i = (int)((x - SET_SEG_X + 3) / SET_SEG_DX);
+    return i < 0 ? 0 : i > 2 ? 2 : i;
+}
+int render_settings_tap(float x, float y, int *value) {
+    if (x >= MSP_CLOSE_X - 8 && y >= MSP_CLOSE_Y - 4) return SET_TAP_CLOSE;
+    int seg = set_segment(x);
+    if (seg < 0) return SET_TAP_NONE;
+    /* the row bands: from a little above each segment down to the next row
+       (fingers report low), the second down to the button strip */
+    if (y >= SET_SEG_Y(SET_ROW1_Y) - 12 && y < SET_SEG_Y(SET_ROW2_Y) - 12) { *value = SET_BRIGHT_PCT[seg]; return SET_TAP_BRIGHT; }
+    if (y >= SET_SEG_Y(SET_ROW2_Y) - 12 && y < MSP_CLOSE_Y - 4)             { *value = seg; return SET_TAP_VOLUME; }
+    return SET_TAP_NONE;
 }

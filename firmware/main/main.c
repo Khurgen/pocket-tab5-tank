@@ -307,7 +307,7 @@ static void tank_task(void *arg) {
         float dt = (now - last) / 1e6f; last = now; if (dt > 0.25f) dt = 0.25f;
         sleep_button_poll(now);
         imu_port_poll(now);
-        if (imu_port_moving()) audio_port_prewarm();   /* in a hand: the codec stays warm (docs/AUDIO.md) */
+        if (imu_port_moving()) { audio_port_prewarm(); tank_handled(&tank); }   /* in a hand: the codec stays warm (docs/AUDIO.md), the light stays on */
         bool inv = imu_port_inverted();
         display_port_set_inverted(inv);   /* per-frame, so a flip lands between flushes */
         touch_port_set_inverted(inv);
@@ -316,7 +316,9 @@ static void tank_task(void *arg) {
         int ans = touch_port_confirm_take();
         if (ans > 0) reset_tank();
         else if (ans < 0) ESP_LOGI(TAG, "reset prompt: tank kept");
-        if (touch_port_take_brightness_tap()) brightness_cycle();
+        { int v = 0, w = touch_port_take_setting(&v);                 /* the settings page */
+          if (w == SET_TAP_BRIGHT) brightness_set_level(v);
+          else if (w == SET_TAP_VOLUME) { audio_port_set_volume(v); if (v) audio_port_play(SND_CONFIRM, AUDIO_PITCH_ONE); } }
         brightness_apply(tank.night);
         { static int64_t last_bat; if (now - last_bat > 5LL * 60 * 1000000) {   /* battery log: awake sample every 5 min */
             batlog_add(battery_pct(), battery_port_vbat_mv(), display_port_brightness(), false, last_bat ? "" : "boot"); last_bat = now; } }
@@ -324,7 +326,7 @@ static void tank_task(void *arg) {
         tank_tick(&tank, dt, llm_ok ? advisor_llm_esp : advisor_rules);
         progression_tick(&tank, dt);
         battery_frame(now);
-        notice_tick(&tank, dt, setup_active() || touch_port_confirm_up() || touch_port_milestones());
+        notice_tick(&tank, dt, setup_active() || touch_port_confirm_up() || touch_port_milestones() || touch_port_settings());
         { int cue = notice_take_cue(); if (cue >= 0) audio_port_play(cue, AUDIO_PITCH_ONE); }
         audio_port_set_night(tank.night);
         { static bool loop_on;                     /* the bubble loop rides the setup's placement page */
@@ -355,15 +357,17 @@ static void tank_task(void *arg) {
             int64_t tc = esp_timer_get_time();
             if (touch_port_milestones()) {       /* milestones page: covers the tank until a tap */
                 render_milestones(&tank, fb[cur], TANK_W);
-                render_brightness_row(fb[cur], TANK_W, brightness_level());
+                sel = -1;
+            } else if (touch_port_settings()) {  /* settings page: brightness + volume */
+                render_settings(fb[cur], TANK_W, brightness_level(), audio_port_volume());
                 sel = -1;
             }
             if (sel >= 0) {                      /* tapped fish: stats card + battery */
                 render_stats_card(&tank, sel, fb[cur], TANK_W);
                 if (s_bat_ok) render_battery(fb[cur], TANK_W, s_bat_frac, s_bat_chg);
-            } else if (s_bat_low && s_bat_ok && !touch_port_milestones())
+            } else if (s_bat_low && s_bat_ok && !touch_port_milestones() && !touch_port_settings())
                 render_battery(fb[cur], TANK_W, s_bat_frac, s_bat_chg);   /* low: the pill stays up */
-            if (!touch_port_milestones()) {      /* an announcement over the live tank */
+            if (!touch_port_milestones() && !touch_port_settings()) {   /* an announcement over the live tank */
                 const notice_t *nt = notice_current();
                 if (nt) render_notice(&tank, fb[cur], TANK_W, nt->kind, nt->fish, nt->bit, 1.0f - nt->age / NOTICE_UP_S);
             }

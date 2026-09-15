@@ -77,7 +77,8 @@ void render_notice(const tank_t *t, uint16_t *fb, int stride, int kind, int fish
  * moves that gate); a tap on the name gives the tally. render_milestones_tap maps a tap: a badge, a name
  * or a strip opens a small detail modal (the art at 2x, a title, the
  * words); while the modal is up ANY tap closes it. A CLOSE button at the
- * bottom right leaves the page. Callers try it BEFORE the brightness row. */
+ * bottom right leaves the page; a SETTINGS button at the bottom left
+ * leaves it for the settings page. */
 void render_milestones(const tank_t *t, uint16_t *fb, int stride);
 /* a tap on the page (2026-09-13, Strato: with this much to tap, a stray tap
  * must not drop the whole page): MS_TAP_CLOSE = the CLOSE button, bottom
@@ -86,7 +87,7 @@ void render_milestones(const tank_t *t, uint16_t *fb, int stride);
  * badge / name / strip opened the detail modal, or the modal was up and
  * this tap closed it; MS_TAP_NONE = nothing here (the caller may try the
  * brightness row). */
-enum { MS_TAP_NONE = 0, MS_TAP_KEPT = 1, MS_TAP_CLOSE = 2 };
+enum { MS_TAP_NONE = 0, MS_TAP_KEPT = 1, MS_TAP_CLOSE = 2, MS_TAP_SETTINGS = 3 };   /* SETTINGS: the button bottom left (2026-09-15) opens the settings page */
 int  render_milestones_tap(const tank_t *t, float x, float y);
 void render_milestones_leave(void);
 
@@ -109,12 +110,15 @@ void render_milestones_leave(void);
 void render_confirm_reset(uint16_t *fb, int stride, float frac);
 int  render_confirm_hit(float x, float y);
 
-/* Brightness row (2026-09-11) at the foot of the milestones page: a caption,
- * three rising bars and the percentage. The device's panel level (100 / 60 /
- * 30 %) - a tap on the row cycles it instead of closing the page
- * (render_brightness_row_hit). The sim draws it too, for parity. */
-void render_brightness_row(uint16_t *fb, int stride, int pct);
-bool render_brightness_row_hit(float x, float y);
+/* Settings page (2026-09-15; the brightness row left the milestones page
+ * for it): BRIGHTNESS 30 / 60 / 100 % and VOLUME OFF / QUIET / NORMAL as
+ * segment buttons - tap the one you want - and a CLOSE button bottom right.
+ * render_settings_tap maps a tap: SET_TAP_BRIGHT with *value = the percent,
+ * SET_TAP_VOLUME with *value = 0..2, SET_TAP_CLOSE, or nothing. The sim
+ * draws it too, for parity. */
+enum { SET_TAP_NONE = 0, SET_TAP_CLOSE = 1, SET_TAP_BRIGHT = 2, SET_TAP_VOLUME = 3 };
+void render_settings(uint16_t *fb, int stride, int bright_pct, int volume);
+int  render_settings_tap(float x, float y, int *value);
 
 /* UI primitives (2026-09-13) for panels built outside this file (the first-
  * run setup in common/setup.c): the confirm prompt's pixel font, flat rects

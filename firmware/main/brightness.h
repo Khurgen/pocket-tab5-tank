@@ -1,6 +1,7 @@
 /* brightness.h - the panel brightness policy (2026-09-11, the battery pass).
- * A user level, 100 / 60 / 30 %, cycled by tapping the row at the foot of
- * the milestones page (or `level N` on the director) and kept in NVS
+ * A user level, 100 / 60 / 30 %, picked on the settings page (2026-09-15;
+ * before that a row at the foot of the milestones page) or `level N` on
+ * the director, and kept in NVS
  * ("tank"/"bright"); x0.6 at the tank's night, where the pixels are already
  * dimmed to 45% so the panel can follow unnoticed. Deliberately NO idle dim:
  * people watch the tank without touching it. The director's `bright N`

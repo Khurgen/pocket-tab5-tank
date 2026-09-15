@@ -84,7 +84,7 @@ static int selftest(void) {
     render_set_scene_cache(scene);
     render_tank(&tank, fb, TANK_W);               /* renderer must not crash */
     render_stats_card(&tank, 0, fb, TANK_W);
-    render_milestones(&tank, fb, TANK_W); render_brightness_row(fb, TANK_W, 100);
+    render_milestones(&tank, fb, TANK_W);
     render_confirm_reset(fb, TANK_W, 0.5f);
     setup_begin(&tank);
     for (int pg = 0; pg < SETUP_PG_N; pg++) { render_setup(&tank, fb, TANK_W, 1.0f); if (pg + 1 < SETUP_PG_N) setup_activate(&tank, SETUP_HIT_NEXT); }
@@ -864,7 +864,8 @@ static int  selected_fish = -1;      /* click a fish for its stat card */
 static bool ui_visible = true;       /* U toggles all overlays */
 static bool milestones_view = false; /* M toggles the milestones screen */
 static bool confirm_view = false;    /* X: the reset prompt (YES wipes the save) */
-static int  sim_bright = 100;        /* the milestones page's brightness row (device setting; cosmetic here) */
+static bool settings_view = false;   /* the settings page (from the milestones page's SETTINGS button) */
+static int  sim_bright = 100;        /* the settings page's brightness (device setting; cosmetic here) */
 static uint32_t confirm_ms;          /* when it opened; it gives up after CONFIRM_MS */
 #define CONFIRM_MS 20000
 
@@ -924,7 +925,7 @@ static void sound_init(void) {
 }
 /* per frame: the notice queue, the bubble loop, the card cue, night */
 static void sound_frame(uint32_t now, float dt) {
-    notice_tick(&tank, dt, setup_active() || confirm_view || milestones_view);
+    notice_tick(&tank, dt, setup_active() || confirm_view || milestones_view || settings_view);
     int cue = notice_take_cue();
     if (cue >= 0) snd(cue, AUDIO_PITCH_ONE);
     bool loop = setup_active() && !setup_is_birth() && setup_page() == SETUP_PG_BUBBLES;
@@ -963,7 +964,8 @@ static void frame_cb(lv_timer_t *timer) {
                        printf("a new fry, %s: the birth flow is up (announce / name / family; S drops it)\n", tank.fish[nb].name); }
     }
     sound_frame(now, dt);
-    if (milestones_view) { render_milestones(&tank, canvas_buf, TANK_W); render_brightness_row(canvas_buf, TANK_W, sim_bright); }
+    if (milestones_view) render_milestones(&tank, canvas_buf, TANK_W);
+    else if (settings_view) render_settings(canvas_buf, TANK_W, sim_bright, audio_volume());
     else {
         render_tank(&tank, canvas_buf, TANK_W);
         if (ui_visible) {
@@ -1118,10 +1120,12 @@ static int snapshot(const char *prefix, int seconds) {
     for (int i = 0; i < tank.n_fish; i++) tank.fish[i].ms_seen = tank.fish[i].ms_bits;
     tank.tank_ms_seen = tank.tank_ms_bits;
     tank.fish[1].ms_seen &= ~MS_FIRST_MEAL_FROM_YOU; tank.tank_ms_seen &= ~TMS_FIRST_QUIET_NIGHT;
-    render_milestones(&tank, fb, TANK_W); render_brightness_row(fb, TANK_W, 60);
+    render_milestones(&tank, fb, TANK_W);
     snprintf(path, sizeof path, "%s_milestones.ppm", prefix); write_ppm(path, fb);
+    render_settings(fb, TANK_W, 60, 2);
+    snprintf(path, sizeof path, "%s_settings.ppm", prefix); write_ppm(path, fb);
     render_milestones_tap(&tank, 176 + 16, 4 + 40 + 20);           /* fish 1's first badge -> the detail modal */
-    render_milestones(&tank, fb, TANK_W); render_brightness_row(fb, TANK_W, 60);
+    render_milestones(&tank, fb, TANK_W);
     snprintf(path, sizeof path, "%s_milestone_modal.ppm", prefix); write_ppm(path, fb);
     render_milestones_leave();
     /* the announcements (notice.h): a fish milestone, a tank milestone, a
@@ -1178,17 +1182,17 @@ static int snapshot(const char *prefix, int seconds) {
         tank_veg_set(&tank, 0, 0.5f); tank_veg_set(&tank, 1, 0.2f); tank_veg_set(&tank, 2, VEG_NUB);
         for (int i = 0; i < tank.n_fish; i++) tank.fish[i].ms_seen = tank.fish[i].ms_bits;
         tank.tank_ms_seen = tank.tank_ms_bits;
-        render_milestones(&tank, fb, TANK_W); render_brightness_row(fb, TANK_W, 60);
+        render_milestones(&tank, fb, TANK_W);
         snprintf(path, sizeof path, "%s_milestones_fry.ppm", prefix); write_ppm(path, fb);
         render_milestones_tap(&tank, 176 + 16, 4 + 2 * 40 + 20);        /* the TRUST gate -> its modal */
-        render_milestones(&tank, fb, TANK_W); render_brightness_row(fb, TANK_W, 60);
+        render_milestones(&tank, fb, TANK_W);
         snprintf(path, sizeof path, "%s_fry_modal.ppm", prefix); write_ppm(path, fb);
         render_milestones_tap(&tank, 56 + 336 / 2, 60 + 156 + 20 + 24 + 32 + 14 - 10 - 16);   /* HOW? -> the tip page */
-        render_milestones(&tank, fb, TANK_W); render_brightness_row(fb, TANK_W, 60);
+        render_milestones(&tank, fb, TANK_W);
         snprintf(path, sizeof path, "%s_fry_tip.ppm", prefix); write_ppm(path, fb);
         render_milestones_leave();
         render_milestones_tap(&tank, 100, 4 + 2 * 40 + 10);              /* the name -> the tally */
-        render_milestones(&tank, fb, TANK_W); render_brightness_row(fb, TANK_W, 60);
+        render_milestones(&tank, fb, TANK_W);
         snprintf(path, sizeof path, "%s_fry_tally.ppm", prefix); write_ppm(path, fb);
         render_milestones_leave();
     }
@@ -1397,7 +1401,7 @@ int main(int argc, char **argv) {
             setup_touch(&tank, (float)mx, (float)my, mpress);   /* taps and the letter wheel, classified in setup.c */
             if (!setup_active()) { printf(birth ? "birth flow done: %s named and saved\n" : "setup done\n", who >= 0 ? tank.fish[who].name : "?"); print_roster(&tank); }
         }
-        bool modal = confirm_view || setup_up;
+        bool modal = confirm_view || setup_up || settings_view;
         if (mpress && !modal) tank_touch_drag(&tank, (float)mx, (float)my);   /* stroke -> wipe/slash */
         if (mpress && !modal && now_ms - press_ms > 300 && abs(my - press_y) < 30) tank_touch_hold(&tank, (float)mx, (float)my);
         if (!mpress && mdown) {
@@ -1413,11 +1417,16 @@ int main(int argc, char **argv) {
             }
             else if (setup_up) { /* the setup owns the glass: setup_touch took it */ }
             else if (notice_current()) notice_dismiss();      /* an announcement up: the tap closes it */
+            else if (settings_view) {
+                int v = 0, r = render_settings_tap((float)press_x, (float)press_y, &v);
+                if (r == SET_TAP_CLOSE) settings_view = false;
+                else if (r == SET_TAP_BRIGHT) sim_bright = v;
+                else if (r == SET_TAP_VOLUME) { if (s_adev) { SDL_LockAudioDevice(s_adev); audio_set_volume(v); SDL_UnlockAudioDevice(s_adev); } if (v) snd(SND_CONFIRM, AUDIO_PITCH_ONE);
+                                                printf("volume: %s\n", v == 0 ? "off" : v == 1 ? "quiet" : "normal"); }
+            }
             else if (milestones_view) {
                 int r = render_milestones_tap(&tank, (float)press_x, (float)press_y);
-                if (r == MS_TAP_CLOSE) { milestones_view = false; progression_ack_milestones(&tank); render_milestones_leave(); }
-                else if (r == MS_TAP_NONE && render_brightness_row_hit((float)press_x, (float)press_y))
-                    sim_bright = sim_bright == 100 ? 60 : sim_bright == 60 ? 30 : 100;   /* the row cycles, the page stays */
+                if (r == MS_TAP_CLOSE || r == MS_TAP_SETTINGS) { milestones_view = false; settings_view = r == MS_TAP_SETTINGS; progression_ack_milestones(&tank); render_milestones_leave(); }
                 /* MS_TAP_KEPT: a badge / name opened the detail modal, or the modal closed; anything else: nothing */
             }
             else if (now_ms - press_ms < 350 && dx * dx + dy * dy < 24 * 24) {
@@ -1439,7 +1448,7 @@ int main(int argc, char **argv) {
         mdown = mpress;
         if (confirm_view && now_ms - confirm_ms > CONFIRM_MS) { confirm_view = false; printf("reset prompt: timed out, tank kept\n"); }
         if (k[SDL_SCANCODE_X] && !xdown && !confirm_view) {   /* the keeper's reset prompt (device: hold BOOT + tap) */
-            confirm_view = true; confirm_ms = now_ms; selected_fish = -1; milestones_view = false;
+            confirm_view = true; confirm_ms = now_ms; selected_fish = -1; milestones_view = false; settings_view = false;
             printf("reset prompt: click YES or NO (it gives up after %d s)\n", CONFIRM_MS / 1000);
         }
         xdown = k[SDL_SCANCODE_X];
