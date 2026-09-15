@@ -82,7 +82,7 @@ const char *setup_hit_name(int id) {
 }
 
 /* ---- the letter wheel over a fish's name ----
- * A slot holds one of 27 values: blank, A..Z. The name string carries the
+ * A slot holds one of 27 values: blank, A..Z (stored lowercase). The name string carries the
  * slots up to the last letter (blanks inside it are spaces); NEXT / BACK
  * tidy it - trailing blanks dropped, inner ones closed up, nothing left =
  * the preset's name again. */
@@ -101,7 +101,7 @@ static void slot_set(fish_t *f, int i, int v) {
         return;
     }
     while (n < i) f->name[n++] = ' ';                               /* (unreachable: slots snap to <= len) */
-    f->name[i] = (char)('A' + v - 1);
+    f->name[i] = (char)('a' + v - 1);               /* names are lowercase inside (tank_set_name) */
     if (i >= n) f->name[i + 1] = 0;
 }
 static int name_len(const fish_t *f) { return (int)strlen(f->name); }

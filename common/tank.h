@@ -148,6 +148,8 @@ typedef struct {
     float  bored;
     goal_id_t goal_prev;    /* the goal before the current one: returning to it is no relief */
     int8_t zone_last;       /* schema zone 0..5 the fish was in last frame; -1 = none yet */
+    bool   hold_far;        /* was HOLD_APPROACH_FROM+ px from the finger when this hold's draw
+                             * began (transient): only such a fish can earn a hold-approach */
     float  zone_seen[6];    /* tank clock when the fish was last in each zone */
     float  explore_x, explore_y; /* explore's destination - a point in a stale zone */
     bool   explore_set;     /* ... valid; cleared when explore is (re)chosen or reached */
@@ -189,7 +191,8 @@ typedef struct tank {
     bool     hold_active;          /* finger held on the glass this frame */
     float    hold_x, hold_y;
     float    hold_time;            /* seconds the current hold has lasted */
-    bool     hold_approached;      /* a fish already came in during this hold */
+    bool     hold_approached;      /* this hold already counted (hold_approaches); the
+                                    * per-fish milestone is NOT gated on it */
     int      tap_count;            /* taps in the current burst */
     float    tap_burst_t;          /* seconds since last tap */
     float    tap_x, tap_y;

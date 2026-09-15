@@ -52,6 +52,9 @@ reset the chip before anyone read the log.
 ## Firmware on the tank right now
 
 - App: boredom reflex + explore-as-destination + v4 tokenizer + sleep timer
-  fix + batlog no-init (flashed 2026-09-15 ~06:25).
+  fix + batlog no-init + per-fish hold-approach milestone that needs a real
+  approach (60 px out when the draw begins -> within 30) + `ms` column in the
+  director's `state` + lowercase fish names (flashed 2026-09-15 ~08:05;
+  archives docs/batlog/2026-09-15_0752.txt, _0756.txt, _0804.txt).
 - Model partition: v4m (model_q4_v4m.bin, flashed 2026-09-15 ~06:00).
 - Save: FeZ, mira, LArRY, pip (4 adults).

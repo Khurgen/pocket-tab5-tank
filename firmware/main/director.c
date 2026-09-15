@@ -105,9 +105,10 @@ static void clear_pellets(tank_t *t) {
 static void show_state(const tank_t *t) {
     for (int i = 0; i < t->n_fish; i++) {
         const fish_t *f = &t->fish[i];
-        ESP_LOGI(TAG, "%d %-6s %-5s age %.1fh size %.2f hunger %.1f energy %.1f stress %.1f curiosity %.1f trust %.1f  %s at %.0f,%.0f",
+        ESP_LOGI(TAG, "%d %-6s %-5s age %.1fh size %.2f hunger %.1f energy %.1f stress %.1f curiosity %.1f trust %.1f ms %03x  %s at %.0f,%.0f",
                  i, f->name, STAGE_NAMES[f->stage], progression_age_s(t, i) / 3600.0f, f->size,
-                 f->hunger, f->energy, f->stress, f->curiosity, f->trust, GOAL_NAMES[f->goal.id], f->x, f->y);
+                 f->hunger, f->energy, f->stress, f->curiosity, f->trust, (unsigned)f->ms_bits,
+                 GOAL_NAMES[f->goal.id], f->x, f->y);
     }
     int pellets = 0, cells = 0;
     for (int i = 0; i < MAX_FOOD; i++) pellets += t->food[i].alive;

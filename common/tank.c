@@ -96,7 +96,14 @@ void tank_set_name(tank_t *t, int slot, const char *name) {
     fish_t *f = &t->fish[slot];
     if (!name || !*name) name = tank_roster_name(f->preset);
     int n = 0;
-    while (name[n] && n < FISH_NAME_MAX) { f->name[n] = name[n]; n++; }
+    /* canonical lowercase (2026-09-15): the roster, the director and the
+     * trained names are lowercase, the display uppercases at draw, and the
+     * wheel used to write capitals into the slots it spun ("FeZ", "LArRY") */
+    while (name[n] && n < FISH_NAME_MAX) {
+        char c = name[n];
+        f->name[n] = c >= 'A' && c <= 'Z' ? (char)(c - 'A' + 'a') : c;
+        n++;
+    }
     f->name[n] = 0;
 }
 static uint32_t fin_for(uint32_t body) {
@@ -256,6 +263,9 @@ void tank_init(tank_t *t, uint32_t seed) {
 #define HOLD_ATTRACT_S  2.7f    /* hold_time before fish approach; platforms
                                  * report holds ~0.3 s in, so ≈3 s of contact */
 #define HOLD_HUNGER_VETO 7.5f   /* this hungry, a fish ignores the finger */
+#define HOLD_APPROACH_FROM 60.0f /* a hold-approach must START at least this far out:
+                                 * a fish already under the finger earns nothing */
+#define HOLD_APPROACH_AT   30.0f /* ... and come in this close */
 
 /* ---- hunger economy (2026-09-01) ----
  * The prototype's per-second metabolism (0.15 + 0.12*bold: fed to starving
@@ -598,18 +608,32 @@ static void touch_tick(tank_t *t, float dt) {
         if (t->startle_cooldown <= 0) { t->startled = false; t->tap_count = 0; }
     }
     if (t->hold_active) {                           /* calm presence earns trust */
+        float was = t->hold_time;
         t->hold_time += dt;
+        bool draw_begins = was < HOLD_ATTRACT_S && t->hold_time >= HOLD_ATTRACT_S;
         for (int i = 0; i < t->n_fish; i++) {
             fish_t *f = &t->fish[i];
             float d = tank_dist(f->x, f->y, t->hold_x, t->hold_y);
             if (d < HOLD_RADIUS) f->trust = fminf(10, f->trust + dt * 0.02f);
-            /* a fish that comes all the way in and stays = a hold-approach */
-            if (d < 30 && t->hold_time > 1.5f && !t->hold_approached) {
-                t->hold_approached = true; t->hold_approaches++;
+            /* a hold-approach = a fish that was out in the tank when the
+             * settled hold began its draw and then came all the way in.
+             * Per FISH (2026-09-15: it was gated on the per-hold flag below,
+             * so only the first arrival - always the fastest, highest-trust
+             * pair - could ever get it; the other two came in hold after
+             * hold and were never credited), and only for a fish that
+             * actually travelled (same day: a fish already sitting under the
+             * finger used to be credited at 1.5 s without moving). The
+             * tank's hold_approaches counter still counts the hold once. */
+            if (draw_begins) f->hold_far = d >= HOLD_APPROACH_FROM;
+            if (f->hold_far && d < HOLD_APPROACH_AT) {
                 f->ms_bits |= MS_FIRST_HOLD_APPROACH;
+                if (!t->hold_approached) { t->hold_approached = true; t->hold_approaches++; }
             }
         }
-    } else { t->hold_time = 0; t->hold_approached = false; }
+    } else {
+        t->hold_time = 0; t->hold_approached = false;
+        for (int i = 0; i < t->n_fish; i++) t->fish[i].hold_far = false;
+    }
     if (t->greet_timer > 0) t->greet_timer -= dt;
     /* courtship episodes: while progression says an arrival is close, the
      * pair circles the reef for a few seconds every minute or so - frequent

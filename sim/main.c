@@ -152,6 +152,7 @@ static int selftest_pop(void) {
     progression_time_scale = 600;                 /* 10 minutes of tended time per second */
     int arrivals = 0, last_n = tank.n_fish;
     bool saw_court = false;                       /* the tell fires before the fry */
+    float hold_x = 0, hold_y = 0;
     /* 9 sim-minutes: the gates close in ~4 and the fry lands at the NEXT
        light-on (240 s cycle), which since the boredom pass (2026-09-14: fish
        roam, so fewer of the keeper's pellets get eaten and MEALS closes later)
@@ -160,7 +161,8 @@ static int selftest_pop(void) {
         tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
         /* an attentive keeper: feeds often, rests a finger by a fish */
         if (i % 300 == 0) tank_feed(&tank, 150 + (i % 900) / 3, 2);
-        if (i % 120 < 100) tank_touch_hold(&tank, tank.fish[0].x + 10, tank.fish[0].y);
+        if (i % 600 == 0) { hold_x = tank.fish[0].x < TANK_W / 2 ? TANK_W - 80 : 80; hold_y = tank.fish[0].y; }
+        if (i % 600 < 480) tank_touch_hold(&tank, hold_x, hold_y);   /* 8 s across the tank, 2 s off */
         progression_tick(&tank, 1.0f / 60.0f);
         saw_court |= (tank.courting && arrivals == 0);
         if (tank.n_fish != last_n) {
@@ -358,20 +360,20 @@ static int selftest_pop(void) {
         int guard = 30;
         while (guard-- && (int)strlen(tank.fish[0].name) > 3) setup_activate(&tank, SETUP_HIT_DOWN);
     }
-    if (strcmp(tank.fish[0].name, "BUB")) { printf("FAIL: spun name is '%s'\n", tank.fish[0].name); return 1; }
+    if (strcmp(tank.fish[0].name, "bub")) { printf("FAIL: spun name is '%s'\n", tank.fish[0].name); return 1; }
     /* the drag: press on slot 2, pull up three steps (B -> E), no tap fires on
        release; pull back down three: B again */
     {
         float sx = SETUP_SLOT_X + 2 * SETUP_SLOT_PX + 15, sy = SETUP_SLOT_Y + 20;
         setup_touch(&tank, sx, sy, true);
         for (int k = 1; k <= 30; k++) setup_touch(&tank, sx, sy - k * 3 * SETUP_SPIN_PX / 30.0f - 0.5f, true);
-        if (strcmp(tank.fish[0].name, "BUE")) { printf("FAIL: drag up gave '%s'\n", tank.fish[0].name); return 1; }
+        if (strcmp(tank.fish[0].name, "bue")) { printf("FAIL: drag up gave '%s'\n", tank.fish[0].name); return 1; }
         setup_touch(&tank, sx, sy - 3 * SETUP_SPIN_PX, false);
-        if (strcmp(tank.fish[0].name, "BUE") || setup_slot() != 2) { printf("FAIL: the drag's release acted as a tap\n"); return 1; }
+        if (strcmp(tank.fish[0].name, "bue") || setup_slot() != 2) { printf("FAIL: the drag's release acted as a tap\n"); return 1; }
         setup_touch(&tank, sx, sy, true);
         for (int k = 1; k <= 30; k++) setup_touch(&tank, sx, sy + k * 3 * SETUP_SPIN_PX / 30.0f + 0.5f, true);
         setup_touch(&tank, sx, sy, false);
-        if (strcmp(tank.fish[0].name, "BUB")) { printf("FAIL: drag down gave '%s'\n", tank.fish[0].name); return 1; }
+        if (strcmp(tank.fish[0].name, "bub")) { printf("FAIL: drag down gave '%s'\n", tank.fish[0].name); return 1; }
     }
     setup_touch(&tank, SETUP_TOP_NEXT_X + 20, SETUP_TOP_BTN_Y + 20, true);     /* a tap through setup_touch */
     setup_touch(&tank, SETUP_TOP_NEXT_X + 22, SETUP_TOP_BTN_Y + 24, false);
@@ -389,7 +391,7 @@ static int selftest_pop(void) {
     if (tank.fish[0].accent == accent0) { printf("FAIL: accent did not step aside for a matching body\n"); return 1; }
     tank_set_look(&tank, 0, LOOK_BODY[6], accent0);
     setup_activate(&tank, SETUP_HIT_BACK);            /* back to the name page and forward again: name kept */
-    if (setup_page() != SETUP_PG_NAME_A || strcmp(tank.fish[0].name, "BUB")) { printf("FAIL: BACK lost the name\n"); return 1; }
+    if (setup_page() != SETUP_PG_NAME_A || strcmp(tank.fish[0].name, "bub")) { printf("FAIL: BACK lost the name\n"); return 1; }
     setup_activate(&tank, SETUP_HIT_NEXT); setup_activate(&tank, SETUP_HIT_NEXT);
     if (setup_page() != SETUP_PG_NAME_B) { printf("FAIL: not on the second name page\n"); return 1; }
     const char *preset1 = tank_roster_name(tank.fish[1].preset);
@@ -407,7 +409,7 @@ static int selftest_pop(void) {
     if (setup_active() || progression_setup_pending() || tank.stage_fish != -1) { printf("FAIL: BEGIN did not finish the setup\n"); return 1; }
     tank_init(&tank, 13); progression_boot(&tank);
     if (fabsf(tank.bubble_x - bubble_x_set) > 0.5f) { printf("FAIL: the bubble column did not come back from the save (%.0f)\n", tank.bubble_x); return 1; }
-    if (progression_setup_pending() || strcmp(tank.fish[0].name, "BUB") || strcmp(tank.fish[1].name, preset1) ||
+    if (progression_setup_pending() || strcmp(tank.fish[0].name, "bub") || strcmp(tank.fish[1].name, preset1) ||
         tank.fish[0].color != LOOK_BODY[6] || tank.fish[0].accent != accent0 || strcmp(preset0, tank_roster_name(tank.fish[0].preset))) {
         printf("FAIL: names/looks did not come back from the save ('%s' %06x/%06x, pending %d)\n",
                tank.fish[0].name, tank.fish[0].color, tank.fish[0].accent, progression_setup_pending()); return 1;
@@ -784,6 +786,43 @@ static int selftest_tend(void) {
     float d_hungry = tank_dist(f->x, f->y, hx, hy);
     printf("selftest-tend: starving fish dist after 8 s hold %.0f px\n", d_hungry);
     if (d_hungry < 40) { printf("FAIL: a starving fish came to the finger\n"); return 1; }
+    /* the milestone is per fish (2026-09-15): two trusting fish drawn in by
+     * ONE hold both earn first hold-approach, and the hold counts once */
+    if (tank.n_fish < 2) { printf("FAIL: tend test needs two fish\n"); return 1; }
+    fish_t *g = &tank.fish[1];
+    tank.hold_active = false; tank_tick(&tank, 1.0f / 60.0f, advisor_rules);   /* end the hold */
+    f->ms_bits &= ~MS_FIRST_HOLD_APPROACH; g->ms_bits &= ~MS_FIRST_HOLD_APPROACH;
+    int holds_before = tank.hold_approaches;
+    f->trust = 10; f->hunger = 1; f->stress = 0; f->x = 200; f->y = 200;   /* the fast one, closer */
+    g->trust = 6;  g->hunger = 1; g->stress = 0; g->x = 120; g->y = 200; g->energy = 10;
+    g->goal.id = GOAL_EXPLORE; g->goal.urgency = 2;
+    for (int step = 1; step <= 60 * 14; step++) {
+        tank_touch_hold(&tank, hx, hy);
+        tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
+        f->hunger = 1; g->hunger = 1;
+    }
+    printf("selftest-tend: two-fish hold: fish0 ms %s, fish1 ms %s (dist %.0f px), holds +%d\n",
+           f->ms_bits & MS_FIRST_HOLD_APPROACH ? "yes" : "no", g->ms_bits & MS_FIRST_HOLD_APPROACH ? "yes" : "no",
+           tank_dist(g->x, g->y, hx, hy), tank.hold_approaches - holds_before);
+    if (!(f->ms_bits & MS_FIRST_HOLD_APPROACH) || !(g->ms_bits & MS_FIRST_HOLD_APPROACH)) {
+        printf("FAIL: the second fish to reach the finger was not credited\n"); return 1;
+    }
+    if (tank.hold_approaches - holds_before != 1) { printf("FAIL: one hold counted %d times\n", tank.hold_approaches - holds_before); return 1; }
+    /* a fish already sitting under the finger never approached: no credit */
+    tank.hold_active = false; tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
+    f->ms_bits &= ~MS_FIRST_HOLD_APPROACH; g->ms_bits &= ~MS_FIRST_HOLD_APPROACH;
+    holds_before = tank.hold_approaches;
+    f->x = hx + 8; f->y = hy; g->x = 40; g->y = 40; g->trust = 0;        /* g stays away */
+    for (int step = 1; step <= 60 * 8; step++) {
+        tank_touch_hold(&tank, hx, hy);
+        tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
+        f->x = hx + 8; f->y = hy; f->hunger = 1; g->trust = 0;
+    }
+    printf("selftest-tend: fish parked under the finger 8 s: ms %s, holds +%d\n",
+           f->ms_bits & MS_FIRST_HOLD_APPROACH ? "yes" : "no", tank.hold_approaches - holds_before);
+    if ((f->ms_bits & MS_FIRST_HOLD_APPROACH) || tank.hold_approaches != holds_before) {
+        printf("FAIL: a fish that never approached was credited with a hold-approach\n"); return 1;
+    }
     (void)system(cmd);
     return 0;
 }
