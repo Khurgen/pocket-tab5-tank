@@ -133,7 +133,7 @@ void tank_make_fish(tank_t *t, int slot, int preset, float sociable, float bold,
     f->hunger = tank_randf(t, 3, 6); f->energy = tank_randf(t, 5, 8);
     f->stress = tank_randf(t, 0, 2); f->curiosity = p->curiosity;
     f->sociable = sociable; f->bold = bold; f->lazy = p->lazy;
-    f->bold0 = bold; f->sociable0 = sociable;
+    f->bold0 = bold; f->sociable0 = sociable; f->drift_acc = 0;
     f->stage = stage;
     f->starve_flagged = false;
     f->trust = 5.0f;

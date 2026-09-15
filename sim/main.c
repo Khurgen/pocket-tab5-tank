@@ -211,6 +211,21 @@ static int selftest_pop(void) {
             render_milestones_leave();
             if (render_milestones_tap(&tank, 176 + n * 40 + 16, top + 20) != MS_TAP_NONE) { printf("FAIL: an empty gate cell opened a modal\n"); return 1; }
             printf("selftest-pop: NEW FRY row at %d fish: %d gates, first %s / %s / %s\n", tank.n_fish, n, req[0].title, req[0].words, req[0].progress);
+            if (tank.n_fish == 3) {   /* CHANGE (2026-09-15) is the fry's own drift pressure: owed at birth, earned on a clamp */
+                int ci = -1; for (int i = 0; i < n; i++) if (req[i].kind == FRY_REQ_CHANGE) ci = i;
+                if (n != 4 || ci < 0 || req[ci].met || req[ci].frac > 0.01f) { printf("FAIL: at 3 fish CHANGE should be owed by the fry (n %d, met %d, frac %.2f)\n", n, ci >= 0 && req[ci].met, ci >= 0 ? req[ci].frac : -1.f); return 1; }
+                fish_t *fry = &tank.fish[2];
+                fry->bold = fry->bold0 = 0.95f; fry->sociable = fry->sociable0 = 0.05f;   /* born on both clamps */
+                tank.night = false;
+                for (int i = 0; i < 60 * 3; i++) {               /* 3 s x 600 = 30 lit minutes, fed and calm */
+                    fry->hunger = 1; fry->stress = 0; fry->goal.id = GOAL_REST;
+                    progression_tick(&tank, 1.0f / 60.0f);
+                }
+                progression_next_fry(&tank, req, NULL);
+                printf("selftest-pop: fry on both clamps, 30 lit min fed+calm: CHANGE %s (%s), traits %.2f/%.2f\n",
+                       req[ci].met ? "met" : "owed", req[ci].progress, fry->bold, fry->sociable);
+                if (!req[ci].met) { printf("FAIL: CHANGE soft-locked on a clamped fry\n"); return 1; }
+            }
         }
     }
     /* the newest fry is owed its welcome (the birth flow) and wears the

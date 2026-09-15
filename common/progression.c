@@ -66,6 +66,9 @@ typedef struct {
      * arrival still owed its welcome, all as slot + 1 so an older save's
      * zeros read as "none". */
     uint8_t  newborn_p1, parent_p1[N_FISH_MAX][2], pad_fam[3];
+    /* drift-pressure tail (2026-09-15, the CHANGE gate): older saves read
+     * zeros, and the youngest simply starts earning it from this build on */
+    float    drift_acc[N_FISH_MAX];
 } save_t;
 /* the smallest PTK2 save (pre-upkeep, 2026-08-30): anything shorter is not
  * ours. Every later build wrote sizeof(save_t) of its day - 448, 1112, 1304,
@@ -152,15 +155,9 @@ static void do_arrival(tank_t *t) {
  * table serves both: `have` / `need` are the numbers behind the words. */
 typedef struct { int kind; float have, need, frac; bool met; } gate_t;
 static int care_gates(const tank_t *t, gate_t g[3]) {
-    float min_trust = 10, drift = 0; bool changed = false;
-    for (int i = 0; i < t->n_fish; i++) {
-        const fish_t *f = &t->fish[i];
-        if (f->trust < min_trust) min_trust = f->trust;
-        float db = fabsf(f->bold - f->bold0), ds = fabsf(f->sociable - f->sociable0);
-        if (db > drift) drift = db;
-        if (ds > drift) drift = ds;
-        if (db >= 0.11f || ds >= 0.11f) changed = true;
-    }
+    float min_trust = 10;
+    for (int i = 0; i < t->n_fish; i++)
+        if (t->fish[i].trust < min_trust) min_trust = t->fish[i].trust;
     int last = t->n_fish - 1;
     float age = last >= 0 ? s_age[last] : 0;
     int n = 0;
@@ -173,9 +170,15 @@ static int care_gates(const tank_t *t, gate_t g[3]) {
         GATE(FRY_REQ_HOLD, (float)t->hold_approaches, 1, t->hold_approaches >= 1);
         break;
     case 3:
+        /* 2026-09-15 (Strato): MEALS and CHANGE were one "40 meals OR someone
+         * drifted 0.11" row - and the parents had always drifted long before,
+         * so it was dead weight. Now three rows, and CHANGE is the YOUNGEST
+         * fish's accumulated drift pressure (tank.h drift_acc): the same
+         * ~26 lit minutes fed and calm, and impossible to soft-lock for a fry
+         * born on a trait clamp (inheritance puts them there). */
         GATE(FRY_REQ_GROW, age, (float)STAGE_JUV_AGE, t->fish[last].stage >= STAGE_JUV);
-        GATE(FRY_REQ_CHANGE, (float)t->player_feedings, 40, changed || t->player_feedings >= 40);
-        if (drift / 0.11f > g[n - 1].frac) g[n - 1].frac = drift / 0.11f;   /* whichever is closer */
+        GATE(FRY_REQ_FEED, (float)t->player_feedings, 40, t->player_feedings >= 40);
+        GATE(FRY_REQ_CHANGE, t->fish[last].drift_acc, DRIFT_CHANGE, t->fish[last].drift_acc >= DRIFT_CHANGE);
         break;
     case 4:
         GATE(FRY_REQ_GROW, age, (float)STAGE_ADULT_AGE, t->fish[last].stage >= STAGE_ADULT);
@@ -202,7 +205,7 @@ static const char *const TIP_TRUST[]  = { "REST A FINGER ON THE GLASS", "AND KEE
 static const char *const TIP_FEED[]   = { "TAP THE WATER AT THE TOP", "OF THE TANK TO DROP FOOD.", "A FEEDING COUNTS AS A MEAL", "ONCE A FISH EATS FROM IT.", NULL };
 static const char *const TIP_HOLD[]   = { "REST A FINGER ON THE GLASS", "FOR A FEW SECONDS. A FISH", "THAT TRUSTS YOU SWIMS OVER", "AND STAYS. FEED FIRST: A", "HUNGRY FISH WON'T COME.", NULL };
 static const char *const TIP_GROW[]   = { "FISH GROW WITH TIME,", "SLOWER WHEN THE TANK IS", "IN SLEEP MODE.", NULL };
-static const char *const TIP_CHANGE[] = { "A CALM, WELL-FED FISH GETS", "BOLDER. ONE THAT SHADOWS A", "FRIEND GETS MORE SOCIAL.", "THAT TAKES A FEW LIT HOURS", "OR JUST KEEP FEEDING.", NULL };
+static const char *const TIP_CHANGE[] = { "FISH PERSONALITIES WILL", "NATURALLY DRIFT AS THEY", "INTERACT WITH THE WORLD.", NULL };   /* Strato: intentionally vague */
 static const char *const TIP_GRASS[]  = { "GRASS REGROWS ON ITS OWN,", "FASTEST WHILE THE TANK", "SLEEPS.", NULL };
 const char *const *progression_fry_tip(int kind) {
     switch (kind) {
@@ -256,13 +259,14 @@ int progression_next_fry(const tank_t *t, fry_req_t out[FRY_REQ_MAX], bool *stag
             snprintf(r->words2, sizeof r->words2, need >= STAGE_ADULT_AGE ? "GROW INTO AN ADULT" : "GROW INTO A JUVENILE");
             snprintf(r->progress, sizeof r->progress, "%s IS %s", f->name, STAGE_WORDS[f->stage & 3]);
             break; }
-        case FRY_REQ_CHANGE:
+        case FRY_REQ_CHANGE: {
+            const fish_t *f = &t->fish[t->n_fish - 1];
             snprintf(r->title, sizeof r->title, "CHANGE");
-            snprintf(r->words, sizeof r->words, "A FISH'S PERSONALITY MUST");
-            snprintf(r->words2, sizeof r->words2, "SHIFT, OR FEED %d TIMES", need);
-            if (r->met) snprintf(r->progress, sizeof r->progress, have >= need ? "DONE" : "SOMEONE CHANGED");
-            else snprintf(r->progress, sizeof r->progress, "MEALS %d OF %d", have, need);
-            break;
+            snprintf(r->words, sizeof r->words, "%s'S PERSONALITY", f->name);
+            snprintf(r->words2, sizeof r->words2, "MUST START TO SHIFT");
+            if (r->met) snprintf(r->progress, sizeof r->progress, "DONE");
+            else snprintf(r->progress, sizeof r->progress, "%d%% THERE", (int)(r->frac * 100 + 0.5f));
+            break; }
         }
     }
     /* and the nursery: every arrival needs grass to be born in */
@@ -344,6 +348,7 @@ static bool load_save(tank_t *t, int64_t *saved_unix) {
         f->ms_bits = s->ms_bits & ~MS_RETIRED_MASK;   /* the shadow milestones, gone with it */
         f->ms_seen = sv.ms_seen[i] & f->ms_bits;
         f->rest_dx = s->rest_dx; f->rest_dy = s->rest_dy;
+        f->drift_acc = sv.drift_acc[i];
         s_age[i] = s->age_s;
         t->n_fish = i + 1;
         if (sv.names[i][0]) { sv.names[i][FISH_NAME_MAX] = 0; tank_set_name(t, i, sv.names[i]); }
@@ -417,10 +422,12 @@ void progression_tick(tank_t *t, float dt) {
         apply_growth(f);
         /* trait drift, slow: calm + fed -> bolder/more social; startled -> shyer */
         float k = tended / (DRIFT_HOURS * 3600.0f);          /* full unit per DRIFT_HOURS of pressure */
-        if (f->stress > 7) f->bold = clampf(f->bold - k, 0.05f, 0.95f);
-        else if (f->hunger < 4 && f->stress < 2) f->bold = clampf(f->bold + k * 0.5f, 0.05f, 0.95f);
-        if (f->goal.id == GOAL_FOLLOW_FRIEND) f->sociable = clampf(f->sociable + k * 0.5f, 0.05f, 0.95f);
-        else if (f->goal.id == GOAL_EXPLORE) f->sociable = clampf(f->sociable - k * 0.2f, 0.05f, 0.95f);
+        float pressure = 0;                                   /* what the traits WANTED to move, before the clamps */
+        if (f->stress > 7) { f->bold = clampf(f->bold - k, 0.05f, 0.95f); pressure += k; }
+        else if (f->hunger < 4 && f->stress < 2) { f->bold = clampf(f->bold + k * 0.5f, 0.05f, 0.95f); pressure += k * 0.5f; }
+        if (f->goal.id == GOAL_FOLLOW_FRIEND) { f->sociable = clampf(f->sociable + k * 0.5f, 0.05f, 0.95f); pressure += k * 0.5f; }
+        else if (f->goal.id == GOAL_EXPLORE) { f->sociable = clampf(f->sociable - k * 0.2f, 0.05f, 0.95f); pressure += k * 0.2f; }
+        f->drift_acc += pressure;
         if (fabsf(f->bold - f->bold0) >= 0.11f || fabsf(f->sociable - f->sociable0) >= 0.11f) changed_someone = true;
 
         /* milestones: firsts the fish chose to do */
@@ -535,6 +542,7 @@ void progression_save(tank_t *t) {
         s->age_s = s_age[i]; s->rest_dx = f->rest_dx; s->rest_dy = f->rest_dy;
         s->eaten = f->eaten; s->eaten_player = f->eaten_player; s->ms_bits = f->ms_bits;
         sv.ms_seen[i] = f->ms_seen;
+        sv.drift_acc[i] = f->drift_acc;
     }
     persist_port_save(&sv, sizeof sv);
     s_since_save = 0; s_dirty = false; s_dirty_since = 0;

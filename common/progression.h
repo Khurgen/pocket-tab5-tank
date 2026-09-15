@@ -144,6 +144,8 @@ const char *const *progression_fry_tip(int kind);
 /* trait drift: one full unit (0.11 of the 0..1 trait) per this many hours of
  * sustained pressure */
 #define DRIFT_HOURS      2.0f
+#define DRIFT_CHANGE     0.11f  /* CHANGE gate: this much accumulated drift pressure on the
+                                 * youngest fish (~26 lit minutes fed and calm, or following) */
 
 /* milestone labels (UI / logs); order = bit order in tank.h */
 extern const char *const MS_NAMES[MS_FISH_COUNT];

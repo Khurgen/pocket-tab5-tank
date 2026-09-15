@@ -157,6 +157,9 @@ typedef struct {
     int    eaten_player;    /* pellets that came from the keeper's hand */
     bool   starve_flagged;  /* diagnostic: starving-ignored-food episode counted */
     float  trust;           /* 0..10: gates approach-to-finger; drifts with treatment */
+    float  drift_acc;       /* lifetime personality PRESSURE: every unit bold/sociable wanted
+                             * to move, clamp or not (saved; the CHANGE gate reads the
+                             * youngest's, so a fish born on a clamp can still earn it) */
     float  rest_dx, rest_dy;/* this fish's own spot by the reef (individuation) */
     uint32_t sig;           /* coarse state signature at the last advisor ask */
     uint32_t ms_bits;       /* MS_* milestones reached */

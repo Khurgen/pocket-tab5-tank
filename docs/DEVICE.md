@@ -54,7 +54,9 @@ reset the chip before anyone read the log.
 - App: boredom reflex + explore-as-destination + v4 tokenizer + sleep timer
   fix + batlog no-init + per-fish hold-approach milestone that needs a real
   approach (60 px out when the draw begins -> within 30) + `ms` column in the
-  director's `state` + lowercase fish names (flashed 2026-09-15 ~08:05;
-  archives docs/batlog/2026-09-15_0752.txt, _0756.txt, _0804.txt).
+  director's `state` + lowercase fish names + the v6 first-bubbles icon +
+  the 4th-fish checklist split (MEALS 40 / CHANGE = the fry's drift
+  pressure) (flashed 2026-09-15 ~09:03; archives docs/batlog/2026-09-15_0752
+  .txt, _0756.txt, _0804.txt, _0820.txt, _0858.txt, _0902.txt).
 - Model partition: v4m (model_q4_v4m.bin, flashed 2026-09-15 ~06:00).
 - Save: FeZ, mira, LArRY, pip (4 adults).
