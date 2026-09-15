@@ -342,19 +342,21 @@ seven-minute prompt check before an overnight run is always worth it.
   (reflex layer), `render.c` (RGB565 software renderer, stats card,
   milestones page, the reset prompt and its pixel font), `progression.c`
   (the long game and persistence),
-  `icons.c` (baked pixel art), `llm/` (4-bit engine, word tokenizer, the
-  shared encoder)
+  `icons.c` (baked pixel art), `audio.c` (the sound mixer), `notice.c` (the
+  milestone and low-battery announcements), `llm/` (4-bit engine, word
+  tokenizer, the shared encoder)
 - `sim/` — the LVGL + SDL2 simulator, its persistence port, and the self-tests
-- `firmware/` — ESP-IDF app: display, touch, battery, IMU, and RTC ports for
-  the Waveshare board, the on-device advisor scheduler, the QEMU harness, and the
-  partition table
+- `firmware/` — ESP-IDF app: display, touch, battery, IMU, RTC and audio
+  ports for the Waveshare board, the on-device advisor scheduler, the QEMU
+  harness, and the partition table
 - `model/` — the frozen [state/goal schema](model/schema.md), trace
   generation, training, evaluation, probes, and the 4-bit export
 - `installer/` — the browser installer page and the vendored ESP Web Tools
   bundle; `tools/make_installer.py` assembles the upload folder
-- `tools/` — the icon baker, the installer assembler, and a serial bench
-  client
+- `tools/` — the icon baker, the sound bank builder, the installer
+  assembler, and a serial bench client
 - `assets/icons/` — the pixel-art source for the stats card
+- `assets/sounds/` — the cues (16 kHz mono) and their levels
 
 ## Documentation
 
@@ -368,6 +370,7 @@ seven-minute prompt check before an overnight run is always worth it.
 - [docs/retrain-v3.md](docs/retrain-v3.md) — the schema v3 retrain runbook
 - [docs/retrain-v4.md](docs/retrain-v4.md) — the schema v4 (boredom) retrain runbook and its numbers
 - [docs/DEVICE.md](docs/DEVICE.md) — what is in flight on the device, and the flash rule
+- [docs/AUDIO.md](docs/AUDIO.md) — the sound design: the cues, the asset pipeline, the power rules
 - [docs/memory_budget.md](docs/memory_budget.md) — flash, PSRAM, and SRAM plan
 - [docs/bringup.md](docs/bringup.md) — hardware bring-up checklist
 
@@ -383,6 +386,12 @@ seven-minute prompt check before an overnight run is always worth it.
   (place the bubbles, a letter wheel to name each fry, a body color to pick),
   births announced and named with a family page, deep sleep that lives
   through the night at wake, fish that get bored and go exploring
+- ✅ Sound: the board's own little speaker plays cues for what you do (a
+  feed, the light, a trim, a card) and for the fish (eating, a spook, a
+  fish coming to your finger), plus a welcome, a birth fanfare and
+  milestone chimes with an on-screen announcement; the codec is only
+  powered while the tank is in your hands, and a low-battery notice keeps
+  the gauge on screen until it is charged
 - ✅ Browser installer: one click from Chrome or Edge, hosted at
   stratobuilds.com
 - 🔋 In progress: battery life. The deep-sleep floor and the awake draw with

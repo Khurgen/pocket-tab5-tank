@@ -7,7 +7,8 @@
  *                          X reset prompt (device: hold BOOT + tap the glass),
  *                          S the first-run setup flow (welcome / names / colours),
  *                          R force an arrival (the birth flow opens: announce /
- *                          name / family; S drops it), A auto-light, Q quit;
+ *                          name / family; S drops it), A auto-light, Q quit,
+ *                          V volume (off / quiet / normal), B the low-battery notice;
  *                          click fish = stats; tap the water surface = feed;
  *                          drag down from the top = feed; hold >= 3 s = finger
  *                          on glass (trusting fish visit); swipe sideways
@@ -38,6 +39,9 @@
 #include "render.h"
 #include "progression.h"
 #include "setup.h"
+#include "audio.h"
+#include "notice.h"
+#include "tank_events.h"
 
 static tank_t tank;
 
@@ -536,7 +540,7 @@ static int selftest_sleep(void) {
             if (truncate(sav, older[k])) { printf("FAIL: could not truncate the save to %ld\n", older[k]); return 1; }
             tank_init(&tank, 8);
             progression_boot(&tank);
-            if (tank.n_fish != 2 || strcmp(tank.fish[0].name, older[k] >= 1304 + 4 + 8 ? "Fez" : tank_roster_name(tank.fish[0].preset))) {
+            if (tank.n_fish != 2 || strcmp(tank.fish[0].name, older[k] >= 1304 + 4 + 8 ? "fez" : tank_roster_name(tank.fish[0].preset))) {
                 printf("FAIL: a %ld-byte save came back as %d fish, %s\n", older[k], tank.n_fish, tank.n_fish ? tank.fish[0].name : "-"); return 1; }
         }
         if (truncate(sav, 100)) return 1;
@@ -866,6 +870,76 @@ static uint32_t confirm_ms;          /* when it opened; it gives up after CONFIR
 
 static uint32_t tick_cb(void) { return SDL_GetTicks(); }
 
+/* ---- sound (docs/AUDIO.md): the mixer in common/audio.c fed by an SDL
+ * callback; the tank's events and the notice queue become cues here, the
+ * same way the device's audio port does it ---- */
+static SDL_AudioDeviceID s_adev;
+static int16_t *s_bank;
+static bool s_loop_on;               /* bubbles_loop running (the setup's bubble page) */
+static int  s_prev_sel = -1;
+static void audio_cb(void *ud, Uint8 *stream, int len) { (void)ud; audio_render((int16_t *)stream, len / 2); }
+static void snd(int cue, int pitch_q8) {
+    if (!s_adev) return;
+    SDL_LockAudioDevice(s_adev); audio_play(cue, pitch_q8, SDL_GetTicks()); SDL_UnlockAudioDevice(s_adev);
+}
+static int stage_pitch(int fish) {   /* fry high, elder low */
+    if (fish < 0 || fish >= tank.n_fish) return AUDIO_PITCH_ONE;
+    static const int p[4] = { 320, 282, 256, 230 };
+    return p[tank.fish[fish].stage & 3];
+}
+static void on_tank_event(int ev, int fish, void *ud) {
+    (void)ud;
+    switch (ev) {
+    case TEV_TAP:         snd(SND_TAP, AUDIO_PITCH_ONE); break;
+    case TEV_FEED:        snd(SND_FEED, AUDIO_PITCH_ONE); break;
+    case TEV_LIGHT_ON:    snd(SND_LIGHT_ON, AUDIO_PITCH_ONE); break;
+    case TEV_LIGHT_OFF:   snd(SND_LIGHT_OFF, AUDIO_PITCH_ONE); break;
+    case TEV_WIPE:        snd(SND_WIPE, AUDIO_PITCH_ONE); break;
+    case TEV_SNIP:        snd(SND_SNIP, AUDIO_PITCH_ONE); break;
+    case TEV_EAT:         snd(SND_EAT, stage_pitch(fish)); break;
+    case TEV_SPOOK:       snd(SND_SPOOK, AUDIO_PITCH_ONE); break;
+    case TEV_INVESTIGATE: snd(SND_INVESTIGATE, stage_pitch(fish)); break;
+    case TEV_BUBBLES:     snd(SND_BUBBLES, AUDIO_PITCH_ONE); break;
+    case TEV_WELCOME:     snd(SND_WELCOME, AUDIO_PITCH_ONE); break;
+    case TEV_WHEEL_TICK:  snd(SND_WHEEL_TICK, AUDIO_PITCH_ONE); break;
+    case TEV_CONFIRM:     snd(SND_CONFIRM, AUDIO_PITCH_ONE); break;
+    default: break;
+    }
+}
+static void sound_init(void) {
+    FILE *f = fopen(SOUNDS_BIN, "rb");
+    if (!f) { printf("sound: %s not found (tools/make_sounds.py build) - silent\n", SOUNDS_BIN); return; }
+    s_bank = malloc(SND_BANK_BYTES);
+    size_t got = s_bank ? fread(s_bank, 1, SND_BANK_BYTES, f) : 0; fclose(f);
+    if (got != SND_BANK_BYTES) { printf("sound: bank is %zu bytes, sounds.h says %u - rebuild (tools/make_sounds.py build)\n", got, (unsigned)SND_BANK_BYTES); free(s_bank); s_bank = NULL; return; }
+    audio_init(s_bank, SND_BANK_SAMPLES);
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) { printf("sound: SDL audio init failed: %s\n", SDL_GetError()); return; }   /* LVGL brings up video later */
+    SDL_AudioSpec want = { 0 }, have;
+    want.freq = SND_RATE; want.format = AUDIO_S16SYS; want.channels = 1; want.samples = 256; want.callback = audio_cb;
+    s_adev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+    if (!s_adev) { printf("sound: SDL audio failed: %s\n", SDL_GetError()); return; }
+    SDL_PauseAudioDevice(s_adev, 0);
+    tank_events_set(on_tank_event, NULL);
+    printf("sound: %u cues, %u KB bank, %d Hz (V cycles the volume)\n", (unsigned)SND_COUNT, (unsigned)(SND_BANK_BYTES / 1024), have.freq);
+}
+/* per frame: the notice queue, the bubble loop, the card cue, night */
+static void sound_frame(uint32_t now, float dt) {
+    notice_tick(&tank, dt, setup_active() || confirm_view || milestones_view);
+    int cue = notice_take_cue();
+    if (cue >= 0) snd(cue, AUDIO_PITCH_ONE);
+    bool loop = setup_active() && !setup_is_birth() && setup_page() == SETUP_PG_BUBBLES;
+    if (loop != s_loop_on && s_adev) {
+        SDL_LockAudioDevice(s_adev);
+        if (loop) audio_play(SND_BUBBLES_LOOP, AUDIO_PITCH_ONE, now); else audio_stop(SND_BUBBLES_LOOP);
+        SDL_UnlockAudioDevice(s_adev);
+        s_loop_on = loop;
+    }
+    if (selected_fish >= 0 && s_prev_sel < 0) snd(SND_CARD_OPEN, AUDIO_PITCH_ONE);
+    if (selected_fish < 0 && s_prev_sel >= 0) snd(SND_CARD_CLOSE, AUDIO_PITCH_ONE);
+    s_prev_sel = selected_fish;
+    if (s_adev) { SDL_LockAudioDevice(s_adev); audio_set_night(tank.night); SDL_UnlockAudioDevice(s_adev); }
+}
+
 /* brain indicator, top-right: teal square = rules, amber = LLM */
 static void draw_brain_dot(void) {
     uint16_t col = llm_active ? 0xFDC0 /*amber*/ : 0x3E98 /*teal*/;
@@ -885,9 +959,10 @@ static void frame_cb(lv_timer_t *timer) {
     progression_tick(&tank, dt);
     if (!confirm_view) {                          /* an arrival owed its welcome: the birth flow (setup.c) */
         int nb = setup_poll_birth(&tank);
-        if (nb >= 0) { selected_fish = -1; milestones_view = false;
+        if (nb >= 0) { selected_fish = -1; milestones_view = false; snd(SND_ARRIVAL, AUDIO_PITCH_ONE);
                        printf("a new fry, %s: the birth flow is up (announce / name / family; S drops it)\n", tank.fish[nb].name); }
     }
+    sound_frame(now, dt);
     if (milestones_view) { render_milestones(&tank, canvas_buf, TANK_W); render_brightness_row(canvas_buf, TANK_W, sim_bright); }
     else {
         render_tank(&tank, canvas_buf, TANK_W);
@@ -896,6 +971,8 @@ static void frame_cb(lv_timer_t *timer) {
             if (selected_fish >= 0)
                 render_stats_card(&tank, selected_fish, canvas_buf, TANK_W);
         }
+        const notice_t *nt = notice_current();
+        if (nt) render_notice(&tank, canvas_buf, TANK_W, nt->kind, nt->fish, nt->bit, 1.0f - nt->age / NOTICE_UP_S);
     }
     if (setup_active()) render_setup(&tank, canvas_buf, TANK_W, tank.clock);
     if (confirm_view) render_confirm_reset(canvas_buf, TANK_W, 1.0f - (SDL_GetTicks() - confirm_ms) / (float)CONFIRM_MS);
@@ -1047,6 +1124,16 @@ static int snapshot(const char *prefix, int seconds) {
     render_milestones(&tank, fb, TANK_W); render_brightness_row(fb, TANK_W, 60);
     snprintf(path, sizeof path, "%s_milestone_modal.ppm", prefix); write_ppm(path, fb);
     render_milestones_leave();
+    /* the announcements (notice.h): a fish milestone, a tank milestone, a
+       stage reached, low battery - each over the live tank */
+    render_tank(&tank, fb, TANK_W); render_notice(&tank, fb, TANK_W, 0, 1, MS_FIRST_BUBBLES, 0.6f);
+    snprintf(path, sizeof path, "%s_notice_fish.ppm", prefix); write_ppm(path, fb);
+    render_tank(&tank, fb, TANK_W); render_notice(&tank, fb, TANK_W, 1, -1, TMS_FIRST_TRIM, 0.6f);
+    snprintf(path, sizeof path, "%s_notice_tank.ppm", prefix); write_ppm(path, fb);
+    render_tank(&tank, fb, TANK_W); render_notice(&tank, fb, TANK_W, 2, 2, 0, 0.6f);
+    snprintf(path, sizeof path, "%s_notice_stage.ppm", prefix); write_ppm(path, fb);
+    render_tank(&tank, fb, TANK_W); render_notice(&tank, fb, TANK_W, 3, -1, 0, 0.6f); render_battery(fb, TANK_W, 0.08f, false);
+    snprintf(path, sizeof path, "%s_notice_battery.ppm", prefix); write_ppm(path, fb);
     render_tank(&tank, fb, TANK_W); render_confirm_reset(fb, TANK_W, 0.7f);
     snprintf(path, sizeof path, "%s_confirm.ppm", prefix); write_ppm(path, fb);
     /* the first-run setup, page by page (never BEGIN: that would save this
@@ -1253,6 +1340,8 @@ int main(int argc, char **argv) {
     }
     progression_boot(&tank);               /* restore, or a new random pair */
     print_roster(&tank);
+    notice_sync(&tank);                    /* nothing old gets announced */
+    sound_init();
     if (progression_setup_pending()) { setup_begin(&tank); printf("first-run setup: welcome, names, colours (S re-opens it)\n"); }
     for (int a = 1; a < argc; a++)
         if (strcmp(argv[a], "--narrate") == 0) {
@@ -1283,7 +1372,7 @@ int main(int argc, char **argv) {
     lv_timer_create(frame_cb, 16, NULL);
 
     bool fdown = false, ndown = false, ldown = false;
-    bool udown = false, mdown = false, mkdown = false, rdown = false, zdown = false, gdown = false, xdown = false, sdown = false;
+    bool udown = false, mdown = false, mkdown = false, rdown = false, zdown = false, gdown = false, xdown = false, sdown = false, vdown = false, bdown = false;
     uint32_t press_ms = 0; int press_x = 0, press_y = 0;
     float press_fx[N_FISH_MAX] = {0}, press_fy[N_FISH_MAX] = {0};
     while (1) {
@@ -1317,12 +1406,13 @@ int main(int argc, char **argv) {
                 int h = press_ms > confirm_ms ? render_confirm_hit((float)press_x, (float)press_y) : 0;
                 if (h && h == render_confirm_hit((float)mx, (float)my)) {
                     confirm_view = false;
-                    if (h > 0) { progression_reset(&tank, SDL_GetTicks() + 7); selected_fish = -1;
+                    if (h > 0) { progression_reset(&tank, SDL_GetTicks() + 7); selected_fish = -1; notice_sync(&tank);
                                  printf("RESET: a fresh tank\n"); print_roster(&tank); setup_begin(&tank); }
                     else printf("reset prompt: NO, tank kept\n");
                 }
             }
             else if (setup_up) { /* the setup owns the glass: setup_touch took it */ }
+            else if (notice_current()) notice_dismiss();      /* an announcement up: the tap closes it */
             else if (milestones_view) {
                 int r = render_milestones_tap(&tank, (float)press_x, (float)press_y);
                 if (r == MS_TAP_CLOSE) { milestones_view = false; progression_ack_milestones(&tank); render_milestones_leave(); }
@@ -1358,6 +1448,11 @@ int main(int argc, char **argv) {
             else { setup_begin(&tank); selected_fish = -1; milestones_view = false; printf("setup: welcome page (click through; BEGIN saves)\n"); }
         }
         sdown = k[SDL_SCANCODE_S];
+        if (k[SDL_SCANCODE_V] && !vdown) { int v = (audio_volume() + 1) % 3; if (s_adev) { SDL_LockAudioDevice(s_adev); audio_set_volume(v); SDL_UnlockAudioDevice(s_adev); }
+                                           printf("volume: %s\n", v == 0 ? "off" : v == 1 ? "quiet" : "normal"); }
+        vdown = k[SDL_SCANCODE_V];
+        if (k[SDL_SCANCODE_B] && !bdown) { notice_low_battery(); printf("low battery notice queued\n"); }
+        bdown = k[SDL_SCANCODE_B];
         if (k[SDL_SCANCODE_U] && !udown) { ui_visible = !ui_visible; }
         udown = k[SDL_SCANCODE_U];
         if (k[SDL_SCANCODE_M] && !mkdown) {

@@ -16,6 +16,66 @@ void codec_port_dump(void) {
              (r0d & 0x80) ? "down" : "ON", (r0d & 0x04) ? "ON" : "off", r0d & 3, r0e, r12);
 }
 
+bool codec_port_present(void) { return s_dev != NULL; }
+
+/* the powered-down set: state machine off + blocks in reset, clocks off,
+   analog down with vref and vmid off, DAC down (the reference suspend
+   sequence, ending where 2026-09-13's measurement left it: SYS0D F8) */
+static bool power_down_regs(void) {
+    static const uint8_t seq[][2] = {
+        { 0x32, 0x00 }, { 0x17, 0x00 }, { 0x0E, 0xFF }, { 0x12, 0x02 }, { 0x14, 0x00 }, { 0x0D, 0xFA },
+        { 0x15, 0x00 }, { 0x37, 0x08 }, { 0x02, 0x10 }, { 0x00, 0x00 }, { 0x00, 0x1F }, { 0x01, 0x30 },
+        { 0x01, 0x00 }, { 0x45, 0x00 }, { 0x0D, 0xF8 }, { 0x02, 0x00 },
+    };
+    bool ok = true;
+    for (size_t i = 0; i < sizeof seq / sizeof *seq; i++) ok &= wr(seq[i][0], seq[i][1]);
+    return ok;
+}
+void codec_port_down(void) {
+    if (!s_dev) return;
+    bool ok = power_down_regs();
+    uint8_t r0d = 0; rd(0x0D, &r0d);
+    ESP_LOGI(TAG, "ES8311 down%s (SYS0D %02x)", ok ? "" : " - a write FAILED", r0d);
+}
+/* the DAC path up. The register values follow Everest's reference
+   sequence as carried in Espressif's es8311 driver, reduced to what the
+   tank needs: slave mode, I2S 16-bit on DSDIN, MCLK/LRCK ratio 256 (the
+   user guide's 12.288/48k row, which is the same ratio at 4.096/16k), DAC
+   0 dB, output to the differential pins for the NS4150B; the ADC and
+   microphone stay down. */
+void codec_port_settled(void) { if (s_dev) wr(0x0D, 0x02); }   /* vmid: charged -> normal operation */
+bool codec_port_up(void) {
+    if (!s_dev) return false;
+    static const uint8_t seq[][2] = {
+        { 0x00, 0x1F },             /* everything in reset while the clocks are set */
+        { 0x01, 0x30 },             /* MCLK in + BCLK on */
+        { 0x02, 0x00 },             /* DIV_PRE 1, MULT_PRE 1: internal mclk = MCLK (4.096 MHz) */
+        { 0x03, 0x10 }, { 0x04, 0x10 },   /* ADC / DAC OSR 64 */
+        { 0x05, 0x00 },             /* ADC / DAC clock dividers 1: ratio 256 */
+        { 0x0B, 0x00 }, { 0x0C, 0x00 },
+        { 0x10, 0x1F }, { 0x11, 0x7F },
+        { 0x00, 0x80 },             /* CSM power on, slave serial port */
+        { 0x01, 0x3F },             /* + ADC/DAC clocks and analog clocks on */
+        { 0x09, 0x0C },             /* DAC SDP: I2S, 16-bit, left slot */
+        { 0x0A, 0x0C },
+        { 0x0D, 0x03 },             /* analog up: bias, refs, vmid FAST charge (0x02 = normal, after the settle) */
+        { 0x0E, 0x02 },
+        { 0x12, 0x00 },             /* DAC up */
+        { 0x13, 0x10 },             /* output stage on */
+        { 0x1C, 0x6A },
+        { 0x37, 0x08 },             /* DAC EQ bypass */
+        { 0x32, 0xBF },             /* DAC volume 0 dB (the mixer sets levels) */
+        { 0x31, 0x00 },             /* unmute */
+        { 0x0F, 0x00 },             /* no low-power trade-offs while playing */
+        { 0x45, 0x00 },
+    };
+    bool ok = true;
+    for (size_t i = 0; i < sizeof seq / sizeof *seq; i++) ok &= wr(seq[i][0], seq[i][1]);
+    uint8_t r0d = 0, r12 = 0; rd(0x0D, &r0d); rd(0x12, &r12);
+    ESP_LOGI(TAG, "ES8311 up%s (SYS0D %02x DAC %02x)", ok ? "" : " - a write FAILED", r0d, r12);
+    return ok;
+}
+
 bool codec_port_init(i2c_master_bus_handle_t bus) {
     if (!bus) return false;
     for (int a = 0x18; a <= 0x19; a++)                /* 0011 00x, x = the CE pin */
@@ -27,7 +87,7 @@ bool codec_port_init(i2c_master_bus_handle_t bus) {
     /* full power-down: state machine off + all blocks in reset (0x00 = the
        reset default), every clock off, every analog block down with the
        reference and vmid off, DAC down */
-    bool ok = wr(0x00, 0x1F) && wr(0x01, 0x00) && wr(0x0D, 0xF8) && wr(0x12, 0x02);
+    bool ok = power_down_regs();
     ESP_LOGI(TAG, "ES8311 @0x%02x powered down%s (SYS0D %02x -> F8)", s_addr, ok ? "" : " - a write FAILED", before);
     codec_port_dump();
     return ok;

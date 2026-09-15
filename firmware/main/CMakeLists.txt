@@ -9,9 +9,14 @@ if(CONFIG_POCKET_TANK_TOUCH_FT3168)
 else()
     list(APPEND SRCS touch_port_stub.c)
 endif()
+if(CONFIG_POCKET_TANK_AUDIO_ES8311)
+    list(APPEND SRCS audio_port_es8311.c)
+else()
+    list(APPEND SRCS audio_port_stub.c)
+endif()
 idf_component_register(
     SRCS ${SRCS}
     INCLUDE_DIRS "."
-    REQUIRES tankcore llm esp_partition spi_flash esp_timer esp_driver_spi esp_driver_i2c esp_driver_gpio esp_driver_usb_serial_jtag esp_lcd nvs_flash
-    EMBED_FILES "tokenizer.bin"
+    REQUIRES tankcore llm esp_partition spi_flash esp_timer esp_driver_spi esp_driver_i2c esp_driver_i2s esp_driver_gpio esp_driver_usb_serial_jtag esp_lcd nvs_flash
+    EMBED_FILES "tokenizer.bin" "../../assets/sounds/sounds.bin"
 )

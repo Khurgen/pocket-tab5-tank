@@ -28,6 +28,11 @@
 #include "batlog.h"
 #include "codec_port.h"
 #include "progression.h"
+#include "audio_port.h"
+#include "audio.h"
+#include "notice.h"
+#include "tank_events.h"
+#include "setup.h"
 #include "setup.h"
 #include "nvs_flash.h"
 #include "rtc_port.h"
@@ -145,6 +150,7 @@ static void enter_sleep_for(int wake_after_s) {
     touch_port_confirm_answer(-1);              /* an open reset prompt is a NO */
     progression_save(&tank);
     snapshot_fish();
+    audio_port_sleep();        /* amp low, codec down, rail off - before the rails cycle */
     batlog_add(pct0, mv0, display_port_brightness(), true, "sleep");
     imu_port_sleep();          /* quiesce BEFORE the rails cycle (latch-up guard) */
     display_port_sleep();
@@ -231,9 +237,61 @@ static void sleep_button_poll(int64_t now) {
 /* the keeper said YES: every saved tank goes - the live one and a director-
  * parked copy alike - and a fresh pair of fry takes the glass, saved at once
  * so a reboot lands on them (progression_reset) */
+/* ---- sound (docs/AUDIO.md): the tank's moments -> cues. The listener only
+ * enqueues (audio_port_play takes a mutex for a few microseconds); the
+ * player task on core 1 does the rest. ---- */
+static int stage_pitch(int fish) {                 /* fry high, elder low */
+    if (fish < 0 || fish >= tank.n_fish) return AUDIO_PITCH_ONE;
+    static const int p[4] = { 320, 282, 256, 230 };
+    return p[tank.fish[fish].stage & 3];
+}
+static void on_tank_event(int ev, int fish, void *ud) {
+    (void)ud;
+    switch (ev) {
+    case TEV_TAP:         audio_port_play(SND_TAP, AUDIO_PITCH_ONE); break;
+    case TEV_FEED:        audio_port_play(SND_FEED, AUDIO_PITCH_ONE); break;
+    case TEV_LIGHT_ON:    audio_port_play(SND_LIGHT_ON, AUDIO_PITCH_ONE); break;
+    case TEV_LIGHT_OFF:   audio_port_play(SND_LIGHT_OFF, AUDIO_PITCH_ONE); break;
+    case TEV_WIPE:        audio_port_play(SND_WIPE, AUDIO_PITCH_ONE); break;
+    case TEV_SNIP:        audio_port_play(SND_SNIP, AUDIO_PITCH_ONE); break;
+    case TEV_EAT:         audio_port_play(SND_EAT, stage_pitch(fish)); break;
+    case TEV_SPOOK:       audio_port_play(SND_SPOOK, AUDIO_PITCH_ONE); break;
+    case TEV_INVESTIGATE: audio_port_play(SND_INVESTIGATE, stage_pitch(fish)); break;
+    case TEV_BUBBLES:     audio_port_play(SND_BUBBLES, AUDIO_PITCH_ONE); break;
+    case TEV_WELCOME:     audio_port_play(SND_WELCOME, AUDIO_PITCH_ONE); break;
+    case TEV_WHEEL_TICK:  audio_port_play(SND_WHEEL_TICK, AUDIO_PITCH_ONE); break;
+    case TEV_CONFIRM:     audio_port_play(SND_CONFIRM, AUDIO_PITCH_ONE); break;
+    default: break;
+    }
+}
+/* the gauge, once a second, for the card's pill and the low-battery rule
+ * (docs/AUDIO.md 4a): at 10% and not charging the notice + cue fire once;
+ * the pill then stays on screen until charging is seen or the gauge has
+ * read above 10% for 30 s */
+#define LOW_BATTERY_FRAC 0.10f
+static float s_bat_frac; static bool s_bat_chg, s_bat_ok, s_bat_low;
+static void battery_frame(int64_t now) {
+    static int64_t bat_us, above_since;
+    if (now - bat_us < 1000000) return;
+    bat_us = now;
+    s_bat_ok = battery_port_read(&s_bat_frac, &s_bat_chg);
+    if (!s_bat_ok) return;
+    if (!s_bat_low) {
+        if (!s_bat_chg && s_bat_frac <= LOW_BATTERY_FRAC) {
+            s_bat_low = true; above_since = 0; notice_low_battery();
+            ESP_LOGW(TAG, "battery low: %d%% - notice + pill", (int)(s_bat_frac * 100 + 0.5f));
+        }
+    } else if (s_bat_chg) { s_bat_low = false; ESP_LOGI(TAG, "battery: charging, pill down"); }
+    else if (s_bat_frac > LOW_BATTERY_FRAC) {
+        if (!above_since) above_since = now;
+        else if (now - above_since > 30LL * 1000000) { s_bat_low = false; ESP_LOGI(TAG, "battery back above %d%%: pill down", (int)(LOW_BATTERY_FRAC * 100)); }
+    } else above_since = 0;
+}
+
 static void reset_tank(void) {
     ESP_LOGW(TAG, "RESET: wiping the tank (%d fish) for a fresh one", tank.n_fish);
     progression_reset(&tank, (uint32_t)esp_timer_get_time() ^ 0xC0FFEEu);
+    notice_sync(&tank);                         /* a fresh tank has nothing to announce */
     brightness_save();                          /* the erase took the setting with it */
     ESP_LOGI(TAG, "fresh tank: %s + %s, both fry", tank.fish[0].name, tank.fish[1].name);
     setup_begin(&tank);                         /* welcome, names, colours - as on a fresh install */
@@ -249,6 +307,7 @@ static void tank_task(void *arg) {
         float dt = (now - last) / 1e6f; last = now; if (dt > 0.25f) dt = 0.25f;
         sleep_button_poll(now);
         imu_port_poll(now);
+        if (imu_port_moving()) audio_port_prewarm();   /* in a hand: the codec stays warm (docs/AUDIO.md) */
         bool inv = imu_port_inverted();
         display_port_set_inverted(inv);   /* per-frame, so a flip lands between flushes */
         touch_port_set_inverted(inv);
@@ -264,9 +323,20 @@ static void tank_task(void *arg) {
         tank.hold_light = setup_active() || touch_port_confirm_up();   /* no lights-out mid-name */
         tank_tick(&tank, dt, llm_ok ? advisor_llm_esp : advisor_rules);
         progression_tick(&tank, dt);
+        battery_frame(now);
+        notice_tick(&tank, dt, setup_active() || touch_port_confirm_up() || touch_port_milestones());
+        { int cue = notice_take_cue(); if (cue >= 0) audio_port_play(cue, AUDIO_PITCH_ONE); }
+        audio_port_set_night(tank.night);
+        { static bool loop_on;                     /* the bubble loop rides the setup's placement page */
+          bool loop = setup_active() && !setup_is_birth() && setup_page() == SETUP_PG_BUBBLES;
+          if (loop != loop_on) { if (loop) audio_port_play(SND_BUBBLES_LOOP, AUDIO_PITCH_ONE); else audio_port_stop(SND_BUBBLES_LOOP); loop_on = loop; } }
+        { static int prev_sel = -1; int s = touch_port_selected();   /* the stats card coming and going */
+          if (s >= 0 && prev_sel < 0) audio_port_play(SND_CARD_OPEN, AUDIO_PITCH_ONE);
+          if (s < 0 && prev_sel >= 0) audio_port_play(SND_CARD_CLOSE, AUDIO_PITCH_ONE);
+          prev_sel = s; }
         if (!touch_port_confirm_up()) {           /* an arrival owed its welcome: the birth flow (setup.c) */
             int nb = setup_poll_birth(&tank);
-            if (nb >= 0) { touch_port_dismiss();
+            if (nb >= 0) { touch_port_dismiss(); audio_port_play(SND_ARRIVAL, AUDIO_PITCH_ONE);
                            ESP_LOGI(TAG, "a new fry, %s: birth flow up (announce, name, family; director `setup off` drops it)", tank.fish[nb].name); }
         }
         if (fb[cur]) {
@@ -290,9 +360,12 @@ static void tank_task(void *arg) {
             }
             if (sel >= 0) {                      /* tapped fish: stats card + battery */
                 render_stats_card(&tank, sel, fb[cur], TANK_W);
-                static float bf; static bool chg, bok; static int64_t bat_us;
-                if (now - bat_us > 1000000) { bok = battery_port_read(&bf, &chg); bat_us = now; }  /* the I2C gauge read once a second, not per frame */
-                if (bok) render_battery(fb[cur], TANK_W, bf, chg);
+                if (s_bat_ok) render_battery(fb[cur], TANK_W, s_bat_frac, s_bat_chg);
+            } else if (s_bat_low && s_bat_ok && !touch_port_milestones())
+                render_battery(fb[cur], TANK_W, s_bat_frac, s_bat_chg);   /* low: the pill stays up */
+            if (!touch_port_milestones()) {      /* an announcement over the live tank */
+                const notice_t *nt = notice_current();
+                if (nt) render_notice(&tank, fb[cur], TANK_W, nt->kind, nt->fish, nt->bit, 1.0f - nt->age / NOTICE_UP_S);
             }
             if (setup_active())                  /* first-run setup: over the tank, under the prompt */
                 render_setup(&tank, fb[cur], TANK_W, tank.clock);
@@ -400,7 +473,9 @@ void app_main(void) {
     touch_port_init();
     battery_port_init(board_i2c_bus());
     battery_port_trim_rails();        /* the schematic's unused outputs off (docs/HANDOFF.md, the battery pass) */
-    codec_port_init(board_i2c_bus());  /* the unused ES8311 fully down (its digital side shares VCC3V3) */
+    codec_port_init(board_i2c_bus());  /* the ES8311 fully down until a cue needs it (its digital side shares VCC3V3) */
+    audio_port_init(board_i2c_bus());  /* the sound bank + player task (docs/AUDIO.md); silent without the codec */
+    tank_events_set(on_tank_event, NULL);
     imu_port_init(board_i2c_bus());   /* screen auto-flip; absent IMU = always upright */
     director_init();                  /* serial scenario console (filming / bench) */
     /* scene-prefetch DMA: installed only AFTER the display grabbed its SPI DMA
@@ -433,6 +508,7 @@ void app_main(void) {
             vTaskDelay(pdMS_TO_TICKS(10));
         }
     } else progression_boot(&tank);          /* restore (or a new random pair) + ravenous rule */
+    notice_sync(&tank);                      /* what is already earned stays unannounced */
     ESP_LOGI(TAG, "population %d (cap %d): %s + %s ...", tank.n_fish, POP_CAP,
              tank.fish[0].name, tank.n_fish > 1 ? tank.fish[1].name : "-");
     if (progression_setup_pending()) {           /* a new tank (fresh install, or a reset mid-flow): the welcome */

@@ -1,5 +1,6 @@
 /* setup.c — first-run setup flow (see setup.h). */
 #include "setup.h"
+#include "tank_events.h"
 #include "render.h"
 #include "progression.h"
 #include <string.h>
@@ -43,6 +44,7 @@ static const char *fish_name(const tank_t *t, int i) { return i >= 0 && i < t->n
 void setup_begin(tank_t *t) {
     if (t->n_fish < 2) { progression_setup_done(t); s_active = false; return; }   /* nothing to name */
     s_active = true; s_birth = false; s_fish = -1; s_page = SETUP_PG_WELCOME; s_slot = 0; s_down = false;
+    tank_emit(TEV_WELCOME, -1);
 }
 void setup_begin_birth(tank_t *t, int slot) {
     if (slot < 0 || slot >= t->n_fish) { s_active = false; return; }
@@ -113,6 +115,7 @@ static void pick_slot(const fish_t *f, int i) {         /* the first blank is th
     s_slot = i;
 }
 static void spin(fish_t *f, int dir) {
+    tank_emit(TEV_WHEEL_TICK, -1);
     if (name_len(f) < s_slot) pick_slot(f, s_slot);
     slot_set(f, s_slot, (slot_val(f, s_slot) + 27 + dir) % 27);
 }
@@ -175,6 +178,7 @@ void setup_activate(tank_t *t, int id) {
         if (page_is_name()) tidy_name(t, page_fish());
         if (page_is_last()) {                           /* BEGIN / DONE: the debt is paid, the names saved */
             s_active = false; stage(t);
+            tank_emit(TEV_CONFIRM, -1);
             if (s_birth) progression_newborn_done(t); else progression_setup_done(t);
             return;
         }

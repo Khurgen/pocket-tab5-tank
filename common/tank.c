@@ -2,6 +2,7 @@
  * updateFish/targetForGoal/wall handling, with prototype px values scaled by
  * ~0.55 for the 448-wide tank. */
 #include "tank.h"
+#include "tank_events.h"
 #include <math.h>
 #include <stddef.h>
 
@@ -13,6 +14,15 @@ const char *const GOAL_NAMES[GOAL_COUNT] = {
     "seek_food", "flee_shadow", "visit_bubbles", "follow_friend",
     "explore", "rest", "dart_play", "inspect_reef",
 };
+
+/* ---- the event bus (tank_events.h): one listener, synchronous ---- */
+const char *const TANK_EVENT_NAMES[TEV_COUNT] = {
+    "tap", "feed", "light_on", "light_off", "wipe", "snip", "eat", "spook", "investigate", "bubbles",
+    "welcome", "wheel_tick", "confirm",
+};
+static tank_event_fn s_ev_fn; static void *s_ev_ud;
+void tank_events_set(tank_event_fn fn, void *ud) { s_ev_fn = fn; s_ev_ud = ud; }
+void tank_emit(int ev, int fish) { if (s_ev_fn) s_ev_fn(ev, fish, s_ev_ud); }
 
 const char *const STAGE_NAMES[4] = { "fry", "juv", "adult", "elder" };
 const char *const TRAINED_NAMES[N_TRAINED_NAMES] = { "mira", "bolt", "kelp", "nori" };
@@ -143,7 +153,7 @@ void tank_make_fish(tank_t *t, int slot, int preset, float sociable, float bold,
     /* its own order of first visits - from the slot, not the tank's RNG, so a
      * seeded run (the selftests) draws the same numbers it did before */
     for (int z = 0; z < 6; z++) f->zone_seen[z] = -(float)((slot * 37 + z * 13) % 60);
-    f->eaten = 0; f->eaten_player = 0;
+    f->eaten = 0; f->eaten_player = 0; f->at_bubbles = false;
     /* its own spot by the reef: bolder fish rest a little further out */
     f->rest_dx = 8 + slot * 24 + bold * 14; f->rest_dy = -slot * 9 - tank_randf(t, 0, 10);   /* a body apart (was 9 px per slot) */
     f->sig = 0xffffffffu; f->ms_bits = 0; f->ms_seen = 0;
@@ -531,14 +541,16 @@ void tank_touch_drag(tank_t *t, float x, float y) {
         t->slash_armed = false;
         for (int b = 0; b < VEG_BEDS && !t->slash_armed; b++)
             t->slash_armed = veg_near_frond(t, b, x, y, SLASH_START_SIDE_PX, SLASH_START_PX);
-        t->slash_engaged = t->slash_cut = false;
+        t->slash_engaged = t->slash_cut = false; t->wipe_sounded = false;
         t->slash_x0 = x; t->slash_y0 = y; t->slash_h = t->slash_v = 0;
     }
     if (t->drag_has_prev) {
         float sdx = x - t->drag_px, sdy = y - t->drag_py;
         t->drag_dist += tank_dist(x, y, t->drag_px, t->drag_py);
-        if (t->drag_dist >= WIPE_ENGAGE_PX)        /* a real stroke, not a tap */
+        if (t->drag_dist >= WIPE_ENGAGE_PX) {      /* a real stroke, not a tap */
             wipe_algae(t, t->drag_px, t->drag_py, x, y);
+            if (!t->wipe_sounded) { t->wipe_sounded = true; tank_emit(TEV_WIPE, -1); }
+        }
         /* the slash (2026-09-04, per frond): an armed stroke becomes scissors
          * once it has travelled SLASH_PX sideways, mostly sideways - deliberate
          * work, so a tap or a missed poke at a fish never shears the garden.
@@ -557,6 +569,7 @@ void tank_touch_drag(tank_t *t, float x, float y) {
                 }
             } else if (fabsf(sdx) >= fabsf(sdy))   /* only the sideways segments cut */
                 cuts += veg_cut(t, t->drag_px, t->drag_py, x, y, false);
+            if (cuts) tank_emit(TEV_SNIP, -1);
             if (cuts && !t->slash_cut) { t->slash_cut = true; t->trims++; }
         }
     }
@@ -565,14 +578,16 @@ void tank_touch_drag(tank_t *t, float x, float y) {
 
 void tank_feed(tank_t *t, float x, int n) {
     x = clampf(x, 25, TANK_W - 25);
+    int dropped = 0;
     for (int i = 0; i < MAX_FOOD && n > 0; i++) {
         if (t->food[i].alive) continue;
         t->food[i].alive = true; t->food[i].from_player = true;
         t->food[i].x = clampf(x + tank_randf(t, -14, 14), 20, TANK_W - 20);
         t->food[i].y = tank_randf(t, 6, 18);
         t->food[i].age = 0;
-        n--;
+        n--; dropped++;
     }
+    if (dropped) tank_emit(TEV_FEED, -1);        /* the plink is for pellets, not for the tap (a full tank drops none) */
     t->feed_spot_x = t->feed_spot_x < 0 ? x : t->feed_spot_x + (x - t->feed_spot_x) * 0.3f;
     t->feed_open = true;                         /* a meal once somebody eats from it */
 }
@@ -581,10 +596,12 @@ void tank_touch_tap(tank_t *t, float x, float y) {
     if (y < FEED_ZONE_Y) { tank_feed(t, x, 3); return; }     /* surface tap = feed */
     if (t->tap_burst_t > TAP_WINDOW) t->tap_count = 0;
     t->tap_count++; t->tap_burst_t = 0; t->tap_x = x; t->tap_y = y;
+    tank_emit(TEV_TAP, -1);
     if (t->startled) {                              /* chasing: keep them spooked */
         t->startle_x = x; t->startle_y = y; t->startle_cooldown = STARTLE_COOLDOWN;
         for (int i = 0; i < t->n_fish; i++) t->fish[i].stress = fminf(10, t->fish[i].stress + 0.6f);
     } else if (t->tap_count >= 3) {                 /* aggressive: engage */
+        tank_emit(TEV_SPOOK, -1);
         t->startled = true; t->startle_x = x; t->startle_y = y; t->startle_cooldown = STARTLE_COOLDOWN;
         for (int i = 0; i < t->n_fish; i++) {
             fish_t *f = &t->fish[i];
@@ -627,7 +644,7 @@ static void touch_tick(tank_t *t, float dt) {
             if (draw_begins) f->hold_far = d >= HOLD_APPROACH_FROM;
             if (f->hold_far && d < HOLD_APPROACH_AT) {
                 f->ms_bits |= MS_FIRST_HOLD_APPROACH;
-                if (!t->hold_approached) { t->hold_approached = true; t->hold_approaches++; }
+                if (!t->hold_approached) { t->hold_approached = true; t->hold_approaches++; tank_emit(TEV_INVESTIGATE, i); }
             }
         }
     } else {
@@ -667,6 +684,7 @@ void tank_toggle_light(tank_t *t) {
     /* first toggle takes over from the auto cycle at the current state */
     if (!t->light_override) { t->light_override = true; t->light_on = t->night; }
     else t->light_on = !t->light_on;
+    tank_emit(t->light_on ? TEV_LIGHT_ON : TEV_LIGHT_OFF, -1);
 }
 
 void tank_light_auto(tank_t *t) { t->light_override = false; }
@@ -856,6 +874,7 @@ static void eat_nearby_food(tank_t *t, fish_t *f) {
             f->curiosity = clampf(f->curiosity + 0.5f, 0, 10);   /* was 0.8: a trickle burst
                                                                      re-synced the school's curiosity */
             f->eaten++;
+            tank_emit(TEV_EAT, (int)(f - t->fish));
             if (t->food[i].from_player) {
                 f->eaten_player++; f->ms_bits |= MS_FIRST_MEAL_FROM_YOU;
                 if (t->feed_open) { t->player_feedings++; t->feed_open = false; }   /* the gesture became a meal */
@@ -888,8 +907,11 @@ static void update_fish(tank_t *t, int idx, float dt) {
         if (f->goal.id == GOAL_VISIT_BUBBLES || f->goal.id == GOAL_INSPECT_REEF) {
             bool bub = f->goal.id == GOAL_VISIT_BUBBLES;
             float sx = bub ? t->bubble_x : t->reef_x, sy = bub ? t->bubble_y - 74 : t->reef_y - 35;
-            if (tank_dist(f->x, f->y, sx, sy) < CURIOSITY_SPEND_RADIUS) dc = -CURIOSITY_SPEND_PER_S;
-        }
+            bool at = tank_dist(f->x, f->y, sx, sy) < CURIOSITY_SPEND_RADIUS;
+            if (at) dc = -CURIOSITY_SPEND_PER_S;
+            if (bub && at && !f->at_bubbles) tank_emit(TEV_BUBBLES, idx);   /* arrival at the column: the play cue */
+            f->at_bubbles = bub && at;
+        } else f->at_bubbles = false;
         f->curiosity = clampf(f->curiosity + dt * dc, 0, 10);
     }
     f->stress    = clampf(f->stress - dt * (f->goal.id == GOAL_REST ? 0.48f : 0.18f), 0, 10);

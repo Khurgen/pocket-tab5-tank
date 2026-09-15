@@ -18,6 +18,10 @@
 #include "brightness.h"
 #include "batlog.h"
 #include "codec_port.h"
+#include "audio_port.h"
+#include "imu_port.h"
+#include "audio.h"
+#include "notice.h"
 #include "esp_timer.h"
 #include "nvs.h"
 #if CONFIG_SOC_USB_SERIAL_JTAG_SUPPORTED
@@ -230,6 +234,28 @@ static void run(tank_t *t, char *line) {
         ESP_LOGI(TAG, "deep sleep now%s - the USB port vanishes until the wake", n > 0 ? " (timer wake)" : " (BOOT wakes)");
         vTaskDelay(pdMS_TO_TICKS(50));
         device_sleep(n);
+    } else if (!strcmp(c, "snd")) {
+        /* snd <cue> [pitch_q8] | snd off|quiet|normal | snd stop <cue> | snd list | snd settle <codec ms> <amp ms> | snd idle <s> */
+        if (argc < 2 || !strcmp(argv[1], "list")) {
+            ESP_LOGI(TAG, "audio %s, volume %d (0 off 1 quiet 2 normal), imu motion %d (%s)", audio_port_state(), audio_port_volume(), imu_port_motion(), imu_port_moving() ? "moving" : "still");
+            for (int i = 0; i < SND_COUNT; i++)
+                ESP_LOGI(TAG, "  %-13s %s%s", SND_CUES[i].name, SND_CUES[i].n_var ? "ready" : "deferred", SND_CUES[i].loop ? " (loop)" : "");
+        } else if (!strcmp(argv[1], "off") || !strcmp(argv[1], "quiet") || !strcmp(argv[1], "normal")) {
+            audio_port_set_volume(!strcmp(argv[1], "off") ? 0 : !strcmp(argv[1], "quiet") ? 1 : 2);
+        } else if (!strcmp(argv[1], "stop") && argc > 2) {
+            int id = audio_cue_by_name(argv[2]); if (id >= 0) audio_port_stop(id); else ESP_LOGW(TAG, "no cue %s", argv[2]);
+        } else if (!strcmp(argv[1], "settle") && argc > 3) {
+            audio_port_tune(atoi(argv[2]), atoi(argv[3]), 0); ESP_LOGI(TAG, "snd settle %s %s", argv[2], argv[3]);
+        } else if (!strcmp(argv[1], "idle") && argc > 2) {          /* 0 = warm while awake, N = auto-off after N s of silence */
+            audio_port_tune(-1, -1, atoi(argv[2])); ESP_LOGI(TAG, "snd idle %s", argv[2]);
+        } else if (!strcmp(argv[1], "battery")) {
+            notice_low_battery(); ESP_LOGI(TAG, "low-battery notice queued");
+        } else {
+            int id = audio_cue_by_name(argv[1]);
+            if (id < 0) { ESP_LOGW(TAG, "no cue %s (snd list)", argv[1]); return; }
+            audio_port_play(id, argc > 2 ? atoi(argv[2]) : AUDIO_PITCH_ONE);
+            ESP_LOGI(TAG, "snd %s%s", argv[1], SND_CUES[id].n_var ? "" : " (deferred: silent)");
+        }
     } else if (!strcmp(c, "codec")) {
         codec_port_dump();
     } else if (!strcmp(c, "batlog")) {

@@ -6,6 +6,7 @@
  * flat (no axis dominant), so the screen never flaps on a table. */
 #include "imu_port.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -32,12 +33,19 @@
  * in-screen axis, so lying flat or held sideways still holds last state. */
 #define FLIP_THRESH        3500   /* ~0.21 g at +-2g full scale (16384 counts/g) */
 #define FLIP_HOLD_POLLS    3      /* ~750 ms the other way up before flipping */
+/* motion = the sum over healthy axes of |a - a_prev| between two polls
+ * (250 ms apart). A table reads a few tens of counts of noise; a hand
+ * holding still a few hundred; a pick-up thousands. */
+#define MOTION_THRESH      220    /* ~0.013 g */
+#define IMU_MOTION_HOLD_US 1000000
 
 static const char *TAG = "imu";
 static i2c_master_dev_handle_t s_dev;
 static bool s_inverted;
 static int s_streak;              /* consecutive polls voting for a flip */
 static int64_t s_next_us;
+static int16_t s_prev[3]; static bool s_have_prev;
+static int64_t s_moved_us; static int s_motion;
 
 static bool wr8(uint8_t reg, uint8_t val) {
     uint8_t buf[2] = { reg, val };
@@ -96,6 +104,18 @@ void imu_port_poll(int64_t now_us) {
                      (int16_t)(raw[4] | raw[5] << 8) };
     static int logged;
     if (logged < 3) { logged++; ESP_LOGI(TAG, "g=[%d %d %d] inverted=%d", a[0], a[1], a[2], (int)s_inverted); }
+    /* handling: movement since the last poll, railed channels ignored */
+    if (s_have_prev) {
+        int m = 0;
+        for (int i = 0; i < 3; i++) {
+            if (a[i] <= -32000 || a[i] >= 32000 || s_prev[i] <= -32000 || s_prev[i] >= 32000) continue;
+            int d = a[i] - s_prev[i]; m += d < 0 ? -d : d;
+        }
+        s_motion = m;
+        if (m > MOTION_THRESH) s_moved_us = now_us;
+    }
+    for (int i = 0; i < 3; i++) s_prev[i] = a[i];
+    s_have_prev = true;
     /* railed axis = a channel latched at full scale. Found 2026-08-31: X and
      * Z pegged at +-32767 while Y tracked reality, with clean comms, clean
      * config readback, soft reset no help - damaged channels on the MEMS die.
@@ -134,6 +154,8 @@ void imu_port_poll(int64_t now_us) {
 }
 
 bool imu_port_inverted(void) { return s_inverted; }
+bool imu_port_moving(void) { return s_moved_us && esp_timer_get_time() - s_moved_us < IMU_MOTION_HOLD_US; }
+int  imu_port_motion(void) { return s_motion; }
 
 /* drowse bracket (see imu_port.h). Sleep: sensors off, chip quiesced while
  * the neighbouring rails cycle. Wake: never trust what the chip did in the

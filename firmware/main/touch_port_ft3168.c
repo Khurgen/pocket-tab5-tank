@@ -14,6 +14,8 @@
 #include "tank.h"
 #include "render.h"
 #include "setup.h"
+#include "notice.h"
+#include "audio_port.h"
 #include "progression.h"
 #include "esp_lcd_touch_ft5x06.h"
 #include "esp_lcd_touch_cst816s.h"
@@ -77,6 +79,7 @@ void touch_port_poll(tank_t *t) {
     float ty = touched ? (s_inverted ? (float)(TANK_H - 1 - x[0]) : (float)x[0]) - s_bias_y : s_ly;
     if (touched && ty < 0) ty = 0;
     if (touched && !s_down) {
+        audio_port_prewarm();                   /* the release's cue plays warm */
         s_press_us = now; s_px = tx; s_py = ty;
         /* snapshot the school: the user aims at where a fish WAS - by release
            a darting fish has moved and the finger hid it the whole time */
@@ -114,6 +117,7 @@ void touch_port_poll(tank_t *t) {
             s_sel = -1; goto released;
         }
         if (now - s_press_us < 350000 && dx * dx + dy * dy < 24 * 24) {
+            if (notice_current()) { notice_dismiss(); ESP_LOGI(TAG, "tap closed the announcement"); goto released; }
             if (s_ms) {                                             /* the page: badges open a modal, the CLOSE
                                                                        button ends it, the brightness row cycles */
                 int r = render_milestones_tap(t, s_px, s_py);     /* CLOSE button / detail modal / nothing */

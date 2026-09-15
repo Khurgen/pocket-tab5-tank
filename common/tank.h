@@ -148,6 +148,7 @@ typedef struct {
     float  bored;
     goal_id_t goal_prev;    /* the goal before the current one: returning to it is no relief */
     int8_t zone_last;       /* schema zone 0..5 the fish was in last frame; -1 = none yet */
+    bool   at_bubbles;      /* inside the column's play radius on a VISIT_BUBBLES goal (the bubbles cue fires on entry) */
     bool   hold_far;        /* was HOLD_APPROACH_FROM+ px from the finger when this hold's draw
                              * began (transient): only such a fish can earn a hold-approach */
     float  zone_seen[6];    /* tank clock when the fish was last in each zone */
@@ -211,6 +212,7 @@ typedef struct tank {
     float    drag_dist;            /* travel in this stroke; wiping engages past a threshold */
     bool     slash_armed;          /* the stroke STARTED on a bed's canopy */
     bool     slash_engaged;        /* ... and has travelled sideways enough to be scissors */
+    bool     wipe_sounded;         /* this stroke's wipe cue has fired */
     bool     slash_cut;            /* ... and has cut at least one frond (trims++ once) */
     float    slash_x0, slash_y0;   /* stroke start (the pre-engage travel is cut retroactively) */
     float    slash_h, slash_v;     /* travel this stroke: horizontal / vertical */

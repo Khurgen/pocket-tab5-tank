@@ -18,5 +18,6 @@ firmware/dependencies.lock
 firmware/managed_components/
 firmware/build_qemu/
 
-# browser installer output (tools/make_installer.py) - the upload folder
+# browser installer output (tools/make_installer.py) - upload this folder
 installer/dist/
+firmware/host_test/audio_host

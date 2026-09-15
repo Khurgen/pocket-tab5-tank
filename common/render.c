@@ -1333,3 +1333,50 @@ int render_milestones_tap(const tank_t *t, float x, float y) {
     return MS_TAP_KEPT;
 }
 void render_milestones_leave(void) { g_ms_kind = -1; g_ms_tip = false; g_ms_caption[0] = 0; g_ms_caption2[0] = 0; g_ms_title[0] = 0; g_ms_sub[0] = 0; g_ms_icon = NULL; g_ms_fish = -1; g_ms_fry = false; }
+
+/* ---- announcement modal (notice.h, 2026-09-15) ----
+ * The milestones page's detail modal, over the live tank: the badge art at
+ * 2x (a fish's own sprite for a stage), the name, the caption, and a thin
+ * bar along the foot that runs out with the notice's time. */
+void render_notice(const tank_t *t, uint16_t *fb, int stride, int kind, int fish, uint32_t bit, float frac_left) {
+    ctx_t c = ctx_full(fb, stride, 1.0f);
+    const int X = MSP_MODAL_X, W = MSP_MODAL_W, Y = MSP_MODAL_Y, H = MSP_MODAL_H;
+    rect_fill(&c, X, Y, W, H, 0x04141a);
+    rect_edge(&c, X, Y, W, H, MSP_TEAL); rect_edge(&c, X + 1, Y + 1, W - 2, H - 2, 0x1c2f36);
+    char title[FISH_NAME_MAX + 8] = "THE TANK", caption[40] = "";
+    const icon_t *ic = NULL;
+    const fish_t *f = fish >= 0 && fish < t->n_fish ? &t->fish[fish] : NULL;
+    if (kind == 3) {                                          /* NOTICE_LOW_BATTERY */
+        snprintf(title, sizeof title, "LOW BATTERY");
+        snprintf(caption, sizeof caption, "PLEASE CHARGE THE TANK");
+        /* the pill, large: outline + nub, the last sliver lit red */
+        const int PW = 60, PH = 28, PX = X + (W - PW) / 2, PY = Y + 34;
+        rect_edge(&c, PX, PY, PW, PH, 0x9fb4b8); rect_edge(&c, PX + 1, PY + 1, PW - 2, PH - 2, 0x9fb4b8);
+        rect_fill(&c, PX + PW, PY + 8, 5, PH - 16, 0x9fb4b8);
+        rect_fill(&c, PX + 4, PY + 4, 7, PH - 8, 0xf25b65);
+    } else if (kind == 2) {                                   /* NOTICE_STAGE */
+        if (f) { snprintf(title, sizeof title, "%s", f->name);
+                 snprintf(caption, sizeof caption, "IS NOW %s %s", f->stage == STAGE_ADULT || f->stage == STAGE_ELDER ? "AN" : "A", STAGE_WORDS[f->stage & 3]);
+                 render_fish_preview(fb, stride, X + W / 2, Y + 48, f->size * 1.6f, f->color, f->fin, f->accent, t->clock); }
+    } else if (kind == 1) {                                   /* NOTICE_TANK_MILESTONE */
+        for (int k = 0; k < 6; k++) if (TANK_BADGES[k].bit == bit) ic = TANK_BADGES[k].icon;
+        int bi = 0; while (bi < 31 && !(bit & (1u << bi))) bi++;
+        snprintf(caption, sizeof caption, "%s", bi < TMS_COUNT ? TMS_NAMES[bi] : "");
+        if (!ic && t->n_fish) {                               /* a population milestone: the newest fish */
+            const fish_t *n = &t->fish[t->n_fish - 1];
+            render_fish_preview(fb, stride, X + W / 2, Y + 48, n->size * 1.6f, n->color, n->fin, n->accent, t->clock);
+        }
+    } else {                                                  /* NOTICE_MILESTONE */
+        for (int k = 0; k < 6; k++) if (FISH_BADGES[k].bit == bit) ic = FISH_BADGES[k].icon;
+        int bi = 0; while (bi < 31 && !(bit & (1u << bi))) bi++;
+        if (f) snprintf(title, sizeof title, "%s", f->name);
+        snprintf(caption, sizeof caption, "%s", bi < MS_FISH_COUNT ? MS_NAMES[bi] : "");
+        if (!ic && f) render_fish_preview(fb, stride, X + W / 2, Y + 48, f->size * 1.6f, f->color, f->fin, f->accent, t->clock);
+    }
+    if (ic) blit_icon_scaled(&c, X + (W - ic->w * 2) / 2, Y + 16 + (32 - ic->w), ic, 2, true);
+    draw_text(&c, X + (W - text_w(title, 3)) / 2, Y + 92, 3, 0xffffff, title);
+    draw_text(&c, X + (W - text_w(caption, 2)) / 2, Y + 124, 2, MSP_TEAL, caption);
+    if (frac_left < 0) frac_left = 0;
+    if (frac_left > 1) frac_left = 1;
+    rect_fill(&c, X + 2, Y + H - 4, (int)((W - 4) * frac_left), 2, 0x1c2f36);
+}
