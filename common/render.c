@@ -881,7 +881,41 @@ static uint16_t *g_card = NULL;
 static int g_card_fish = -1; static float g_card_t = -1; static unsigned g_card_epoch;
 void render_set_card_cache(uint16_t *buf) { g_card = buf; g_card_fish = -1; }
 
+/* the snail's card (2026-09-16, Strato: "tapping the snail show a simple
+   card with the upright snail image and how much algae has been grazed so
+   far"): a ring on the snail, a centred box in the modal's dress - the
+   upright sprite at 2x, SNAIL, the tally. Drawn every frame (no cache: a
+   few hundred blended pixels, nothing like the fish card's meters). */
+#define SNAIL_CARD_W 336
+#define SNAIL_CARD_H 176
+static int  text_w(const char *s, int scale);                                  /* the pixel font, below */
+static void draw_text(ctx_t *c, int x, int y, int scale, uint32_t rgb, const char *s);
+static void rect_edge(ctx_t *c, int x, int y, int w, int h, uint32_t rgb);
+static void blit_icon_scaled(ctx_t *c, int x, int y, const icon_t *ic, int s, bool lit);
+static void snail_card_draw(ctx_t *c, const tank_t *t) {
+    ring(c, t->snail_x, t->snail_y, 20, 0x9fd8e2);
+    const int W = SNAIL_CARD_W, H = SNAIL_CARD_H, X = (TANK_W - W) / 2, Y = (TANK_H - H) / 2;
+    src_t bg = src_color(0x04141a, 1.0f);
+    for (int y = Y; y < Y + H; y++) span(c, X, X + W - 1, y, &bg, 235);
+    rect_edge(c, X, Y, W, H, 0x9fd8e2); rect_edge(c, X + 1, Y + 1, W - 2, H - 2, 0x1c2f36);
+    const icon_t *ic = &icon_snail_upright;
+    blit_icon_scaled(c, X + (W - ic->w * 2) / 2, Y + 10, ic, 2, true);
+    draw_text(c, X + (W - text_w("SNAIL", 3)) / 2, Y + 82, 3, 0xffffff, "SNAIL");
+    const char *cap = "ALGAE GRAZED SO FAR";
+    draw_text(c, X + (W - text_w(cap, 2)) / 2, Y + 112, 2, 0x9fd8e2, cap);
+    char n[24];
+    if (t->snail_grazed <= 0) snprintf(n, sizeof n, "NOTHING YET");
+    else snprintf(n, sizeof n, "%d SPOT%s", (int)t->snail_grazed, t->snail_grazed == 1 ? "" : "S");
+    draw_text(c, X + (W - text_w(n, 3)) / 2, Y + 134, 3, 0xffffff, n);
+}
+
 void render_stats_card(const tank_t *t, int fish_idx, uint16_t *fb, int stride) {
+    if (fish_idx == RENDER_CARD_SNAIL) {
+        if (!(t->sd_unlocks & SD_ITEM_SNAIL) || t->snail_x < 0) return;
+        ctx_t sc = ctx_full(fb, stride, 1.0f);
+        snail_card_draw(&sc, t);
+        return;
+    }
     if (fish_idx < 0 || fish_idx >= t->n_fish) return;
     ctx_t c = ctx_full(fb, stride, 1.0f);            /* card ignores night dimming */
     const fish_t *f = &t->fish[fish_idx];
@@ -1178,7 +1212,7 @@ static void badge(ctx_t *c, int x, int y, const icon_t *ic, bool on, bool fresh)
 }
 static int bit_index(uint32_t bit) { int i = 0; while (bit > 1u) { bit >>= 1; i++; } return i; }
 /* the art for a gate of the fry checklist: the card's trust icon, the tank's
-   own badges for meals / a hold / grass / a change, or NULL = the youngest
+   own badges for meals / a hold / grass / a change / a wiped glass, or NULL = the youngest
    fish itself (the GROW gate) */
 static const icon_t *fry_req_icon(int kind) {
     switch (kind) {
@@ -1187,6 +1221,7 @@ static const icon_t *fry_req_icon(int kind) {
     case FRY_REQ_HOLD:   return &icon_ms_first_hold_approach;
     case FRY_REQ_CHANGE: return &icon_ms_tank_changed_someone;
     case FRY_REQ_GRASS:  return &icon_ms_first_trimming;
+    case FRY_REQ_GLASS:  return &icon_ms_first_glass_cleaning;
     default:             return NULL;
     }
 }
@@ -1456,6 +1491,8 @@ void render_notice(const tank_t *t, uint16_t *fb, int stride, int kind, int fish
 #define SHP_BTN_H     32
 #define SHP_EARN_X    32
 #define SHP_EARN_W    150
+#define SHP_MODAL_X   48             /* wider than the milestones modal (56 / 336): an item's second line runs to 28 chars = 334 px */
+#define SHP_MODAL_W   352
 #define SHP_MODAL_Y   48
 #define SHP_MODAL_H   244
 #define SHP_EARN_MODAL_Y 40
@@ -1496,7 +1533,7 @@ void render_shop(const tank_t *t, uint16_t *fb, int stride) {
     if (g_shp_modal < 0 && !g_shp_earn) return;
     for (int y = 0; y < TANK_H; y++)                          /* the page out of reach under a modal */
         for (int x = 0; x < TANK_W; x++) fb[y * stride + x] = (uint16_t)((fb[y * stride + x] >> 1) & 0x7bef);
-    const int X = MSP_MODAL_X, W = MSP_MODAL_W;
+    const int X = SHP_MODAL_X, W = SHP_MODAL_W;
     if (g_shp_earn) {
         const int Y = SHP_EARN_MODAL_Y, H = SHP_EARN_MODAL_H;
         rect_fill(&c, X, Y, W, H, 0x04141a);
@@ -1537,7 +1574,7 @@ int render_shop_tap(const tank_t *t, float x, float y) {
     if (g_shp_modal >= 0) {
         int item = g_shp_modal; const sd_item_t *it = &SD_ITEMS[item];
         bool owned = (t->sd_unlocks & it->bit) != 0, can = t->sd_balance >= it->price;
-        const int bx = MSP_MODAL_X + (MSP_MODAL_W - MSP_HOW_W) / 2, by = SHP_MODAL_Y + SHP_MODAL_H - 12 - MSP_HOW_H;
+        const int bx = SHP_MODAL_X + (SHP_MODAL_W - MSP_HOW_W) / 2, by = SHP_MODAL_Y + SHP_MODAL_H - 12 - MSP_HOW_H;
         bool on_btn = x >= bx - MSP_HOW_SLOP_X && x < bx + MSP_HOW_W + MSP_HOW_SLOP_X && y >= by - MSP_HOW_SLOP_UP && y < by + MSP_HOW_H + MSP_HOW_SLOP_DN;
         g_shp_modal = -1;
         if (on_btn && !owned && can) return SHOP_TAP_BUY + item;

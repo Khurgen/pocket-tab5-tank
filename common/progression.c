@@ -88,6 +88,9 @@ typedef struct {
      * (0 = the default spot) and its layer + 1 (0 = MIDDLE, an older save) */
     float    plant_x;
     uint8_t  plant_z1, pad_place[3];
+    /* the snail's tally (2026-09-16, its card): cells grazed clean, lifetime.
+     * Older saves read 0 - it starts counting from this build on. */
+    int32_t  snail_grazed;
 } save_t;
 /* the smallest PTK2 save (pre-upkeep, 2026-08-30): anything shorter is not
  * ours. Every later build wrote sizeof(save_t) of its day - 448, 1112, 1304,
@@ -127,7 +130,7 @@ void  progression_newborn_done(tank_t *t) { s_newborn = -1; progression_save(t);
 static void set_ms(fish_t *f, uint32_t bit) { if (!(f->ms_bits & bit)) { f->ms_bits |= bit; mark_dirty(); } }
 /* ---- sand dollars ---- */
 const sd_item_t SD_ITEMS[SD_ITEM_COUNT] = {
-    { SD_ITEM_PLANT, "SWORD PLANT", "BROAD LEAVES ON THE FLOOR.", "MORE COVER TO CALM THE FISH", SD_PRICE_PLANT },
+    { SD_ITEM_PLANT, "SWORD PLANT", "BROAD, VERTICAL LEAVES", "MORE COVER FOR YOUR CRITTERS", SD_PRICE_PLANT },   /* Strato's words (2026-09-16); the second line is 28 chars, the shop modal is 352 wide for it */
     { SD_ITEM_SNAIL, "SNAIL",       "GRAZES THE GLASS CLEAN,",   "EVEN WHILE THE TANK SLEEPS",  SD_PRICE_SNAIL },
 };
 static void sd_award(tank_t *t, int n) {
@@ -238,7 +241,8 @@ static void do_arrival(tank_t *t) {
  * milestones page can LIST them (progression_next_fry, 2026-09-14). One
  * table serves both: `have` / `need` are the numbers behind the words. */
 typedef struct { int kind; float have, need, frac; bool met; } gate_t;
-static int care_gates(const tank_t *t, gate_t g[3]) {
+#define CARE_GATES_MAX 4                 /* the population's three + the glass */
+static int care_gates(const tank_t *t, gate_t g[CARE_GATES_MAX]) {
     float min_trust = 10;
     for (int i = 0; i < t->n_fish; i++)
         if (t->fish[i].trust < min_trust) min_trust = t->fish[i].trust;
@@ -275,11 +279,30 @@ static int care_gates(const tank_t *t, gate_t g[3]) {
         GATE(FRY_REQ_TRUST, min_trust, 8.0f, min_trust >= 8.0f);
         break;
     }
+    /* and a clean tank (Strato, 2026-09-16: "fish should not be able to
+     * breed in a dirty tank. Some algae is OK but if a certain percentage of
+     * glass crosses a threshold it will prevent new fries from spawning
+     * unless cleaned"): film on no more than ALGAE_DIRTY of the glass. A
+     * care gate like the others, so the parents court while only the glass
+     * holds them back, and the checklist lists it. The bar reads the other
+     * way from the rest - empty at the growth cap, full at the threshold -
+     * so it fills as the keeper wipes. Note the staged fry is NOT held by
+     * the glass at the light-on that brings it: a night's sleep films ~25%
+     * of the glass, so a fry conceived clean would otherwise never land on
+     * a morning (do_arrival waits for the nursery only). */
+    {
+        float cover = tank_algae_cover(t);
+        GATE(FRY_REQ_GLASS, cover, ALGAE_DIRTY, cover <= ALGAE_DIRTY);
+        if (!g[n - 1].met) {
+            float frac = 1.0f - (cover - ALGAE_DIRTY) / ALGAE_DIRTY;
+            g[n - 1].frac = frac < 0 ? 0 : frac > 1 ? 1 : frac;
+        }
+    }
 #undef GATE
     return n;
 }
 static void arrival_conditions(const tank_t *t, int *met, int *total) {
-    gate_t g[3];
+    gate_t g[CARE_GATES_MAX];
     *total = care_gates(t, g); *met = 0;
     for (int i = 0; i < *total; i++) *met += g[i].met;
 }
@@ -291,6 +314,7 @@ static const char *const TIP_HOLD[]   = { "REST A FINGER ON THE GLASS", "FOR A F
 static const char *const TIP_GROW[]   = { "FISH GROW WITH TIME,", "SLOWER WHEN THE TANK IS", "IN SLEEP MODE.", NULL };
 static const char *const TIP_CHANGE[] = { "FISH PERSONALITIES WILL", "NATURALLY DRIFT AS THEY", "INTERACT WITH THE WORLD.", NULL };   /* Strato: intentionally vague */
 static const char *const TIP_GRASS[]  = { "GRASS REGROWS ON ITS OWN,", "FASTEST WHILE THE TANK", "SLEEPS.", NULL };
+static const char *const TIP_GLASS[]  = { "DRAG A FINGER ACROSS THE", "GLASS TO WIPE IT CLEAN.", "UNLOCKABLE CRITTERS CAN", "HELP KEEP IT CLEAN.", NULL };   /* Strato's words */
 const char *const *progression_fry_tip(int kind) {
     switch (kind) {
     case FRY_REQ_TRUST:  return TIP_TRUST;
@@ -298,6 +322,7 @@ const char *const *progression_fry_tip(int kind) {
     case FRY_REQ_HOLD:   return TIP_HOLD;
     case FRY_REQ_GROW:   return TIP_GROW;
     case FRY_REQ_CHANGE: return TIP_CHANGE;
+    case FRY_REQ_GLASS:  return TIP_GLASS;
     default:             return TIP_GRASS;
     }
 }
@@ -307,7 +332,7 @@ static const char *const STAGE_WORDS[4] = { "A FRY", "A JUVENILE", "AN ADULT", "
 int progression_next_fry(const tank_t *t, fry_req_t out[FRY_REQ_MAX], bool *staged) {
     if (staged) *staged = s_arrival_pending;
     if (t->n_fish >= POP_CAP || t->n_fish >= N_FISH_MAX || t->n_fish < 2) return 0;
-    gate_t g[3];
+    gate_t g[CARE_GATES_MAX];
     int n = care_gates(t, g);
     for (int i = 0; i < n; i++) {
         fry_req_t *r = &out[i];
@@ -350,6 +375,14 @@ int progression_next_fry(const tank_t *t, fry_req_t out[FRY_REQ_MAX], bool *stag
             snprintf(r->words2, sizeof r->words2, "MUST START TO SHIFT");
             if (r->met) snprintf(r->progress, sizeof r->progress, "DONE");
             else snprintf(r->progress, sizeof r->progress, "%d%% THERE", (int)(r->frac * 100 + 0.5f));
+            break; }
+        case FRY_REQ_GLASS: {
+            int pct = (int)(g[i].have * 100 + 0.5f), limit = (int)(ALGAE_DIRTY * 100 + 0.5f);
+            snprintf(r->title, sizeof r->title, "GLASS");
+            snprintf(r->words, sizeof r->words, "NO MORE THAN %d%%", limit);          /* Strato's words, 2026-09-16 */
+            snprintf(r->words2, sizeof r->words2, "ALGAE COVERAGE");
+            if (r->met) snprintf(r->progress, sizeof r->progress, "CURRENTLY CLEAN ENOUGH");
+            else snprintf(r->progress, sizeof r->progress, "%d%% COVERED NOW", pct);
             break; }
         }
     }
@@ -467,6 +500,7 @@ static bool load_save(tank_t *t, int64_t *saved_unix) {
     t->sd_colonies_paid = sv.sd_colonies_paid; t->sd_inches_paid = sv.sd_inches_paid;
     t->algae_colonies = sv.algae_colonies; t->trim_px = sv.trim_px;
     if (sv.snail_x > 0) { t->snail_x = sv.snail_x; t->snail_y = sv.snail_y; }
+    t->snail_grazed = sv.snail_grazed;
     if (t->sd_unlocks & SD_ITEM_PLANT) {
         if (sv.veg_h3[0] > 0) for (int i = 0; i < VEG_FRONDS_MAX; i++) t->veg_h[3][i] = sv.veg_h3[i];
         else tank_plant_place(t);
@@ -647,6 +681,7 @@ void progression_save(tank_t *t) {
     sv.sd_colonies_paid = t->sd_colonies_paid; sv.sd_inches_paid = t->sd_inches_paid;
     sv.algae_colonies = t->algae_colonies; sv.trim_px = t->trim_px;
     sv.snail_x = t->snail_x > 0 ? t->snail_x : 0; sv.snail_y = t->snail_y > 0 ? t->snail_y : 0;
+    sv.snail_grazed = t->snail_grazed;
     for (int i = 0; i < VEG_FRONDS_MAX; i++) sv.veg_h3[i] = (t->sd_unlocks & SD_ITEM_PLANT) ? t->veg_h[3][i] : 0;
     sv.plant_x = t->plant_x > 0 ? t->plant_x : 0; sv.plant_z1 = (uint8_t)(t->plant_z + 1);
     sv.setup_pending = s_setup_pending;

@@ -145,11 +145,11 @@ static int selftest_pop(void) {
     {
         fry_req_t req[FRY_REQ_MAX]; bool staged;
         int n = progression_next_fry(&tank, req, &staged);
-        if (n != 4 || staged) { printf("FAIL: a new pair should list 4 fry gates, none staged (%d, %d)\n", n, staged); return 1; }
+        if (n != 5 || staged) { printf("FAIL: a new pair should list 5 fry gates, none staged (%d, %d)\n", n, staged); return 1; }
         int met = 0; for (int i = 0; i < n; i++) met += req[i].met;
-        if (req[0].kind != FRY_REQ_TRUST || req[1].kind != FRY_REQ_FEED || req[2].kind != FRY_REQ_HOLD || req[3].kind != FRY_REQ_GRASS
-            || met != 1 || !req[3].met) { printf("FAIL: a fresh pair's gates: %d met, grass %d\n", met, req[3].met); return 1; }
-        printf("selftest-pop: fry checklist: %d gates (%s / %s / %s / %s)\n", n, req[0].progress, req[1].progress, req[2].progress, req[3].progress);
+        if (req[0].kind != FRY_REQ_TRUST || req[1].kind != FRY_REQ_FEED || req[2].kind != FRY_REQ_HOLD || req[3].kind != FRY_REQ_GLASS || req[4].kind != FRY_REQ_GRASS
+            || met != 2 || !req[3].met || !req[4].met) { printf("FAIL: a fresh pair's gates: %d met, glass %d, grass %d\n", met, req[3].met, req[4].met); return 1; }
+        printf("selftest-pop: fry checklist: %d gates (%s / %s / %s / %s / %s)\n", n, req[0].progress, req[1].progress, req[2].progress, req[3].progress, req[4].progress);
         tank.player_feedings = 12; progression_next_fry(&tank, req, &staged);
         if (!req[1].met || strcmp(req[1].progress, "DONE") || req[1].frac != 1.0f) { printf("FAIL: 12 feedings should meet the MEALS gate (%s)\n", req[1].progress); return 1; }
         tank.player_feedings = 3; progression_next_fry(&tank, req, &staged);
@@ -158,8 +158,27 @@ static int selftest_pop(void) {
         float g0 = tank.veg_growth[0], g1 = tank.veg_growth[1], g2 = tank.veg_growth[2];
         tank_veg_set(&tank, 0, VEG_NUB); tank_veg_set(&tank, 1, VEG_NUB); tank_veg_set(&tank, 2, VEG_NUB);
         progression_next_fry(&tank, req, &staged);
-        if (req[3].met || req[3].frac >= 1.0f) { printf("FAIL: scalped beds should leave the GRASS gate owed (%s)\n", req[3].progress); return 1; }
+        if (req[4].met || req[4].frac >= 1.0f) { printf("FAIL: scalped beds should leave the GRASS gate owed (%s)\n", req[4].progress); return 1; }
         tank_veg_set(&tank, 0, g0); tank_veg_set(&tank, 1, g1); tank_veg_set(&tank, 2, g2);
+        /* the GLASS gate (2026-09-16): a dirty tank - film on more than
+           ALGAE_DIRTY of the glass - holds the fry; wiping it back under
+           frees it. The bar fills as the film comes off. */
+        int dirty = (int)(ALGAE_CELLS * ALGAE_DIRTY) + 1;
+        for (int i = 0; i < dirty; i++) tank.algae[i] = 120;              /* just over the line */
+        progression_next_fry(&tank, req, &staged);
+        if (req[3].met || req[3].frac < 0.98f) { printf("FAIL: film just over ALGAE_DIRTY should leave GLASS owed, bar nearly full (%d, %.2f)\n", req[3].met, req[3].frac); return 1; }
+        int met_dirty = 0; for (int i = 0; i < n; i++) met_dirty += req[i].met;
+        if (met_dirty != 1) { printf("FAIL: a dirty tank should meet only GRASS (%d met)\n", met_dirty); return 1; }
+        for (int i = 0; i < ALGAE_CELLS; i++) tank.algae[i] = 0;
+        tank_grow_algae(&tank, 2000);                                       /* an untended tank: up to the growth cap */
+        progression_next_fry(&tank, req, &staged);
+        printf("selftest-pop: fry checklist GLASS at the cap: %s / %s (bar %.2f)\n", req[3].words, req[3].progress, req[3].frac);
+        if (req[3].met || req[3].frac > 0.05f || strcmp(req[3].title, "GLASS")) { printf("FAIL: a tank at the cap should have GLASS owed with an empty bar (%d, %.2f)\n", req[3].met, req[3].frac); return 1; }
+        for (int i = 0; i < ALGAE_CELLS; i++) tank.algae[i] = 0;
+        tank.algae[0] = tank.algae[1] = 200;                                /* a little film is fine */
+        progression_next_fry(&tank, req, &staged);
+        if (!req[3].met || req[3].frac != 1.0f || strcmp(req[3].progress, "CURRENTLY CLEAN ENOUGH")) { printf("FAIL: two filmed cells should pass GLASS (%s)\n", req[3].progress); return 1; }
+        for (int i = 0; i < ALGAE_CELLS; i++) tank.algae[i] = 0;
     }
     progression_time_scale = 600;                 /* 10 minutes of tended time per second */
     int arrivals = 0, last_n = tank.n_fish;
@@ -200,7 +219,7 @@ static int selftest_pop(void) {
            a growing one lists the next arrival's gates + grass */
         fry_req_t req[FRY_REQ_MAX];
         int n = progression_next_fry(&tank, req, NULL);
-        if (tank.n_fish >= POP_CAP ? n != 0 : (n < 3 || req[n - 1].kind != FRY_REQ_GRASS)) {
+        if (tank.n_fish >= POP_CAP ? n != 0 : (n < 4 || req[n - 2].kind != FRY_REQ_GLASS || req[n - 1].kind != FRY_REQ_GRASS)) {
             printf("FAIL: checklist lists %d gates at %d fish\n", n, tank.n_fish); return 1; }
         if (n > 0) {   /* and the page draws it: the row, the name's tally, the first gate's modal */
             static uint16_t fb[TANK_W * TANK_H];
@@ -228,7 +247,7 @@ static int selftest_pop(void) {
             printf("selftest-pop: NEW FRY row at %d fish: %d gates, first %s / %s / %s\n", tank.n_fish, n, req[0].title, req[0].words, req[0].progress);
             if (tank.n_fish == 3) {   /* CHANGE (2026-09-15) is the fry's own drift pressure: owed at birth, earned on a clamp */
                 int ci = -1; for (int i = 0; i < n; i++) if (req[i].kind == FRY_REQ_CHANGE) ci = i;
-                if (n != 4 || ci < 0 || req[ci].met || req[ci].frac > 0.01f) { printf("FAIL: at 3 fish CHANGE should be owed by the fry (n %d, met %d, frac %.2f)\n", n, ci >= 0 && req[ci].met, ci >= 0 ? req[ci].frac : -1.f); return 1; }
+                if (n != 5 || ci < 0 || req[ci].met || req[ci].frac > 0.01f) { printf("FAIL: at 3 fish CHANGE should be owed by the fry (n %d, met %d, frac %.2f)\n", n, ci >= 0 && req[ci].met, ci >= 0 ? req[ci].frac : -1.f); return 1; }
                 fish_t *fry = &tank.fish[2];
                 fry->bold = fry->bold0 = 0.95f; fry->sociable = fry->sociable0 = 0.05f;   /* born on both clamps */
                 tank.night = false;
@@ -1228,6 +1247,9 @@ static int snapshot(const char *prefix, int seconds) {
     render_shop_tap(&tank, 100, 98 + 56 + 20); render_shop(&tank, fb, TANK_W);      /* the snail's row -> its modal */
     snprintf(path, sizeof path, "%s_shop_modal.ppm", prefix); write_ppm(path, fb);
     render_shop_leave();
+    render_shop_tap(&tank, 100, 98 + 20); render_shop(&tank, fb, TANK_W);           /* the plant's row -> its modal (the long second line) */
+    snprintf(path, sizeof path, "%s_shop_plant.ppm", prefix); write_ppm(path, fb);
+    render_shop_leave();
     render_shop_tap(&tank, 60, 320); render_shop(&tank, fb, TANK_W);                /* HOW TO EARN */
     snprintf(path, sizeof path, "%s_shop_earn.ppm", prefix); write_ppm(path, fb);
     render_shop_leave();
@@ -1250,6 +1272,8 @@ static int snapshot(const char *prefix, int seconds) {
       for (int i = 0; i < 30; i++) tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
       render_tank(&tank, fb, TANK_W);
       snprintf(path, sizeof path, "%s_tank_snail_floor.ppm", prefix); write_ppm(path, fb);   /* upright on the floor, walking left */
+      tank.snail_grazed = 128; render_tank(&tank, fb, TANK_W); render_stats_card(&tank, RENDER_CARD_SNAIL, fb, TANK_W);
+      snprintf(path, sizeof path, "%s_snail_card.ppm", prefix); write_ppm(path, fb);         /* its card (2026-09-16) */
       memcpy(tank.algae, film, sizeof film); }
     { memset(tank.algae, 0, sizeof tank.algae); tank.snail_cell = -1; tank.snail_x = 200; tank.snail_y = 250;
       tank.algae[2 * ALGAE_COLS + 12] = 150;                    /* film straight above: the glass snail climbs, head first */
@@ -1464,6 +1488,17 @@ static int selftest_shop(void) {
                film0, cells1, film1, tank.snail_x, tank.snail_y, tank.cells_cleaned - cleaned0, tank.algae_colonies - col0);
         if (cells1 >= cells0 || film1 >= film0 * 0.8f) { printf("FAIL: the snail did not graze\n"); return 1; }
         if (tank.cells_cleaned != cleaned0 || tank.algae_colonies != col0) { printf("FAIL: the snail's grazing counted as the keeper's\n"); return 1; }
+        /* its own tally (2026-09-16, the snail's card): cells eaten clean */
+        if (tank.snail_grazed < 1 || tank.snail_grazed > 9) { printf("FAIL: the snail's tally is %d after a 9-cell patch\n", (int)tank.snail_grazed); return 1; }
+        {   /* a tap on it opens the card; the sprite's centre and a fingertip off both hit, 70 px off does not */
+            if (!tank_snail_hit(&tank, tank.snail_x, tank.snail_y) || !tank_snail_hit(&tank, tank.snail_x + 24, tank.snail_y - 12)
+                || tank_snail_hit(&tank, tank.snail_x + 70, tank.snail_y)) { printf("FAIL: the snail's hit test\n"); return 1; }
+            static uint16_t cfb[TANK_W * TANK_H];
+            render_tank(&tank, cfb, TANK_W); render_stats_card(&tank, RENDER_CARD_SNAIL, cfb, TANK_W);
+            int lit = 0; for (int y = 96; y < 96 + 176; y += 4) for (int x = 56; x < 56 + 336; x += 4) lit += cfb[y * TANK_W + x] == 0xffff;   /* white in RGB565 */
+            if (lit < 20) { printf("FAIL: the snail's card drew no white text (%d)\n", lit); return 1; }
+            printf("selftest-shop: snail card: %d spots grazed, the tap hits, the card draws\n", (int)tank.snail_grazed);
+        }
         /* the night shift: the same night with and without the snail (sleep
            grows film too, so the twin is the yardstick) */
         tank_grow_algae(&tank, 40);
@@ -1572,7 +1607,7 @@ static int selftest_shop(void) {
     }
     /* the save carries it all */
     {
-        tank.sd_unlocks = SD_ITEM_PLANT | SD_ITEM_SNAIL; tank_veg_set(&tank, 3, 0.62f); tank.snail_x = 123; tank.snail_y = 77;
+        tank.sd_unlocks = SD_ITEM_PLANT | SD_ITEM_SNAIL; tank_veg_set(&tank, 3, 0.62f); tank.snail_x = 123; tank.snail_y = 77; tank.snail_grazed = 321;
         tank.sd_balance = 37; int earned = tank.sd_earned, colonies = tank.algae_colonies; float trim = tank.trim_px;
         progression_save(&tank);
         tank_init(&tank, 4242); progression_boot(&tank); tank.trickle_off = true;
@@ -1582,7 +1617,8 @@ static int selftest_shop(void) {
             || fabsf(tank.snail_x - 123) > 1 || fabsf(tank.snail_y - 77) > 1 || tank_veg_beds(&tank) != VEG_BEDS_MAX) {   /* (it crawls a hair in two ticks) */
             printf("FAIL: the save lost something: balance %d unlocks %x earned %d (was %d) colonies %d (was %d) trim %.0f (was %.0f) bed3 %.2f snail %.0f,%.0f beds %d\n",
                    tank.sd_balance, tank.sd_unlocks, tank.sd_earned, earned, tank.algae_colonies, colonies, tank.trim_px, trim, tank.veg_growth[3], tank.snail_x, tank.snail_y, tank_veg_beds(&tank)); return 1; }
-        printf("selftest-shop: the save round-trip kept the balance, the unlocks, the counters, the plant's height and the snail's spot\n");
+        if (tank.snail_grazed != 321) { printf("FAIL: the save lost the snail's tally (%d)\n", (int)tank.snail_grazed); return 1; }
+        printf("selftest-shop: the save round-trip kept the balance, the unlocks, the counters, the plant's height and the snail's spot + tally\n");
         /* a save from before the shop (1480 bytes): no dollars, then the back
            pay - the stages and the trust it already has, once */
         const char *sav = getenv("POCKET_TANK_SAVE");
@@ -1880,6 +1916,8 @@ int main(int argc, char **argv) {
                     if (d2 < bd) { bd = d2; best = i; }
                 }
                 if (best >= 0) selected_fish = (best == selected_fish) ? -1 : best;
+                else if (tank_snail_hit(&tank, (float)press_x, (float)press_y))   /* the snail: its card (2026-09-16) */
+                    selected_fish = selected_fish == RENDER_CARD_SNAIL ? -1 : RENDER_CARD_SNAIL;
                 else if (selected_fish >= 0) selected_fish = -1;   /* card up: empty-glass tap dismisses, nothing else */
                 else tank_touch_tap(&tank, (float)press_x, (float)press_y);
             } else if (press_y < 60 && dy >= 40) tank_feed(&tank, (float)mx, 3);
