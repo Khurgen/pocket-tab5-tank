@@ -16,7 +16,10 @@ PORT=$(ls /dev/cu.usbmodem* 2>/dev/null | head -1)
 tools/preflight.py || exit 1
 . ~/esp/esp-idf/export.sh > /dev/null 2>&1 || { echo "flash: ESP-IDF export failed"; exit 1; }
 cd firmware
-if [[ " $* " != *" --no-build "* ]]; then idf.py -B "$BUILD" build 2>&1 | grep -E "error|binary size|build complete" || exit 1; fi
+if [[ " $* " != *" --no-build "* ]]; then
+  idf.py -B "$BUILD" build 2>&1 | grep -E "error|binary size|build complete"
+  [ "${PIPESTATUS[0]}" -eq 0 ] || { echo "flash: BUILD FAILED - nothing flashed"; exit 1; }
+fi
 if [[ " $* " == *" --model "* ]]; then
   python -m esptool --chip esp32s3 -p "$PORT" -b 460800 write_flash 0x290000 ../model/out/model_q4.bin 2>&1 | grep -E "Wrote|verified|rror"
   sleep 3

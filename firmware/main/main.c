@@ -101,11 +101,17 @@ static bool s_btn_used;   /* this press opened the reset prompt: no drowse, no p
 
 /* Sleep (2026-09-14, revised the same day after Strato found a quick
  * sleep/wake "feels like a soft boot"): two stages.
- *  1. GRACE, 90 s: save, panel and touch off, IMU quiesced, then RAM-alive
+ *  1. GRACE, 20 min (was 90 s until 2026-09-16 evening): save, panel and touch off, IMU quiesced, then RAM-alive
  *     LIGHT sleep with BOOT (GPIO, level low) and a timer armed. A press in
  *     this window resumes IN PLACE - the fish exactly where they were,
  *     mid-goal - after crediting the nap to tank_tick_sleep. Costs what the
- *     old drowse did, for 90 s at most.
+ *     old drowse did (~4.7 mA), for 20 min at most - ~1.6 mAh per sleep.
+ *     Why 20 min and not 90 s: from the PMIC power-off only a PWRON hold
+ *     longer than ONLEVEL (128 ms, the shortest the AXP2101 offers) boots
+ *     the board; a lighter tap does nothing at all (Strato's presses time
+ *     at ~150 ms on the PMIC's own clock - director `keytime`). Inside the
+ *     grace the chip is awake and any tap wakes it, so the short absences
+ *     stay a tap and only a real absence ends in the power-off.
  *  2. DEEP sleep once the grace passes: BOOT armed as ext0, chip down to
  *     microamps, RAM and PSRAM gone. Waking is a boot: app_main sees the
  *     ext0 (or the director's timer) wake cause and calls progression_wake -
@@ -123,7 +129,7 @@ static bool s_btn_used;   /* this press opened the reset prompt: no drowse, no p
  *  I2S + amp lines driven low, gpio_deep_sleep_hold_en), which is also what
  *  makes esp-idf isolate every other digital pad: un-isolated, deep sleep
  *  drew ~15 mA by the batlog, three times the light-sleep drowse it replaced. */
-#define SLEEP_GRACE_US    (90LL * 1000000)
+#define SLEEP_GRACE_US    (20LL * 60 * 1000000)  /* 2026-09-16: was 90 s; see the note above */
 #define DIRECTOR_GRACE_US (5LL * 1000000)     /* `deepsleep N`: straight to stage 2 */
 #define KEY_POLL_US       (1000000LL)         /* the grace wakes once a second to ask the PMIC about the PWR key */
 static int battery_pct(void) { float f; bool c; return battery_port_read(&f, &c) ? (int)(f * 100 + 0.5f) : -1; }

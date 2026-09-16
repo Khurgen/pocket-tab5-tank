@@ -10,11 +10,14 @@ bool battery_port_poweroff(void);                      /* PMIC soft power-off; f
 /* the PWR key (2026-09-16): THE button. It is the AXP2101's PWRON pin, so it
  * is the only key that can bring the board back from a PMIC power-off - and
  * so it is the sleep key too. key_init enables the short/long-press IRQs,
- * clears whatever the power-on press left and stretches the PMIC's own hard
- * cut to 10 s; key_poll reads + clears them: 0 nothing, 1 short press,
- * 2 long press (IRQLEVEL, 1.5 s). */
+ * clears whatever the power-on press left, stretches the PMIC's own hard
+ * cut to 10 s and sets the power-on hold (ONLEVEL) to 128 ms so a TAP boots
+ * the tank from a power-off (the chip's own default wants a longer hold, and
+ * a tap that does nothing is what "three presses" felt like); key_poll reads
+ * + clears them: 0 nothing, 1 short press, 2 long press (IRQLEVEL, 1.5 s). */
 void battery_port_key_init(void);
 int  battery_port_key_poll(void);
+void battery_port_key_trace(int seconds);   /* bench: log each press's length for N s (director `keytime`) */
 /* diagnostics: the AXP2101's rail enables + voltages, charger setting, VBAT
  * and state of charge, decoded to the log (read-only). VBAT in mV, 0 = n/a. */
 void battery_port_dump(void);

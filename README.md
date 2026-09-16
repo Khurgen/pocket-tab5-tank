@@ -259,14 +259,18 @@ stretch earns the tank its first full night's sleep.
 the light coming on. A real-time clock tells it how long it was off, so a
 tank left dark for a day wakes hungry. One key does all of it: a short
 press on PWR puts the tank to sleep - it saves and the screen goes dark -
-and a press wakes it. Press again within a minute and a half and the tank
-simply resumes where it was; after that it powers itself down to the
-board's deepest state (tens of microamps, months on the shelf), and the
-next press wakes it with a three-second boot, the fish having lived
-through the time away: hunger up, energy back, the grass and the algae
-grown, a long night ending in begging at the surface. The tank decides how
-deep it sleeps; you never do. Holding PWR powers it off at once. Hold BOOT
-and tap the glass to reset the tank. Flip the device and the screen follows.
+and a press wakes it. Press again within twenty minutes and the tank
+simply resumes where it was, on a tap; after that it powers itself down to
+the board's deepest state (tens of microamps, months on the shelf), and the
+next press wakes it with a one-second boot, the fish having lived through
+the time away: hunger up, energy back, the grass and the algae grown, a
+long night ending in begging at the surface. One thing to know about that
+deepest sleep: the only chip still awake is the power-management chip, and
+its rule is that the key must be held for about an eighth of a second
+before it turns the board on - a quick tap does nothing. Press it like you
+mean it. The tank decides how deep it sleeps; you never do. Holding PWR
+powers it off at once. Hold BOOT and tap the glass to reset the tank. Flip
+the device and the screen follows.
 
 **First run.** A new tank, whether a fresh install or a reset, opens with a
 short setup over the live water. A welcome page; then you place the bubble
@@ -465,8 +469,8 @@ seven-minute prompt check before an overnight run is always worth it.
 - ✅ Simulator: the full tank with progression, self-tests, snapshots
 - ✅ Firmware: running on the real board at 25 to 30 fps and 3.7 s per
   decision, with touch, auto-rotation, a battery gauge and log, and one
-  key for sleep and wake (a 90 s nap window, then the board powers itself
-  off to tens of microamps)
+  key for sleep and wake (a 20 min nap window, then the board powers itself
+  off to tens of microamps; from there a held press wakes it)
 - ✅ The living tank: growth, arrivals with courtship, trust, the hunger
   economy, upkeep chores, milestones, the reset prompt, the first-run setup
   (place the bubbles, a letter wheel to name each fry, a body color to pick),

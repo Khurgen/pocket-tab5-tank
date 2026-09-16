@@ -5,6 +5,8 @@
 #include "battery_port.h"
 #include "driver/i2c_master.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_log.h"
 #include <strings.h>
 #include <string.h>
@@ -65,11 +67,23 @@ static bool wr(uint8_t reg, uint8_t val) {
 }
 void battery_port_key_init(void) {
     if (!s_dev) return;
-    uint8_t v;
-    bool ok = rd(0x27, &v) && wr(0x27, (uint8_t)((v & ~0x0C) | 0x0C));   /* OFFLEVEL 10 s: the firmware's 1.5 s long press saves + cuts first */
+    uint8_t v, v27 = 0;
+    /* REG 27: IRQLEVEL 5:4 (the long press: 1 / 1.5 / 2 / 2.5 s), OFFLEVEL 3:2
+     * (the PMIC's own cut: 4 / 6 / 8 / 10 s), ONLEVEL 1:0 - how long PWRON must
+     * be HELD to power the board on from a power-off (128 / 512 ms, 1 / 2 s).
+     * ONLEVEL is the one that decides how a wake from the night feels: at the
+     * chip's default a tap is shorter than the hold and does nothing, and the
+     * keeper presses again (2026-09-16: "three presses"). 128 ms = a tap. */
+    static const char *ON[4] = { "128 ms", "512 ms", "1 s", "2 s" }, *IRQ[4] = { "1 s", "1.5 s", "2 s", "2.5 s" };
+    { uint8_t r20 = 0, r21 = 0, r48 = 0, r49 = 0, r4a = 0, r10 = 0;   /* what the PMIC saw before this boot: power-on / power-off source, the pending IRQ flags */
+      rd(0x20, &r20); rd(0x21, &r21); rd(0x48, &r48); rd(0x49, &r49); rd(0x4A, &r4a); rd(0x10, &r10);
+      ESP_LOGI("battery", "PMIC at boot: power-on source %02x, power-off source %02x, common cfg %02x | IRQ status %02x %02x %02x (49: bit3 short press, bit2 long, bit1 release, bit0 press)",
+               r20, r21, r10, r48, r49, r4a); }
+    bool ok = rd(0x27, &v27) && wr(0x27, (uint8_t)((v27 & ~0x0F) | 0x0C));   /* OFFLEVEL 10 s (the firmware's 1.5 s long press saves + cuts first), ONLEVEL 128 ms */
     ok = rd(0x41, &v) && wr(0x41, (uint8_t)(v | 0x0C)) && ok;           /* short + long press IRQs on (the defaults, made sure of) */
     ok = wr(0x48, 0xFF) && wr(0x49, 0xFF) && wr(0x4A, 0xFF) && ok;       /* the power-on press itself: cleared */
-    ESP_LOGI("battery", "PWR key%s: short press = sleep, 1.5 s = power-off, 10 s = the PMIC's own cut", ok ? "" : " (a register write FAILED)");
+    ESP_LOGI("battery", "PWR key%s: REG 27 was %02x (power-on hold %s, long press %s) -> power-on hold 128 ms; short press = sleep, %s = power-off, 10 s = the PMIC's own cut",
+             ok ? "" : " (a register write FAILED)", v27, ON[v27 & 3], IRQ[(v27 >> 4) & 3], IRQ[(v27 >> 4) & 3]);
 }
 int battery_port_key_poll(void) {
     if (!s_dev) return 0;
@@ -77,6 +91,39 @@ int battery_port_key_poll(void) {
     if (!rd(0x49, &st) || !(st & 0x0C)) return 0;
     wr(0x49, (uint8_t)(st & 0x0C));                                     /* clear what was taken */
     return (st & 0x04) ? 2 : 1;
+}
+
+/* bench (director `keytime N`, 2026-09-16): how long are the keeper's presses?
+ * Polls REG 49 every ~2 ms for N s and logs each press from the PWRON falling
+ * edge (bit 1) to the rising edge (bit 0). The short / long flags are swallowed
+ * with them, so a press inside the trace never sleeps the tank. The point: a
+ * powered-off PMIC only powers on for a hold longer than ONLEVEL (128 ms, the
+ * shortest it offers) - a lighter tap does nothing at all, and the keeper
+ * presses again. This tells whether the taps land under it. */
+void battery_port_key_trace(int seconds) {
+    if (!s_dev) return;
+    int64_t end = esp_timer_get_time() + (int64_t)seconds * 1000000, down = 0, last_up = 0; int n = 0;
+    uint8_t en = 0; rd(0x41, &en); wr(0x41, (uint8_t)(en | 0x0F));       /* the edge IRQs too, for the trace only */
+    wr(0x49, 0xFF);
+    ESP_LOGI("battery", "key trace: press the PWR key a few times, naturally, in the next %d s (the tank holds still; nothing sleeps)", seconds);
+    while (esp_timer_get_time() < end) {
+        uint8_t st; int64_t now = esp_timer_get_time();
+        if (rd(0x49, &st) && (st & 0x0F)) {
+            wr(0x49, (uint8_t)(st & 0x0F));
+            if (st & 0x02) down = now;
+            if (st & 0x09) {                                              /* the rising edge, or the short-press flag it comes with */
+                n++;
+                int held = down ? (int)((now - down) / 1000) : -1;
+                ESP_LOGI("battery", "key trace: press %d held %d ms%s%s | gap since the last release %lld ms | status %02x", n, held,
+                         held >= 0 && held < 128 ? "  <-- UNDER the 128 ms power-on hold: a powered-off PMIC ignores this one" : "",
+                         (st & 0x04) ? " (long)" : "", last_up ? (now - last_up) / 1000 : 0LL, st);
+                last_up = now; down = 0;
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+    wr(0x41, en); wr(0x49, 0xFF);
+    ESP_LOGI("battery", "key trace over: %d presses", n);
 }
 
 /* ---- diagnostics (2026-09-11, the battery-life pass) ----
