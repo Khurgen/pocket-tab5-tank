@@ -1354,6 +1354,32 @@ static int snapshot(const char *prefix, int seconds) {
         snprintf(path, sizeof path, "%s_fry_tally.ppm", prefix); write_ppm(path, fb);
         render_milestones_leave();
     }
+    /* the castle (2026-09-16): bought, IN FRONT of the grass at x 300 with
+       beds 1 and 2 growing (the grass stops at its walls) - one fish in the
+       arch, one behind the gate wall, one over the towers; the night; then
+       BEHIND (a backdrop: the grass and the fish over it); the placement page */
+    {
+        tank_init(&tank, 2024); tank_new_population(&tank);
+        while (tank.n_fish < 4) tank_add_fish(&tank, 0, 1);
+        tank.tank_ms_bits = 0x1a7;
+        tank_veg_set(&tank, 0, 0.6f); tank_veg_set(&tank, 1, 0.5f); tank_veg_set(&tank, 2, 0.45f);
+        for (int i = 0; i < 20 * 60; i++) tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
+        tank.sd_unlocks |= SD_ITEM_CASTLE; tank_castle_place(&tank); tank_decor_set(&tank, 2, 300, DECOR_Z_FRONT);
+        tank.fish[0].x = 300; tank.fish[0].y = TANK_H - 16 - 24; tank.fish[0].heading = 0;
+        tank.fish[1].x = 348; tank.fish[1].y = TANK_H - 16 - 30; tank.fish[1].heading = 3.14f;
+        tank.fish[2].x = 250; tank.fish[2].y = TANK_H - 16 - 120; tank.fish[2].heading = 0.3f;
+        tank.fish[3].x = 120; tank.fish[3].y = 150; tank.fish[3].heading = 0.1f;
+        for (int i = 0; i < 30; i++) render_tank(&tank, fb, TANK_W);   /* let the roll state settle */
+        snprintf(path, sizeof path, "%s_castle.ppm", prefix); write_ppm(path, fb);
+        tank.night = true; render_tank(&tank, fb, TANK_W);
+        snprintf(path, sizeof path, "%s_castle_night.ppm", prefix); write_ppm(path, fb); tank.night = false;
+        tank_decor_set(&tank, 2, 300, DECOR_Z_BACK); render_tank(&tank, fb, TANK_W); render_tank(&tank, fb, TANK_W);
+        snprintf(path, sizeof path, "%s_castle_behind.ppm", prefix); write_ppm(path, fb);
+        tank_decor_set(&tank, 2, 300, DECOR_Z_FRONT); setup_begin_place(&tank, 2);
+        render_tank(&tank, fb, TANK_W); render_setup(&tank, fb, TANK_W, 1.0f);
+        snprintf(path, sizeof path, "%s_place_castle.ppm", prefix); write_ppm(path, fb);
+        setup_cancel(&tank);
+    }
     printf("snapshot: %d fish, wrote %s_{tank,card,card1,milestones,milestones_fry,confirm,setup_*}.ppm\n", tank.n_fish, prefix);
     return 0;
 }
@@ -1589,6 +1615,76 @@ static int selftest_shop(void) {
           if (tank.n_fish != nf) { printf("FAIL: the save did not come back after the placement\n"); return 1; }
           if (fabsf(tank_decor_x(&tank, 0) - 300) > 0.01f || tank_decor_z(&tank, 0) != DECOR_Z_FRONT) { printf("FAIL: the placement was not saved (x %.0f, z %d)\n", tank_decor_x(&tank, 0), tank_decor_z(&tank, 0)); return 1; }
           printf("selftest-shop: DONE saved the placement; the reload put the plant back at x 300, FRONT\n"); }
+        /* the castle (2026-09-16): the third item, at its price; placeable with
+           TWO depths (BEHIND / IN FRONT - no AMONG: MIDDLE is taken as FRONT);
+           its page's bar has two segments; IN FRONT a fish in the arch shows and
+           one behind the gate wall does not, and the grass never draws over the
+           walls; BEHIND the fish and the grass pass in front of it; the spot and
+           the depth survive a save */
+        {
+            if (SD_ITEM_COUNT != 3 || SD_ITEMS[2].bit != SD_ITEM_CASTLE || SD_ITEMS[2].price != SD_PRICE_CASTLE) { printf("FAIL: the castle is not the third item\n"); return 1; }
+            if (!tank_decor_placeable(2) || tank_decor_z_count(2) != 2 || tank_decor_z_at(2, 0) != DECOR_Z_BACK || tank_decor_z_at(2, 1) != DECOR_Z_FRONT
+                || tank_decor_z_index(2, DECOR_Z_FRONT) != 1 || tank_decor_z_index(2, DECOR_Z_BACK) != 0) { printf("FAIL: the castle's depths\n"); return 1; }
+            tank.sd_balance = SD_PRICE_CASTLE - 1;
+            if (progression_buy(&tank, 2)) { printf("FAIL: the castle sold short\n"); return 1; }
+            tank.sd_balance = SD_PRICE_CASTLE;
+            if (!progression_buy(&tank, 2) || tank.sd_balance != 0 || !(tank.sd_unlocks & SD_ITEM_CASTLE)) { printf("FAIL: the castle did not sell at %d\n", SD_PRICE_CASTLE); return 1; }
+            if (fabsf(tank_decor_x(&tank, 2) - CASTLE_X_DEFAULT) > 0.01f || tank_decor_z(&tank, 2) != DECOR_Z_FRONT) { printf("FAIL: the castle did not land at the default spot, IN FRONT\n"); return 1; }
+            tank_decor_set(&tank, 2, 300, DECOR_Z_MIDDLE);
+            if (tank_decor_z(&tank, 2) != DECOR_Z_FRONT) { printf("FAIL: the castle took AMONG\n"); return 1; }
+            tank_decor_set(&tank, 2, 10, DECOR_Z_BACK);
+            if (tank_decor_x(&tank, 2) != DECOR_MARGIN + CASTLE_HALF_W || tank_decor_z(&tank, 2) != DECOR_Z_BACK) { printf("FAIL: the castle's clamp (x %.0f)\n", tank_decor_x(&tank, 2)); return 1; }
+            tank_decor_set(&tank, 2, 300, DECOR_Z_FRONT);
+            setup_begin_place(&tank, 2);
+            if (!setup_is_place() || setup_item() != 2) { printf("FAIL: the castle's placement page did not open\n"); return 1; }
+            int bx = (TANK_W - 2 * SETUP_DEPTH_SEG_W) / 2;
+            if (setup_hit(bx + 10, SETUP_DEPTH_Y + 10) != SETUP_HIT_Z0 + DECOR_Z_BACK || setup_hit(bx + SETUP_DEPTH_SEG_W + 10, SETUP_DEPTH_Y + 10) != SETUP_HIT_Z0 + DECOR_Z_FRONT
+                || setup_hit(bx - 30, SETUP_DEPTH_Y + 10) != 0) { printf("FAIL: the castle's two-segment DEPTH bar\n"); return 1; }
+            setup_touch(&tank, bx + 10, SETUP_DEPTH_Y + 18, true); setup_touch(&tank, bx + 12, SETUP_DEPTH_Y + 20, false);
+            if (tank_decor_z(&tank, 2) != DECOR_Z_BACK) { printf("FAIL: BEHIND did not set the castle's depth\n"); return 1; }
+            render_tank(&tank, fb, TANK_W); render_setup(&tank, fb, TANK_W, 1.0f);   /* the page draws (the castle live, BEHIND) */
+            setup_touch(&tank, bx + SETUP_DEPTH_SEG_W + 10, SETUP_DEPTH_Y + 18, true); setup_touch(&tank, bx + SETUP_DEPTH_SEG_W + 12, SETUP_DEPTH_Y + 20, false);
+            if (tank_decor_z(&tank, 2) != DECOR_Z_FRONT) { printf("FAIL: IN FRONT did not set the castle's depth\n"); return 1; }
+            setup_touch(&tank, 120, 250, true); setup_touch(&tank, 250, 250, true); setup_touch(&tank, 250, 250, false);
+            if (fabsf(tank_decor_x(&tank, 2) - 250) > 0.01f) { printf("FAIL: the drag did not carry the castle (x %.0f)\n", tank_decor_x(&tank, 2)); return 1; }
+            render_tank(&tank, fb, TANK_W); render_setup(&tank, fb, TANK_W, 1.0f);
+            tank_decor_set(&tank, 2, 300, DECOR_Z_FRONT);
+            setup_touch(&tank, SETUP_TOP_NEXT_X + 20, SETUP_TOP_BTN_Y + 20, true); setup_touch(&tank, SETUP_TOP_NEXT_X + 22, SETUP_TOP_BTN_Y + 24, false);
+            if (setup_active()) { printf("FAIL: DONE did not close the castle's page\n"); return 1; }
+            /* the render */
+            fish_t *f = &tank.fish[0]; float fx0 = f->x, fy0 = f->y, fh0 = f->heading;
+            const int FY = TANK_H - 16, ax = 300, ay = FY - 20, wx = 300 + 45, wy = FY - 30;   /* in the opening; on the gate wall right of it */
+            f->heading = 0;
+            f->x = 60; f->y = 60; for (int i = 0; i < 3; i++) render_tank(&tank, fb, TANK_W);
+            uint16_t bare_a = fb[ay * TANK_W + ax], bare_w = fb[wy * TANK_W + wx];
+            f->x = ax; f->y = ay; render_tank(&tank, fb, TANK_W); bool in_arch = fb[ay * TANK_W + ax] != bare_a;
+            f->x = wx; f->y = wy; render_tank(&tank, fb, TANK_W); bool on_wall = fb[wy * TANK_W + wx] != bare_w;
+            tank_decor_set(&tank, 2, 300, DECOR_Z_BACK);
+            f->x = 60; f->y = 60; for (int i = 0; i < 3; i++) render_tank(&tank, fb, TANK_W); uint16_t bare_wb = fb[wy * TANK_W + wx];
+            f->x = wx; f->y = wy; render_tank(&tank, fb, TANK_W); bool on_wall_behind = fb[wy * TANK_W + wx] != bare_wb;
+            f->x = 60; f->y = 60;
+            /* the grass: bed 2's fronds (x 284..368) cross the walls; grown vs
+               stubble changes the wall band only when the castle is BEHIND */
+            int diff[2];
+            for (int k = 0; k < 2; k++) {
+                tank_decor_set(&tank, 2, 300, k ? DECOR_Z_FRONT : DECOR_Z_BACK);
+                static uint16_t fa[TANK_W * TANK_H];
+                tank_veg_set(&tank, 2, VEG_NUB); render_tank(&tank, fb, TANK_W); render_tank(&tank, fb, TANK_W); memcpy(fa, fb, sizeof fa);
+                tank_veg_set(&tank, 2, 0.6f);    render_tank(&tank, fb, TANK_W); render_tank(&tank, fb, TANK_W);
+                diff[k] = 0;
+                for (int y = FY - 50; y <= FY - 16; y++) for (int x = 300 - 30; x <= 300 + 50; x++) diff[k] += fa[y * TANK_W + x] != fb[y * TANK_W + x];
+            }
+            f->x = fx0; f->y = fy0; f->heading = fh0;
+            printf("selftest-shop: castle: IN FRONT a fish in the arch shows %d, behind the gate wall %d; BEHIND on the wall %d; grass over the walls BEHIND %d px, IN FRONT %d px\n",
+                   in_arch, on_wall, on_wall_behind, diff[0], diff[1]);
+            if (!in_arch || on_wall || !on_wall_behind || diff[0] == 0 || diff[1] != 0) { printf("FAIL: the castle's depths did not order the fish and the grass\n"); return 1; }
+            tank_decor_set(&tank, 2, 260, DECOR_Z_BACK); progression_save(&tank);
+            { int nf = tank.n_fish; tank_init(&tank, 4242); progression_boot(&tank); tank.trickle_off = true;
+              if (tank.n_fish != nf || !(tank.sd_unlocks & SD_ITEM_CASTLE) || fabsf(tank_decor_x(&tank, 2) - 260) > 0.01f || tank_decor_z(&tank, 2) != DECOR_Z_BACK) {
+                  printf("FAIL: the castle's placement was not saved (x %.0f, z %d)\n", tank_decor_x(&tank, 2), tank_decor_z(&tank, 2)); return 1; } }
+            tank_decor_set(&tank, 2, 300, DECOR_Z_FRONT);
+            printf("selftest-shop: castle bought at %d, no AMONG, two-segment bar, dragged, DONE; the reload put it back at x 260, BEHIND\n", SD_PRICE_CASTLE);
+        }
         /* the shop's MOVE: the owned plant's modal re-opens the page */
         render_shop(&tank, fb, TANK_W);
         if (render_shop_tap(&tank, 100, 98 + 20) != SHOP_TAP_KEPT) { printf("FAIL: the owned plant's row did not open its modal\n"); return 1; }
@@ -1825,6 +1921,7 @@ int main(int argc, char **argv) {
 
     bool fdown = false, ndown = false, ldown = false;
     bool udown = false, mdown = false, mkdown = false, rdown = false, zdown = false, gdown = false, xdown = false, sdown = false, vdown = false, bdown = false, fourdown = false, ddown = false;
+    bool cdown = false;             /* C: the castle prototype */
     uint32_t press_ms = 0; int press_x = 0, press_y = 0;
     float press_fx[N_FISH_MAX] = {0}, press_fy[N_FISH_MAX] = {0};
     while (1) {
@@ -1944,6 +2041,13 @@ int main(int argc, char **argv) {
             printf("shop: %s (%d sand dollars)\n", shop_view ? "up" : "closed", tank.sd_balance);
         }
         fourdown = k[SDL_SCANCODE_4];
+        if (k[SDL_SCANCODE_C] && !cdown) {         /* the castle (2026-09-16): granted for a look, free; again takes it away */
+            if (tank.sd_unlocks & SD_ITEM_CASTLE) tank.sd_unlocks &= ~SD_ITEM_CASTLE;
+            else { tank.sd_unlocks |= SD_ITEM_CASTLE; tank_castle_place(&tank); }
+            printf("castle: %s (free; the shop sells it at %d, MOVE in its modal places it - BEHIND or IN FRONT of the grass)\n",
+                   (tank.sd_unlocks & SD_ITEM_CASTLE) ? "in the tank" : "gone", SD_PRICE_CASTLE);
+        }
+        cdown = k[SDL_SCANCODE_C];
         if (k[SDL_SCANCODE_D] && !ddown) { progression_sd_grant(&tank, 50); printf("+50 sand dollars (%d)\n", tank.sd_balance); }
         ddown = k[SDL_SCANCODE_D];
         if (k[SDL_SCANCODE_U] && !udown) { ui_visible = !ui_visible; }

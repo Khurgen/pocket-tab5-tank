@@ -279,6 +279,10 @@ typedef struct tank {
      * its depth layer (DECOR_Z_*). Both saved. */
     float    plant_x;
     uint8_t  plant_z;
+    /* the castle (2026-09-16): its centre x on the floor (<= 0 = the default
+     * spot) and its depth - BACK or FRONT only (see tank_decor_z_count). Both saved. */
+    float    castle_x;
+    uint8_t  castle_z;
     /* keeper habits the tank remembers (persisted by progression.c) */
     float    feed_spot_x;          /* where the keeper usually feeds (EMA); <0 = unknown */
     int      player_feedings;      /* MEALS: feedings the fish ate from (2026-09-14, Strato: a tap
@@ -476,7 +480,7 @@ void  tank_set_bubble_x(tank_t *t, float x);
  * The items are bits in tank_t.sd_unlocks; progression.c sells them
  * (progression_buy) and tank.c gives them their place. A bought thing is in
  * the tank for good. */
-enum { SD_ITEM_PLANT = 1u << 0, SD_ITEM_SNAIL = 1u << 1, SD_ITEM_COUNT = 2 };
+enum { SD_ITEM_PLANT = 1u << 0, SD_ITEM_SNAIL = 1u << 1, SD_ITEM_CASTLE = 1u << 2, SD_ITEM_COUNT = 3 };
 /* per-fish paid bits (sd_paid_fish) */
 enum { SD_PAID_JUV = 1u << 0, SD_PAID_ADULT = 1u << 1, SD_PAID_ELDER = 1u << 2, SD_PAID_TRUST = 1u << 3 };
 #define PX_PER_INCH 24.0f          /* the tank reads as ~15 in tall; a fish ~1.7 in */
@@ -488,6 +492,7 @@ veg_kind_t tank_veg_kind(const tank_t *t, int b);
  * snail on the glass, bottom left */
 void  tank_plant_place(tank_t *t);
 void  tank_snail_place(tank_t *t);
+void  tank_castle_place(tank_t *t);
 /* placing the decor (2026-09-16, Strato: a bought piece "should allow the
  * player to place the piece wherever they like", with a depth choice): a
  * placeable item has a centre x along the floor - clamped inside the
@@ -500,7 +505,18 @@ enum { DECOR_Z_BACK = 0, DECOR_Z_MIDDLE = 1, DECOR_Z_FRONT = 2, DECOR_Z_N = 3 };
 #define DECOR_MARGIN    30                 /* the snail's margin: inside the panel's rounded bezel */
 #define PLANT_HALF_W    21                 /* four leaves at a 14 px pitch: centre to the outer leaf */
 #define PLANT_X_DEFAULT (208.0f + PLANT_HALF_W)   /* the open floor between the reef bed and bed 2 */
+/* the castle (2026-09-16, Strato's castle-v2 mockup, drawn procedurally in
+ * render.c): ~184 px wide on the floor, a swim-through arch. Its depths are
+ * BEHIND and IN FRONT only (Strato: "no among"), and they mean the PLANT
+ * LAYER: BACK = behind the grass and the fish, a backdrop the fish pass in
+ * front of; FRONT = in front of the grass, and the fish swim THROUGH the arch
+ * (the keep behind them, the gate wall and the front towers over them). */
+#define CASTLE_HALF_W   92
+#define CASTLE_X_DEFAULT 300.0f
 bool  tank_decor_placeable(int item);      /* SD item index: has an x and a layer */
+int   tank_decor_z_count(int item);        /* depths the item offers: 3 (BACK/MIDDLE/FRONT) or 2 (BACK/FRONT) */
+int   tank_decor_z_at(int item, int i);    /* the i-th offered depth (the placement bar's segment i) */
+int   tank_decor_z_index(int item, int z); /* the inverse: which segment shows depth z */
 void  tank_decor_set(tank_t *t, int item, float x, int z);
 float tank_decor_x(const tank_t *t, int item);   /* the centre, default when unplaced */
 int   tank_decor_z(const tank_t *t, int item);

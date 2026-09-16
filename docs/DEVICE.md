@@ -57,6 +57,8 @@ reset the chip before anyone read the log.
   sleep/wake key, sleep = 90 s grace then PMIC power-off, cold boot lives
   the absence, deep sleep (bench / no-PMIC) holds + isolates its pads,
   bedtime batlog row in NVS, director `poweroff` (flashed 2026-09-16
-  morning; archive docs/batlog/2026-09-16_*.txt).
+  morning; archive docs/batlog/2026-09-16_*.txt), the GLASS gate + the
+  snail's card (midday), and the CASTLE - shop item 3, BEHIND / IN FRONT
+  of the grass (flashed 2026-09-16 13:17; archive docs/batlog/2026-09-16_1317.txt).
 - Model partition: v4m (model_q4_v4m.bin, flashed 2026-09-15 ~06:00).
 - Save: navi + pebble (fry; Strato's reset of 2026-09-15 night).

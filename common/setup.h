@@ -161,7 +161,9 @@ enum { SETUP_PG_PLACE = SETUP_PG_BIRTH_END };
  * teal, the bar in the calm ink, so "choose" and "finish" read apart. The
  * water below SETUP_PLACE_Y is the drag zone. */
 #define SETUP_DEPTH_SEG_W  110
-#define SETUP_DEPTH_W      (DECOR_Z_N * SETUP_DEPTH_SEG_W)
+#define SETUP_DEPTH_W      (DECOR_Z_N * SETUP_DEPTH_SEG_W)      /* the plant's three segments; the castle's two (BEHIND / IN
+                                                             * FRONT, Strato: no AMONG) are centred the same way - setup.c
+                                                             * sizes the bar from tank_decor_z_count */
 #define SETUP_DEPTH_X      ((TANK_W - SETUP_DEPTH_W) / 2)
 #define SETUP_DEPTH_Y      (SETUP_TOP_BTN_Y + SETUP_BTN_H + 24)
 #define SETUP_DEPTH_H      70

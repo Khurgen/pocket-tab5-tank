@@ -91,6 +91,10 @@ typedef struct {
     /* the snail's tally (2026-09-16, its card): cells grazed clean, lifetime.
      * Older saves read 0 - it starts counting from this build on. */
     int32_t  snail_grazed;
+    /* the castle's spot (2026-09-16): its centre x (0 = the default) and its
+     * layer + 1 (0 = FRONT, an older save or one that never placed it) */
+    float    castle_x;
+    uint8_t  castle_z1, pad_castle[3];
 } save_t;
 /* the smallest PTK2 save (pre-upkeep, 2026-08-30): anything shorter is not
  * ours. Every later build wrote sizeof(save_t) of its day - 448, 1112, 1304,
@@ -132,6 +136,7 @@ static void set_ms(fish_t *f, uint32_t bit) { if (!(f->ms_bits & bit)) { f->ms_b
 const sd_item_t SD_ITEMS[SD_ITEM_COUNT] = {
     { SD_ITEM_PLANT, "SWORD PLANT", "BROAD, VERTICAL LEAVES", "MORE COVER FOR YOUR CRITTERS", SD_PRICE_PLANT },   /* Strato's words (2026-09-16); the second line is 28 chars, the shop modal is 352 wide for it */
     { SD_ITEM_SNAIL, "SNAIL",       "GRAZES THE GLASS CLEAN,",   "EVEN WHILE THE TANK SLEEPS",  SD_PRICE_SNAIL },
+    { SD_ITEM_CASTLE, "CASTLE",     "STONE TOWERS AND AN ARCH",  "THE FISH SWIM THROUGH IT",    SD_PRICE_CASTLE },   /* 2026-09-16 */
 };
 static void sd_award(tank_t *t, int n) {
     if (n <= 0) return;
@@ -171,6 +176,7 @@ bool progression_buy(tank_t *t, int item) {
     t->sd_balance -= it->price; t->sd_unlocks |= it->bit;
     if (it->bit == SD_ITEM_PLANT) tank_plant_place(t);
     if (it->bit == SD_ITEM_SNAIL) tank_snail_place(t);
+    if (it->bit == SD_ITEM_CASTLE) tank_castle_place(t);
     progression_save(t);                                   /* a purchase sticks at once */
     return true;
 }
@@ -507,6 +513,7 @@ static bool load_save(tank_t *t, int64_t *saved_unix) {
         tank_veg_sync(t);
     }
     if (sv.plant_x > 0) tank_decor_set(t, 0, sv.plant_x, sv.plant_z1 ? sv.plant_z1 - 1 : DECOR_Z_MIDDLE);
+    if (sv.castle_x > 0) tank_decor_set(t, 2, sv.castle_x, sv.castle_z1 ? sv.castle_z1 - 1 : DECOR_Z_FRONT);
     s_sd_prev_feedings = t->player_feedings;         /* meals before this boot are not back-paid */
     s_sd_pending = 0;
     s_arrival_pending = sv.arrival_pending;
@@ -684,6 +691,7 @@ void progression_save(tank_t *t) {
     sv.snail_grazed = t->snail_grazed;
     for (int i = 0; i < VEG_FRONDS_MAX; i++) sv.veg_h3[i] = (t->sd_unlocks & SD_ITEM_PLANT) ? t->veg_h[3][i] : 0;
     sv.plant_x = t->plant_x > 0 ? t->plant_x : 0; sv.plant_z1 = (uint8_t)(t->plant_z + 1);
+    sv.castle_x = t->castle_x > 0 ? t->castle_x : 0; sv.castle_z1 = (uint8_t)(t->castle_z + 1);
     sv.setup_pending = s_setup_pending;
     sv.newborn_p1 = (uint8_t)(s_newborn >= 0 && s_newborn < t->n_fish ? s_newborn + 1 : 0);
     sv.bubble_x = t->bubble_x;

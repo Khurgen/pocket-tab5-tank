@@ -190,7 +190,7 @@ again and again. Nothing is ever needed and nothing is lost: a tank with no
 sand dollars is exactly the tank there was before. The coin on the
 milestones page's TANK row shows your balance, and it (or the UPGRADES
 button) opens the shop: a row per item with its price, UNLOCK when you can
-afford it, IN TANK once you own it, and HOW TO EARN for the list. Two
+afford it, IN TANK once you own it, and HOW TO EARN for the list. Three
 things to buy so far. The **sword plant** (40) is a fourth bed of broad
 leaves on the open floor, trimmed and grown and counted as cover like the
 grass. The **snail** (80) grazes the glass clean cell by cell, crawling
@@ -214,12 +214,29 @@ it. If you change your mind later, the plant's row in the shop has a MOVE
 button that opens the same page again. The snail is not for placing; it
 goes wherever the algae is.
 
+**The castle.** The third thing in the shop (150) is a stone castle with
+a swim-through arch: two pointed towers, a crenellated wall, a taller
+rear tower, a brick arch and moss creeping up from a rubble base. It is
+not a sprite. Like the fish and the grass it is drawn from a little
+geometry every time the scene is built, its stone a brick pattern from a
+position hash, lit from the upper left and tinted with the water of each
+row, so it sits in the tank instead of on it. Its placement page has the
+same drag and a DEPTH bar of two choices that mean the plant layer:
+BEHIND puts it behind the grass and the fish, a ruin in the weeds; IN
+FRONT stands it in front of the grass, which stops at its walls, and the
+fish swim through the arch, tucked behind the jambs as they pass. The
+fish do not know it is there. They find the arch by chance, which is most
+of the charm.
+
 ![The shop](docs/media/sim-shop.png)
 ![Unlocking the snail](docs/media/sim-shop-modal.png)
 ![The sword plant and the snail on the glass, a +5 just earned](docs/media/sim-tank-shop.png)
 ![The snail walking the floor](docs/media/sim-tank-snail.png)
 ![The snail's card](docs/media/sim-snail-card.png)
 ![Placing the sword plant: dragged to the right, IN FRONT of the fish](docs/media/sim-place.png)
+![The castle IN FRONT of the grass, a fish in the arch](docs/media/sim-castle.png)
+![The castle BEHIND the grass](docs/media/sim-castle-behind.png)
+![Placing the castle: BEHIND or IN FRONT](docs/media/sim-place-castle.png)
 
 **The light.** Two quick taps on the glass turn the tank light off and on;
 in the dark the fish rest and the palette dims. The settings page has a
@@ -314,7 +331,8 @@ Flags: `--fresh` starts a new random tank, `--fast N` runs tended time N×
 faster so you can watch fish grow up, `--greedy` disables sampling,
 `--narrate` prints every decision as it's made, `--snapshot <prefix>` writes
 PPM frames of the tank, card, milestones page, the shop, the placement
-page, reset prompt, the setup pages, and the three pages of a birth.
+page, the castle (in front, behind, its page), reset prompt, the setup
+pages, and the three pages of a birth.
 
 Headless checks, all of which run in CI-style without a window:
 `--selftest` (reflex layer), `--selftest-llm [min]` (the real model),
@@ -455,8 +473,8 @@ seven-minute prompt check before an overnight run is always worth it.
 - ✅ The light follows the hand: an optional idle rule (the motion sensor
   and touch) puts a tank left on the desk to sleep; the double-tap by
   default
-- ✅ Sand dollars: care earns points, the shop spends them; a sword plant
-  and an algae-grazing snail to start; what you buy you place yourself,
+- ✅ Sand dollars: care earns points, the shop spends them; a sword plant,
+  an algae-grazing snail and a swim-through castle to start; what you buy you place yourself,
   where along the floor and whether it stands behind, among or in front
   of the fish
 - ✅ Browser installer: one click from Chrome or Edge, hosted at

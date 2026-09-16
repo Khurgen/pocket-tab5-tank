@@ -173,12 +173,14 @@ int setup_hit(float x, float y) {
         return 0;
     }
     if (s_page == SETUP_PG_PLACE) {
-        /* the DEPTH bar: a band 8 px around it, the segment under the finger */
-        if (!in_box(x, y, SETUP_DEPTH_X, SETUP_DEPTH_Y, SETUP_DEPTH_W, SETUP_DEPTH_H, 8)) return 0;
-        int i = (int)((x - SETUP_DEPTH_X) / SETUP_DEPTH_SEG_W);
+        /* the DEPTH bar: a band 8 px around it, the segment under the finger
+           (the item's own depths: the plant's three, the castle's two) */
+        int n = tank_decor_z_count(s_item), bw = n * SETUP_DEPTH_SEG_W, bx = (TANK_W - bw) / 2;
+        if (!in_box(x, y, bx, SETUP_DEPTH_Y, bw, SETUP_DEPTH_H, 8)) return 0;
+        int i = (int)((x - bx) / SETUP_DEPTH_SEG_W);
         if (i < 0) i = 0;
-        if (i >= DECOR_Z_N) i = DECOR_Z_N - 1;
-        return SETUP_HIT_Z0 + i;
+        if (i >= n) i = n - 1;
+        return SETUP_HIT_Z0 + tank_decor_z_at(s_item, i);
     }
     if (page_is_look()) {
         /* the swatch row, a tall band (40 px above, 40 below - fingers land
@@ -311,14 +313,36 @@ static void leaf_glyph(uint16_t *fb, int stride, int cx, int y_bot, int h, uint3
         render_rect(fb, stride, cx - w / 2, y_bot - i, w, 1, rgb);
     }
 }
-/* a depth tile: two leaves and the keeper's first fish, in the order the
- * choice means - BEHIND (the plant behind the fish): leaves, then the fish
- * over them; AMONG: one leaf, the fish, the other leaf; IN FRONT: the fish,
- * then both leaves over it */
-static void depth_tile(const tank_t *t, uint16_t *fb, int stride, int x, int y, int w, int h, int z, float clock) {
+/* a little castle for the castle's depth tiles: two towers, a wall with
+ * merlons, the arch - the stone tones of the real one */
+static void castle_glyph(uint16_t *fb, int stride, int cx, int y_bot, uint32_t wall, uint32_t roof) {
+    const uint32_t tower = 0x87795f, dark = 0x0b1a22, trim = 0xc25f38;
+    render_rect(fb, stride, cx - 14, y_bot - 14, 29, 15, wall);
+    for (int x = cx - 14; x + 2 <= cx + 14; x += 6) render_rect(fb, stride, x, y_bot - 17, 3, 3, wall);
+    render_rect(fb, stride, cx - 21, y_bot - 24, 8, 25, tower);
+    for (int i = 0; i < 7; i++) render_rect(fb, stride, cx - 17 - i / 2, y_bot - 31 + i, 1 + i, 1, roof);
+    render_rect(fb, stride, cx + 13, y_bot - 20, 8, 21, tower);
+    for (int i = 0; i < 6; i++) render_rect(fb, stride, cx + 17 - i / 2, y_bot - 26 + i, 1 + i, 1, roof);
+    render_rect(fb, stride, cx - 5, y_bot - 9, 11, 1, trim);
+    render_rect(fb, stride, cx - 3, y_bot - 8, 7, 9, dark);
+    render_rect(fb, stride, cx - 4, y_bot - 6, 9, 7, dark);
+}
+/* a depth tile: the plant's - two leaves and the keeper's first fish, in
+ * the order the choice means - BEHIND (the plant behind the fish): leaves,
+ * then the fish over them; AMONG: one leaf, the fish, the other leaf; IN
+ * FRONT: the fish, then both leaves over it. The castle's (2026-09-16):
+ * the castle and two leaves - BEHIND: the castle, the leaves over it; IN
+ * FRONT: the leaves, the castle over them (its depths mean the plant layer) */
+static void depth_tile(const tank_t *t, uint16_t *fb, int stride, int x, int y, int w, int h, int z, int item, float clock) {
     const int cx = x + w / 2, cy = y + h / 2, lh = h - 6, yb = y + h - 3;
     const uint32_t la = 0x8dbb48, lb = 0x6c9d38;
     const fish_t *who = t->n_fish > 0 ? &t->fish[0] : NULL;
+    if (item == 2) {
+        if (z == DECOR_Z_BACK) castle_glyph(fb, stride, cx, yb, 0xa99b7b, 0xc4a95e);
+        leaf_glyph(fb, stride, cx - 14, yb, lh, la); leaf_glyph(fb, stride, cx + 15, yb, lh, lb);
+        if (z != DECOR_Z_BACK) castle_glyph(fb, stride, cx, yb, 0xa99b7b, 0xc4a95e);
+        return;
+    }
     if (z == DECOR_Z_BACK)  { leaf_glyph(fb, stride, cx - 8, yb, lh, la); leaf_glyph(fb, stride, cx + 8, yb, lh, lb); }
     if (z == DECOR_Z_MIDDLE)  leaf_glyph(fb, stride, cx - 8, yb, lh, la);
     if (who) render_fish_portrait(fb, stride, (float)cx, (float)cy, 0.62f, who, clock);
@@ -367,21 +391,24 @@ void render_setup(const tank_t *t, uint16_t *fb, int stride, float clock) {
            one lit; a picture tile on each and the word under it */
         static const char *const zl[DECOR_Z_N] = { "BEHIND", "AMONG", "IN FRONT" };
         static const char *const hint[DECOR_Z_N] = { "THE FISH SWIM IN FRONT OF IT", "THE FISH SWIM THROUGH IT", "THE FISH SWIM BEHIND IT" };
-        int z = tank_decor_z(t, s_item);
+        static const char *const castle_hint[DECOR_Z_N] = { "THE PLANTS GROW IN FRONT OF IT", "", "IT STANDS IN FRONT OF THE PLANTS" };
+        int z = tank_decor_z(t, s_item), zi = tank_decor_z_index(s_item, z);
+        int n = tank_decor_z_count(s_item), bw = n * SETUP_DEPTH_SEG_W, bx = (TANK_W - bw) / 2;   /* the item's own depths */
         text_c(fb, stride, CX, SETUP_DEPTH_Y - 18, 2, C_CAPT, "DEPTH");
-        render_rect(fb, stride, SETUP_DEPTH_X, SETUP_DEPTH_Y, SETUP_DEPTH_W, SETUP_DEPTH_H, C_KEY);
-        for (int i = 0; i < DECOR_Z_N; i++) {
-            int sx = SETUP_DEPTH_X + i * SETUP_DEPTH_SEG_W;
-            if (i == z) { render_rect(fb, stride, sx, SETUP_DEPTH_Y, SETUP_DEPTH_SEG_W, SETUP_DEPTH_H, C_INNER);
-                          render_rect_edge(fb, stride, sx + 1, SETUP_DEPTH_Y + 1, SETUP_DEPTH_SEG_W - 2, SETUP_DEPTH_H - 2, C_EDGE); }
+        render_rect(fb, stride, bx, SETUP_DEPTH_Y, bw, SETUP_DEPTH_H, C_KEY);
+        for (int i = 0; i < n; i++) {
+            int sx = bx + i * SETUP_DEPTH_SEG_W, zi_ = tank_decor_z_at(s_item, i);
+            if (i == zi) { render_rect(fb, stride, sx, SETUP_DEPTH_Y, SETUP_DEPTH_SEG_W, SETUP_DEPTH_H, C_INNER);
+                           render_rect_edge(fb, stride, sx + 1, SETUP_DEPTH_Y + 1, SETUP_DEPTH_SEG_W - 2, SETUP_DEPTH_H - 2, C_EDGE); }
             else if (i > 0) render_rect(fb, stride, sx, SETUP_DEPTH_Y + 6, 1, SETUP_DEPTH_H - 12, C_DIM);   /* a divider */
-            depth_tile(t, fb, stride, sx, SETUP_DEPTH_Y + 4, SETUP_DEPTH_SEG_W, SETUP_DEPTH_TILE_H, i, clock);
-            text_c(fb, stride, sx + SETUP_DEPTH_SEG_W / 2, SETUP_DEPTH_Y + SETUP_DEPTH_TILE_H + 10, 2, i == z ? C_TEXT : dim(C_CAPT, 45), zl[i]);
+            depth_tile(t, fb, stride, sx, SETUP_DEPTH_Y + 4, SETUP_DEPTH_SEG_W, SETUP_DEPTH_TILE_H, zi_, s_item, clock);
+            text_c(fb, stride, sx + SETUP_DEPTH_SEG_W / 2, SETUP_DEPTH_Y + SETUP_DEPTH_TILE_H + 10, 2, i == zi ? C_TEXT : dim(C_CAPT, 45), zl[zi_]);
         }
-        render_rect_edge(fb, stride, SETUP_DEPTH_X, SETUP_DEPTH_Y, SETUP_DEPTH_W, SETUP_DEPTH_H, C_EDGE);
-        text_c(fb, stride, CX, SETUP_DEPTH_HINT_Y, 2, C_CAPT, hint[z]);
+        render_rect_edge(fb, stride, bx, SETUP_DEPTH_Y, bw, SETUP_DEPTH_H, C_EDGE);
+        text_c(fb, stride, CX, SETUP_DEPTH_HINT_Y, 2, C_CAPT, s_item == 2 ? castle_hint[z] : hint[z]);
         float x0 = tank_decor_x(t, s_item) - tank_decor_half_w(s_item) - 10, x1 = tank_decor_x(t, s_item) + tank_decor_half_w(s_item) + 10, top = TANK_H - 16 - 40;
         if (s_item == 0) tank_veg_bed(t, 3, NULL, NULL, &top, NULL);   /* the leaves' reach */
+        if (s_item == 2) top = TANK_H - 16 - 146;                      /* the tallest spire */
         int sy = (int)top - 8; if (sy < SETUP_PLACE_Y) sy = SETUP_PLACE_Y;
         render_rect_blend(fb, stride, (int)x0, sy, (int)(x1 - x0), TANK_H - 16 - sy + 4, C_EDGE, 46);
         chevron(fb, stride, (int)((x0 + x1) * 0.5f), TANK_H - 16 - 34, true, C_EDGE);

@@ -266,6 +266,7 @@ void tank_init(tank_t *t, uint32_t seed) {
     t->snail_x = -1; t->snail_y = -1; t->snail_heading = 0; t->snail_cell = -1; t->snail_graze = 0;
     t->snail_grazed = 0;
     t->plant_x = 0; t->plant_z = DECOR_Z_MIDDLE;
+    t->castle_x = 0; t->castle_z = DECOR_Z_FRONT;
     t->tank_ms_bits = 0; t->tank_ms_seen = 0; t->ask_rr = 0; t->advisor_asks = 0;
     tank_scatter_food(t, 2);
 }
@@ -681,14 +682,24 @@ void tank_snail_place(tank_t *t) {
 void tank_plant_place(tank_t *t) {
     tank_veg_set(t, 3, VEG_START);                          /* a young plant; it grows from here */
 }
-/* the decor's spot and layer (see tank.h): item 0 is the plant */
-bool  tank_decor_placeable(int item) { return item == 0; }
-float tank_decor_half_w(int item) { return item == 0 ? PLANT_HALF_W : 0; }
+void tank_castle_place(tank_t *t) {
+    t->castle_x = 0; t->castle_z = DECOR_Z_FRONT;          /* the default spot, the fish swim through */
+}
+/* the decor's spot and layer (see tank.h): item 0 is the plant, item 2 the castle */
+bool  tank_decor_placeable(int item) { return item == 0 || item == 2; }
+float tank_decor_half_w(int item) { return item == 0 ? PLANT_HALF_W : item == 2 ? CASTLE_HALF_W : 0; }
+int   tank_decor_z_count(int item) { return item == 2 ? 2 : DECOR_Z_N; }
+int   tank_decor_z_at(int item, int i) {
+    if (item == 2) return i <= 0 ? DECOR_Z_BACK : DECOR_Z_FRONT;
+    return i < 0 ? 0 : i >= DECOR_Z_N ? DECOR_Z_N - 1 : i;
+}
+int   tank_decor_z_index(int item, int z) { return item == 2 ? (z == DECOR_Z_BACK ? 0 : 1) : z; }
 float tank_decor_x(const tank_t *t, int item) {
+    if (item == 2) return t->castle_x > 0 ? t->castle_x : CASTLE_X_DEFAULT;
     if (item != 0) return 0;
     return t->plant_x > 0 ? t->plant_x : PLANT_X_DEFAULT;
 }
-int tank_decor_z(const tank_t *t, int item) { return item == 0 ? t->plant_z : DECOR_Z_MIDDLE; }
+int tank_decor_z(const tank_t *t, int item) { return item == 0 ? t->plant_z : item == 2 ? t->castle_z : DECOR_Z_MIDDLE; }
 void tank_decor_set(tank_t *t, int item, float x, int z) {
     if (!tank_decor_placeable(item)) return;
     float half = tank_decor_half_w(item), lo = DECOR_MARGIN + half, hi = TANK_W - DECOR_MARGIN - half;
@@ -696,6 +707,7 @@ void tank_decor_set(tank_t *t, int item, float x, int z) {
     if (x > hi) x = hi;
     if (z < 0) z = 0;
     if (z >= DECOR_Z_N) z = DECOR_Z_N - 1;
+    if (item == 2) { t->castle_x = x; t->castle_z = (uint8_t)(z == DECOR_Z_BACK ? DECOR_Z_BACK : DECOR_Z_FRONT); return; }   /* no AMONG */
     t->plant_x = x; t->plant_z = (uint8_t)z;
 }
 
