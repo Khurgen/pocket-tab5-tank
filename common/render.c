@@ -1586,6 +1586,20 @@ static int  g_ms_fish = -1;          /* a fish's own sprite instead, or -1 */
 static bool g_ms_fry;                /* the fry-to-be (a silhouette) instead */
 static int  g_ms_kind = -1;          /* a gate's modal: its kind (the HOW? button shows), or -1 */
 static bool g_ms_tip;                /* the gate's tip page is up instead of its modal */
+/* where the modal came from (2026-09-16, Strato: arrows at the top corners
+   to cycle without dropping back to the page): the row (a fish's index, or
+   the TANK / NEW FRY row) and the column (-1 = the name / strip, else the
+   badge or gate). ms_step moves along the group the modal belongs to: a
+   fish's six badges, the tank's six, the fry's gates, or - from a fish's
+   name - the fish themselves. A group of one (TANK's tally, NEW FRY's)
+   shows no arrows. */
+static int  g_ms_row = -1, g_ms_k = -1;
+static bool g_ms_tankrow, g_ms_fryrow;
+#define MSP_ARROW_W   40             /* the arrow buttons, inset at the modal's top corners */
+#define MSP_ARROW_H   32
+#define MSP_ARROW_IN  10
+#define MSP_ARROW_HIT 100            /* the hit box: the corner's whole width in from each side, 12 above, 24 below
+                                        (a miss closes the modal, so the box is wide) */
 /* a gate's modal is taller (two sentence lines, progress, the HOW? button)
    so it sits higher than the badge modal, clear of the CLOSE button */
 #define MSP_FRY_MODAL_Y 60
@@ -1669,6 +1683,35 @@ static void fry_badge(ctx_t *c, uint16_t *fb, int stride, const tank_t *t, int x
         if (r->met) render_fish_preview(fb, stride, x + MSP_ICON / 2, y + MSP_ICON / 2, sz, f->color, f->fin, f->accent, t->clock);
         else        render_fish_preview(fb, stride, x + MSP_ICON / 2, y + MSP_ICON / 2, sz, MSP_DIM, MSP_DIM, MSP_DIM, t->clock);
     }
+}
+
+/* a chevron pointing left or right, its tip at (tx, cy): 3 px steps, 24 px tall */
+static void ms_chevron(ctx_t *c, int tx, int cy, bool left, uint32_t rgb) {
+    for (int i = 0; i < 4; i++) {
+        int xx = left ? tx + i * 3 : tx - 3 - i * 3;
+        rect_fill(c, xx, cy - 3 - i * 3, 3, 3, rgb);
+        rect_fill(c, xx, cy + i * 3, 3, 3, rgb);
+    }
+}
+/* the modal's group: how many things the arrows cycle through and where
+   this one sits. nreq = the fry checklist's gate count (the caller has it). */
+static int ms_group(const tank_t *t, int nreq, int *idx) {
+    if (g_ms_fryrow)  { *idx = g_ms_k; return g_ms_k < 0 ? 1 : nreq; }
+    if (g_ms_tankrow) { *idx = g_ms_k; return g_ms_k < 0 ? 1 : 6; }
+    if (g_ms_k < 0)   { *idx = g_ms_row; return t->n_fish; }    /* a fish's name: the fish */
+    *idx = g_ms_k; return 6;
+}
+static int ms_open(const tank_t *t, int row, bool tank_row, bool fry_row, int k,
+                   const fry_req_t *req, int nreq, bool staged);
+/* the arrows: the previous / next thing in the modal's group, wrapping */
+static void ms_step(const tank_t *t, int dir) {
+    fry_req_t req[FRY_REQ_MAX]; bool staged;
+    int nreq = progression_next_fry(t, req, &staged);
+    int idx, n = ms_group(t, nreq, &idx);
+    if (n < 2) return;
+    idx = (idx + dir + n) % n;
+    if (!g_ms_fryrow && !g_ms_tankrow && g_ms_k < 0) ms_open(t, idx, false, false, -1, req, nreq, staged);
+    else ms_open(t, g_ms_row, g_ms_tankrow, g_ms_fryrow, idx, req, nreq, staged);
 }
 
 void render_milestones(const tank_t *t, uint16_t *fb, int stride) {
@@ -1775,11 +1818,33 @@ void render_milestones(const tank_t *t, uint16_t *fb, int stride) {
         int ly = Y + 144;
         if (g_ms_caption2[0]) { draw_text(&c, X + (W - text_w(g_ms_caption2, 2)) / 2, ly, 2, g_ms_lit ? MSP_TEAL : 0x5f8a92, g_ms_caption2); ly += 20; }
         if (g_ms_sub[0]) draw_text(&c, X + (W - text_w(g_ms_sub, 2)) / 2, ly + 4, 2, g_ms_lit ? 0xffffff : MSP_TEAL, g_ms_sub);
+        {   /* the arrows (2026-09-16): the previous / next of the group at the
+               top corners, in the buttons' dress, only when there is a group */
+            int idx, n = ms_group(t, nreq, &idx);
+            if (n > 1) {
+                int ax = X + MSP_ARROW_IN, ay = Y + MSP_ARROW_IN, bx = X + W - MSP_ARROW_IN - MSP_ARROW_W;
+                rect_fill(&c, ax, ay, MSP_ARROW_W, MSP_ARROW_H, 0x1c2f36);
+                rect_edge(&c, ax, ay, MSP_ARROW_W, MSP_ARROW_H, MSP_TEAL); rect_edge(&c, ax + 1, ay + 1, MSP_ARROW_W - 2, MSP_ARROW_H - 2, MSP_TEAL);
+                ms_chevron(&c, ax + 14, ay + MSP_ARROW_H / 2, true, 0xffffff);
+                rect_fill(&c, bx, ay, MSP_ARROW_W, MSP_ARROW_H, 0x1c2f36);
+                rect_edge(&c, bx, ay, MSP_ARROW_W, MSP_ARROW_H, MSP_TEAL); rect_edge(&c, bx + 1, ay + 1, MSP_ARROW_W - 2, MSP_ARROW_H - 2, MSP_TEAL);
+                ms_chevron(&c, bx + MSP_ARROW_W - 14, ay + MSP_ARROW_H / 2, false, 0xffffff);
+            }
+        }
     }
 }
 
 int render_milestones_tap(const tank_t *t, float x, float y) {
     if (g_ms_caption[0]) {                       /* a modal is up */
+        if (!g_ms_tip) {                         /* the arrows at its top corners: the previous / next of the group */
+            fry_req_t req[FRY_REQ_MAX]; bool staged; int idx;
+            int n = ms_group(t, progression_next_fry(t, req, &staged), &idx);
+            const int Y = g_ms_kind >= 0 ? MSP_FRY_MODAL_Y : MSP_MODAL_Y;
+            if (n > 1 && y >= Y - 12 && y < Y + MSP_ARROW_IN + MSP_ARROW_H + 24) {
+                if (x < MSP_MODAL_X + MSP_ARROW_HIT)               { ms_step(t, -1); return MS_TAP_KEPT; }
+                if (x >= MSP_MODAL_X + MSP_MODAL_W - MSP_ARROW_HIT) { ms_step(t, +1); return MS_TAP_KEPT; }
+            }
+        }
         if (g_ms_kind >= 0 && !g_ms_tip) {       /* a gate's: the HOW? button opens its tip page */
             const int H = MSP_MODAL_H + (g_ms_caption2[0] ? 20 : 0) + (g_ms_sub[0] ? 24 : 0) + MSP_HOW_H + 14;
             const int bx = MSP_MODAL_X + (MSP_MODAL_W - MSP_HOW_W) / 2, by = MSP_FRY_MODAL_Y + H - 10 - MSP_HOW_H;
@@ -1808,7 +1873,15 @@ int render_milestones_tap(const tank_t *t, float x, float y) {
         if (k > 5) k = 5;
     } else if (x >= 20 && x < MSP_BADGE_X0 - 4) k = -1;
     else return MS_TAP_NONE;
+    if (tank_row && x < 88) return MS_TAP_SHOP;      /* the sand dollar: the shop page */
+    return ms_open(t, row, tank_row, fry_row, k, req, nreq, staged);
+}
+/* open the detail modal for a row's name / strip (k < 0) or its k-th badge
+   or gate: the words, the art, and where it came from (the arrows' group) */
+static int ms_open(const tank_t *t, int row, bool tank_row, bool fry_row, int k,
+                   const fry_req_t *req, int nreq, bool staged) {
     g_ms_caption2[0] = 0; g_ms_sub[0] = 0; g_ms_fry = false; g_ms_kind = -1; g_ms_tip = false;
+    g_ms_row = row; g_ms_k = k; g_ms_tankrow = tank_row; g_ms_fryrow = fry_row;
     if (fry_row) {
         if (k < 0) {                                 /* the name: the tally, and when it comes */
             int met = 0; for (int i = 0; i < nreq; i++) met += req[i].met;
@@ -1830,7 +1903,6 @@ int render_milestones_tap(const tank_t *t, float x, float y) {
             g_ms_fish = g_ms_icon ? -1 : t->n_fish - 1;
         } else return MS_TAP_NONE;
     } else if (tank_row) {
-        if (x < 88) return MS_TAP_SHOP;              /* the sand dollar: the shop page */
         if (k < 0) {
             snprintf(g_ms_title, sizeof g_ms_title, "TANK");
             snprintf(g_ms_caption, sizeof g_ms_caption, "%d OF %d FISH SO FAR", t->n_fish, POP_CAP);
@@ -1856,7 +1928,8 @@ int render_milestones_tap(const tank_t *t, float x, float y) {
     }
     return MS_TAP_KEPT;
 }
-void render_milestones_leave(void) { g_ms_kind = -1; g_ms_tip = false; g_ms_caption[0] = 0; g_ms_caption2[0] = 0; g_ms_title[0] = 0; g_ms_sub[0] = 0; g_ms_icon = NULL; g_ms_fish = -1; g_ms_fry = false; }
+void render_milestones_leave(void) { g_ms_kind = -1; g_ms_tip = false; g_ms_caption[0] = 0; g_ms_caption2[0] = 0; g_ms_title[0] = 0; g_ms_sub[0] = 0; g_ms_icon = NULL; g_ms_fish = -1; g_ms_fry = false;
+                                     g_ms_row = -1; g_ms_k = -1; g_ms_tankrow = false; g_ms_fryrow = false; }
 
 /* ---- announcement modal (notice.h, 2026-09-15) ----
  * The milestones page's detail modal, over the live tank: the badge art at

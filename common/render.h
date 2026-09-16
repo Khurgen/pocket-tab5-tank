@@ -82,9 +82,14 @@ void render_notice(const tank_t *t, uint16_t *fb, int stride, int kind, int fish
  * button that flips to a tip page (progression_fry_tip: how the keeper
  * moves that gate); a tap on the name gives the tally. render_milestones_tap maps a tap: a badge, a name
  * or a strip opens a small detail modal (the art at 2x, a title, the
- * words); while the modal is up ANY tap closes it. A CLOSE button at the
+ * words). Arrow buttons at the modal's top corners (2026-09-16) step to the
+ * previous / next of its group without leaving it - a fish's six badges,
+ * the tank's six, the fry checklist's gates, or, from a fish's name, the
+ * fish themselves (wrapping; a group of one shows none). Any other tap
+ * closes the modal. A CLOSE button at the
  * bottom right leaves the page; a SETTINGS button at the bottom left
- * leaves it for the settings page. */
+ * leaves it for the settings page; both the settings page's and the shop's
+ * CLOSE bring the milestones page BACK (the platforms do that). */
 void render_milestones(const tank_t *t, uint16_t *fb, int stride);
 /* a tap on the page (2026-09-13, Strato: with this much to tap, a stray tap
  * must not drop the whole page): MS_TAP_CLOSE = the CLOSE button, bottom
@@ -104,7 +109,8 @@ void render_milestones_leave(void);
  * bottom right. A tap on a row opens the item's modal - the art at 2x, the
  * words, the price, an UNLOCK button; render_shop_tap returns SHOP_TAP_BUY +
  * item when that button is tapped (the caller calls progression_buy; a short
- * balance was already a dim button), SHOP_TAP_CLOSE for the way out,
+ * balance was already a dim button), SHOP_TAP_CLOSE for the way out (back
+ * to the milestones page, 2026-09-16),
  * SHOP_TAP_KEPT when a modal opened or closed. Page state is render-local;
  * render_shop_leave clears it when the page closes. */
 enum { SHOP_TAP_NONE = 0, SHOP_TAP_KEPT = 1, SHOP_TAP_CLOSE = 2, SHOP_TAP_BUY = 16, SHOP_TAP_MOVE = 32 };   /* BUY / MOVE + item index */
@@ -146,7 +152,7 @@ int  render_confirm_hit(float x, float y);
  * with the idle time
  * under it as one number (swipe it up or down to step the seconds, or tap
  * its chevrons; LIGHT_IDLE_S shows by default), and a CLOSE button bottom
- * right.
+ * right (back to the milestones page, 2026-09-16 - the platform's job).
  * The platform feeds render_settings_touch EVERY FRAME while the page is up
  * (x, y, finger down), as it feeds setup_touch: it classifies taps and the
  * wheel's drags, applies the light settings to the tank itself (and marks

@@ -244,6 +244,38 @@ static int selftest_pop(void) {
             if (render_milestones_tap(&tank, 200, 232) != MS_TAP_NONE) { printf("FAIL: the modal is still up\n"); return 1; }   /* an empty row */
             render_milestones_leave();
             if (render_milestones_tap(&tank, 176 + n * 40 + 16, top + 20) != MS_TAP_NONE) { printf("FAIL: an empty gate cell opened a modal\n"); return 1; }
+            {   /* the modal's arrows (2026-09-16): a step shows something else, six steps come back round, the left
+                   arrow from the first badge is the last; a fish's name steps through the fish; TANK's tally has none */
+                uint32_t h[8];
+                render_milestones_leave();
+                if (render_milestones_tap(&tank, 176 + 16, 4 + 20) != MS_TAP_KEPT) { printf("FAIL: fish 0's first badge did not open its modal\n"); return 1; }
+                for (int i = 0; i < 7; i++) {
+                    render_milestones(&tank, fb, TANK_W);
+                    h[i] = 2166136261u; for (int q = 0; q < TANK_W * TANK_H; q++) h[i] = (h[i] ^ fb[q]) * 16777619u;
+                    if (render_milestones_tap(&tank, 56 + 336 - 30, 100 + 26) != MS_TAP_KEPT) { printf("FAIL: the right arrow dropped the modal\n"); return 1; }
+                }
+                for (int i = 1; i < 6; i++) for (int j = 0; j < i; j++) if (h[i] == h[j]) { printf("FAIL: arrow step %d showed step %d's modal again\n", i, j); return 1; }
+                if (h[6] != h[0]) { printf("FAIL: six right steps did not come back round\n"); return 1; }
+                for (int i = 0; i < 2; i++) {      /* seven rights sit on badge 1: a left is badge 0, another wraps to the last */
+                    if (render_milestones_tap(&tank, 56 + 30, 100 + 26) != MS_TAP_KEPT) { printf("FAIL: the left arrow dropped the modal\n"); return 1; }
+                    render_milestones(&tank, fb, TANK_W);
+                    uint32_t hl = 2166136261u; for (int q = 0; q < TANK_W * TANK_H; q++) hl = (hl ^ fb[q]) * 16777619u;
+                    if (hl != h[i ? 5 : 0]) { printf("FAIL: the left arrow did not step back to badge %d\n", i ? 5 : 0); return 1; }
+                }
+                if (render_milestones_tap(&tank, 200, 232) != MS_TAP_KEPT) { printf("FAIL: a tap off the arrows did not close the modal\n"); return 1; }
+                if (render_milestones_tap(&tank, 100, 4 + 10) != MS_TAP_KEPT) { printf("FAIL: fish 0's name did not open its modal\n"); return 1; }
+                for (int i = 0; i <= tank.n_fish; i++) {
+                    render_milestones(&tank, fb, TANK_W);
+                    h[i] = 2166136261u; for (int q = 0; q < TANK_W * TANK_H; q++) h[i] = (h[i] ^ fb[q]) * 16777619u;
+                    if (render_milestones_tap(&tank, 56 + 336 - 30, 100 + 26) != MS_TAP_KEPT) { printf("FAIL: the right arrow dropped the name modal\n"); return 1; }
+                }
+                if (h[1] == h[0] || h[tank.n_fish] != h[0]) { printf("FAIL: a fish's name did not step through the %d fish and back\n", tank.n_fish); return 1; }
+                render_milestones_leave();
+                if (render_milestones_tap(&tank, 100, 254 + 10) != MS_TAP_KEPT) { printf("FAIL: TANK's tally did not open\n"); return 1; }
+                render_milestones_tap(&tank, 56 + 336 - 30, 100 + 26);          /* no arrows on a group of one: this closes it */
+                if (render_milestones_tap(&tank, 200, 232) != MS_TAP_NONE) { printf("FAIL: TANK's tally grew arrows\n"); return 1; }
+                printf("selftest-pop: the modal's arrows cycle the badges, the fish and back round; the tally has none\n");
+            }
             printf("selftest-pop: NEW FRY row at %d fish: %d gates, first %s / %s / %s\n", tank.n_fish, n, req[0].title, req[0].words, req[0].progress);
             if (tank.n_fish == 3) {   /* CHANGE (2026-09-15) is the fry's own drift pressure: owed at birth, earned on a clamp */
                 int ci = -1; for (int i = 0; i < n; i++) if (req[i].kind == FRY_REQ_CHANGE) ci = i;
@@ -975,6 +1007,8 @@ static bool milestones_view = false; /* M toggles the milestones screen */
 static bool confirm_view = false;    /* X: the reset prompt (YES wipes the save) */
 static bool settings_view = false;   /* the settings page (from the milestones page's SETTINGS button) */
 static bool shop_view = false;       /* the shop (the sand dollar on the milestones page's TANK row; $ key) */
+static bool ms_back = false;         /* the settings page's CLOSE just brought the milestones page back (2026-09-16,
+                                        Strato: a submenu's CLOSE returns to the menu, not the tank): this release is spent */
 static int  sim_bright = 100;        /* the settings page's brightness (device setting; cosmetic here) */
 static uint32_t confirm_ms;          /* when it opened; it gives up after CONFIRM_MS */
 #define CONFIRM_MS 20000
@@ -1954,7 +1988,7 @@ int main(int argc, char **argv) {
             }
         } else if (settings_view && !confirm_view) {             /* the settings page: segments, the seconds wheel, CLOSE */
             int v = 0, r = render_settings_touch(&tank, (float)mx, (float)my, mpress, &v);
-            if (r == SET_TAP_CLOSE) settings_view = false;
+            if (r == SET_TAP_CLOSE) { settings_view = false; milestones_view = true; ms_back = true; }   /* back to the milestones page */
             else if (r == SET_TAP_BRIGHT) sim_bright = v;
             else if (r == SET_TAP_VOLUME) { if (s_adev) { SDL_LockAudioDevice(s_adev); audio_set_volume(v); SDL_UnlockAudioDevice(s_adev); } if (v) snd(SND_CONFIRM, AUDIO_PITCH_ONE);
                                             printf("volume: %s\n", v == 0 ? "off" : v == 1 ? "quiet" : "normal"); }
@@ -1977,10 +2011,11 @@ int main(int argc, char **argv) {
             }
             else if (setup_up) { /* the setup owns the glass: setup_touch took it */ }
             else if (notice_current()) notice_dismiss();      /* an announcement up: the tap closes it */
-            else if (settings_view) { /* the page owns the glass: render_settings_touch took it */ }
+            else if (settings_view || ms_back) ms_back = false;   /* the page owns the glass: render_settings_touch took it
+                                                                    (and its CLOSE already brought the milestones page back) */
             else if (shop_view) {                       /* the shop: a row's modal, UNLOCK, HOW TO EARN, CLOSE */
                 int r = render_shop_tap(&tank, (float)press_x, (float)press_y);
-                if (r == SHOP_TAP_CLOSE) { shop_view = false; render_shop_leave(); }
+                if (r == SHOP_TAP_CLOSE) { shop_view = false; render_shop_leave(); milestones_view = true; }   /* back to the milestones page */
                 else if (r >= SHOP_TAP_MOVE) {              /* a piece already in the tank: place it again */
                     int item = r - SHOP_TAP_MOVE;
                     shop_view = false; render_shop_leave(); setup_begin_place(&tank, item);

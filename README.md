@@ -162,8 +162,12 @@ tank's row below tracks the population and the firsts you share: first
 feeding, first trimming, first glass cleaning, first full night's sleep,
 first play session, the tank changed someone. A locked badge is the same
 picture as a gray silhouette; one earned since you last looked wears a
-ring. Tap a badge to read it (a small panel; tap again to dismiss). At the
-foot of the page: SETTINGS, UPGRADES (the shop) and CLOSE.
+ring. Tap a badge to read it: a small panel with arrows at its top corners
+that step through the rest of the group without going back to the page (a
+fish's six badges, the tank's six, the fry's gates, or the fish themselves
+from a fish's name); tap anywhere else to dismiss. At the foot of the
+page: SETTINGS, UPGRADES (the shop) and CLOSE. The shop's and the settings
+page's own CLOSE bring you back here, not out to the tank.
 
 **The next fry.** While the tank can still grow, a NEW FRY row sits under
 the last fish: what the next arrival needs, as badges that light up when
@@ -178,6 +182,7 @@ tip on how to get there. Tap the name for the tally. When every step is
 done, the fry is born at the next light-on.
 
 ![The milestones page](docs/media/sim-milestones.png)
+![A badge's panel, with its arrows](docs/media/sim-milestone-modal.png)
 ![The NEW FRY row, and a gate's tip](docs/media/sim-milestones-fry.png)
 ![A gate's HOW? tip](docs/media/sim-fry-how.png)
 
