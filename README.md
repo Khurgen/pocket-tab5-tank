@@ -419,13 +419,14 @@ seven-minute prompt check before an overnight run is always worth it.
 - ✅ Model: schema v4 (boredom, no shadow), 14.3M student, 4-bit export, evaluated
 - ✅ Simulator: the full tank with progression, self-tests, snapshots
 - ✅ Firmware: running on the real board at 25 to 30 fps and 3.7 s per
-  decision, with touch, auto-rotation, a battery gauge and log, two-stage
-  sleep (resume in place within 90 s, sleep after) and power-off
+  decision, with touch, auto-rotation, a battery gauge and log, and one
+  key for sleep and wake (a 90 s nap window, then the board powers itself
+  off to tens of microamps)
 - ✅ The living tank: growth, arrivals with courtship, trust, the hunger
   economy, upkeep chores, milestones, the reset prompt, the first-run setup
   (place the bubbles, a letter wheel to name each fry, a body color to pick),
-  births announced and named with a family page, sleep that lives
-  through the night at wake, fish that get bored and go exploring
+  births announced and named with a family page, a sleep that lives
+  through the night at the next boot, fish that get bored and go exploring
 - ✅ Sound: the board's own little speaker plays cues for what you do (a
   feed, the light, a trim, a card) and for the fish (eating, a spook, a
   fish coming to your finger), plus a welcome, a birth fanfare and
@@ -440,9 +441,10 @@ seven-minute prompt check before an overnight run is always worth it.
   and an algae-grazing snail to start
 - ✅ Browser installer: one click from Chrome or Edge, hosted at
   stratobuilds.com
-- 🔋 In progress: battery life. The deep-sleep floor and the awake draw with
-  a full tank are being measured with the tank's own log; what is in flight
-  and how to pick it up is in [docs/DEVICE.md](docs/DEVICE.md)
+- 🔋 In progress: battery life. The first night on the board's power-off
+  and the awake draw with a full tank are being measured with the tank's
+  own log; what is in flight and how to pick it up is in
+  [docs/DEVICE.md](docs/DEVICE.md)
 - 🚧 Next: more to unlock: new fish species, more plants, corals, and more
   tank maintenance critters (urchins to keep the grass down)
 - 🚧 Next: more achievements and milestones
