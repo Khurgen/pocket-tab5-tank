@@ -196,7 +196,11 @@ leaves on the open floor, trimmed and grown and counted as cover like the
 grass. The **snail** (80) grazes the glass clean cell by cell, crawling
 flat across the pane with its head leading, and walks the floor upright
 when there is nothing to eat; it keeps working while the tank sleeps, so
-the glass is thinner in the morning. Tap the snail for its card: a ring
+the glass is thinner in the morning. It is drawn the way the fish, the
+grass and the castle are, from a little geometry rather than a sprite, lit
+from the upper left and tinted by the water of its row, and it moves like
+a snail: waves run along its foot, its eye stalks sway, its shell rocks
+with the crawl. Tap the snail for its card: a ring
 around it and a tally of the spots of algae it has grazed clean so far,
 night shifts included. The model sees neither: they reach
 the fish the way your own chores do, through cover and the film. Dollars
