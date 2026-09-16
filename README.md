@@ -198,10 +198,23 @@ the glass is thinner in the morning. The model sees neither: they reach
 the fish the way your own chores do, through cover and the film. Dollars
 earned while you watch show as a small "+N" over the water.
 
+**Placing what you buy.** A plant is yours to put down. Right after you
+unlock it the shop closes and a placement page comes up over the live
+water, the same gesture as placing the bubble column: drag it left or
+right along the floor and it follows your finger. A DEPTH bar sets where
+it stands among the fish, and instead of words to decode it shows three
+small pictures of your own first fish with two leaves, swimming over them,
+through them, or behind them: BEHIND, AMONG or IN FRONT. The tank redraws
+as you choose, a line under the bar says what to watch for, and DONE keeps
+it. If you change your mind later, the plant's row in the shop has a MOVE
+button that opens the same page again. The snail is not for placing; it
+goes wherever the algae is.
+
 ![The shop](docs/media/sim-shop.png)
 ![Unlocking the snail](docs/media/sim-shop-modal.png)
 ![The sword plant and the snail on the glass, a +5 just earned](docs/media/sim-tank-shop.png)
 ![The snail walking the floor](docs/media/sim-tank-snail.png)
+![Placing the sword plant: dragged to the right, IN FRONT of the fish](docs/media/sim-place.png)
 
 **The light.** Two quick taps on the glass turn the tank light off and on;
 in the dark the fish rest and the palette dims. The settings page has a
@@ -295,8 +308,8 @@ low-battery notice, **Q** quit.
 Flags: `--fresh` starts a new random tank, `--fast N` runs tended time N×
 faster so you can watch fish grow up, `--greedy` disables sampling,
 `--narrate` prints every decision as it's made, `--snapshot <prefix>` writes
-PPM frames of the tank, card, milestones page, the shop, reset prompt, the
-setup pages, and the three pages of a birth.
+PPM frames of the tank, card, milestones page, the shop, the placement
+page, reset prompt, the setup pages, and the three pages of a birth.
 
 Headless checks, all of which run in CI-style without a window:
 `--selftest` (reflex layer), `--selftest-llm [min]` (the real model),
@@ -438,7 +451,9 @@ seven-minute prompt check before an overnight run is always worth it.
   and touch) puts a tank left on the desk to sleep; the double-tap by
   default
 - ✅ Sand dollars: care earns points, the shop spends them; a sword plant
-  and an algae-grazing snail to start
+  and an algae-grazing snail to start; what you buy you place yourself,
+  where along the floor and whether it stands behind, among or in front
+  of the fish
 - ✅ Browser installer: one click from Chrome or Edge, hosted at
   stratobuilds.com
 - 🔋 In progress: battery life. The first night on the board's power-off
