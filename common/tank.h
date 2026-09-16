@@ -72,6 +72,13 @@ typedef enum { VEG_KIND_GRASS, VEG_KIND_SWORD } veg_kind_t;
 #define ALGAE_COLS (TANK_W / ALGAE_CELL)       /* 28 */
 #define ALGAE_ROWS (TANK_H / ALGAE_CELL)       /* 23 */
 #define ALGAE_CELLS (ALGAE_COLS * ALGAE_ROWS)
+#define ALGAE_DIRTY 0.15f                      /* film on more of the glass than this =
+                                                * a DIRTY tank: no fry is conceived in
+                                                * it until it is wiped back under (a
+                                                * fry gate, 2026-09-16). Some film is
+                                                * fine; growth stops claiming cells at
+                                                * ALGAE_COVER_CAP (tank.c, 0.30), and one
+                                                * night's sleep films ~25% (selftest-tend) */
 
 typedef enum {
     GOAL_SEEK_FOOD, GOAL_FLEE_SHADOW, GOAL_VISIT_BUBBLES, GOAL_FOLLOW_FRIEND,
@@ -265,6 +272,8 @@ typedef struct tank {
     float    snail_x, snail_y, snail_heading;
     int16_t  snail_cell;           /* the algae cell it is heading for, -1 = wandering */
     float    snail_graze;          /* seconds on the current cell */
+    int32_t  snail_grazed;         /* algae cells it has grazed clean, lifetime (its card,
+                                    * 2026-09-16; saved) */
     /* where the keeper put the decor (2026-09-16, the placement page): the
      * sword plant's centre x along the floor (<= 0 = the default spot) and
      * its depth layer (DECOR_Z_*). Both saved. */
@@ -429,6 +438,10 @@ void  tank_veg_set(tank_t *t, int b, float g);
 /* the tallest bed at VEG_NURSERY or better, -1 if none (progression gates
  * courtship and arrivals on it; tank.c stages the courtship there) */
 int   tank_nursery_bed(const tank_t *t);
+/* the share of the glass wearing film, 0..1 (cells with any algae over all
+ * cells - what the keeper sees covered, not how thick). > ALGAE_DIRTY = a
+ * dirty tank: the fry checklist's GLASS gate (progression.c) */
+float tank_algae_cover(const tank_t *t);
 void  tank_veg_sync(tank_t *t);                 /* veg_growth[] from veg_h[][] (after a load) */
 void  tank_grow_algae(tank_t *t, int steps);
 
@@ -499,5 +512,8 @@ float tank_decor_half_w(int item);         /* half the footprint, for the page's
  * on the floor it is SNAIL_FLOOR_Y, the foot on the sand line. */
 #define SNAIL_FLOOR_Y (TANK_H - 24.0f)
 bool  tank_snail_upright(const tank_t *t);
+/* a tap on the snail (its card, 2026-09-16): placed, and within a fingertip
+ * of the sprite's centre. Platforms test the fish first. */
+bool  tank_snail_hit(const tank_t *t, float x, float y);
 
 #endif

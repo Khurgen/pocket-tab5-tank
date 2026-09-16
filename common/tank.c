@@ -264,6 +264,7 @@ void tank_init(tank_t *t, uint32_t seed) {
     for (int i = 0; i < N_FISH_MAX; i++) t->sd_paid_fish[i] = 0;
     t->sd_colonies_paid = t->sd_inches_paid = 0;
     t->snail_x = -1; t->snail_y = -1; t->snail_heading = 0; t->snail_cell = -1; t->snail_graze = 0;
+    t->snail_grazed = 0;
     t->plant_x = 0; t->plant_z = DECOR_Z_MIDDLE;
     t->tank_ms_bits = 0; t->tank_ms_seen = 0; t->ask_rr = 0; t->advisor_asks = 0;
     tank_scatter_food(t, 2);
@@ -496,6 +497,12 @@ static int veg_cut(tank_t *t, float x0, float y0, float x1, float y1, bool landi
     return cuts;
 }
 
+float tank_algae_cover(const tank_t *t) {
+    int covered = 0;
+    for (int i = 0; i < ALGAE_CELLS; i++) covered += t->algae[i] > 0;
+    return (float)covered / ALGAE_CELLS;
+}
+
 /* one film step: thicken a covered cell, or claim a fresh one (preferring
  * cells next to existing film, then the glass edges - the way a real tank
  * fouls from the corners in) until the dapple cap is reached */
@@ -607,6 +614,14 @@ static int snail_nearest_cell(const tank_t *t) {
     return best;
 }
 bool tank_snail_upright(const tank_t *t) { return t->snail_cell < 0 && t->snail_y >= SNAIL_FLOOR_Y - 1; }
+#define SNAIL_TAP_RADIUS 48.0f     /* generous round the 32 px sprite: a fingertip on this 322 ppi
+                                    * panel covers ~60 px, and the snail is small and low on the glass
+                                    * (Strato, 2026-09-16: "challenging to tap the little guy" at 30;
+                                    * the fish take 38 and are tested first) */
+bool tank_snail_hit(const tank_t *t, float x, float y) {
+    if (!(t->sd_unlocks & SD_ITEM_SNAIL) || t->snail_x < 0) return false;
+    return tank_dist(t->snail_x, t->snail_y, x, y) <= SNAIL_TAP_RADIUS;
+}
 static void snail_tick(tank_t *t, float dt) {
     if (!(t->sd_unlocks & SD_ITEM_SNAIL)) return;
     if (t->snail_x < 0) tank_snail_place(t);
@@ -624,6 +639,7 @@ static void snail_tick(tank_t *t, float dt) {
             t->snail_graze += dt;
             int v = t->algae[t->snail_cell] - (int)(SNAIL_GRAZE_PER_S * dt + 0.5f);
             t->algae[t->snail_cell] = (uint8_t)(v < 0 ? 0 : v);
+            if (v <= 0) t->snail_grazed++;                  /* a cell eaten clean: its card's tally */
         }
     } else if (t->snail_y < SNAIL_FLOOR_Y - 1) {            /* clean glass: down to the floor, flat on the glass, head down.
                                                                A hair off straight down keeps the sideways facing it had
@@ -652,7 +668,7 @@ static void snail_sleep(tank_t *t, float seconds) {
     for (int k = 0; k < cells; k++) {
         int c = snail_nearest_cell(t);
         if (c < 0) break;
-        t->algae[c] = 0;
+        t->algae[c] = 0; t->snail_grazed++;
         t->snail_x = clampf((c % ALGAE_COLS) * ALGAE_CELL + ALGAE_CELL * 0.5f, SNAIL_MARGIN, TANK_W - SNAIL_MARGIN);
         t->snail_y = clampf((c / ALGAE_COLS) * ALGAE_CELL + ALGAE_CELL * 0.5f, SNAIL_MARGIN, TANK_H - SNAIL_MARGIN);
     }

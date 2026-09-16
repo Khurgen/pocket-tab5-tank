@@ -110,15 +110,17 @@ void progression_ack_milestones(tank_t *t);
  * the first thing a keeper asks is "how do I get a new fry?" - and the
  * milestones page said nothing). progression_next_fry fills one line per
  * gate of the NEXT arrival: the care gates arrival_conditions counts (the
- * same code, so the list can never disagree with the rule) plus the nursery
- * bed every arrival needs. Each line: a kind (the renderer picks the art),
- * a title, the words (what to do - a plain sentence over two lines; Strato:
+ * same code, so the list can never disagree with the rule - the population's
+ * gates, then the GLASS gate every arrival needs: no fry is conceived in a
+ * dirty tank, film on more than ALGAE_DIRTY of the glass, 2026-09-16) plus
+ * the nursery bed every arrival needs. Each line: a kind (the renderer
+ * picks the art), a title, the words (what to do - a plain sentence over two lines; Strato:
  * "all fish must have a minimum six out of 10 trust score", not a hint), a
  * progress phrase (where it stands), a 0..1 fraction and whether it is met. Returns the count, 0 at the
  * population cap. *staged = every gate is met and the fry waits for the
  * next light-on. Strings fit the pixel font: <= 25 chars at scale 2. */
-enum { FRY_REQ_TRUST, FRY_REQ_FEED, FRY_REQ_HOLD, FRY_REQ_GROW, FRY_REQ_CHANGE, FRY_REQ_GRASS };
-#define FRY_REQ_MAX 4
+enum { FRY_REQ_TRUST, FRY_REQ_FEED, FRY_REQ_HOLD, FRY_REQ_GROW, FRY_REQ_CHANGE, FRY_REQ_GRASS, FRY_REQ_GLASS };
+#define FRY_REQ_MAX 5
 typedef struct {
     int   kind;
     char  title[12];
@@ -133,7 +135,7 @@ int progression_next_fry(const tank_t *t, fry_req_t out[FRY_REQ_MAX], bool *stag
  * keeper moves it, in up to FRY_TIP_LINES lines of <= 26 chars, NULL-
  * terminated. Written from the rules in tank.c / progression.c (trust
  * only rises under a resting finger; quick taps cost it; fish age only
- * while lit; grass regrows by itself). */
+ * while lit; grass regrows by itself; the glass is wiped by a drag). */
 #define FRY_TIP_LINES 5
 const char *const *progression_fry_tip(int kind);
 

@@ -170,7 +170,9 @@ the last fish: what the next arrival needs, as badges that light up when
 met, with a filling bar under each one still owed. The list is read from
 the same rule that decides a birth, so it is never wrong: at two fish it
 is trust, meals and a calm hold; later the youngest must grow up, and the
-counts rise. Tap a badge for the plain words and where it stands ("ALL FISH
+counts rise; and always clean glass and some grass, because no fry is
+conceived in a dirty tank (film on more than 15% of the pane closes the
+gate, and its bar fills as you wipe). Tap a badge for the plain words and where it stands ("ALL FISH
 MUST HAVE TRUST OF AT LEAST 6 OUT OF 10 / LOWEST NOW 4.1"), and HOW? for a
 tip on how to get there. Tap the name for the tally. When every step is
 done, the fry is born at the next light-on.
@@ -194,7 +196,9 @@ leaves on the open floor, trimmed and grown and counted as cover like the
 grass. The **snail** (80) grazes the glass clean cell by cell, crawling
 flat across the pane with its head leading, and walks the floor upright
 when there is nothing to eat; it keeps working while the tank sleeps, so
-the glass is thinner in the morning. The model sees neither: they reach
+the glass is thinner in the morning. Tap the snail for its card: a ring
+around it and a tally of the spots of algae it has grazed clean so far,
+night shifts included. The model sees neither: they reach
 the fish the way your own chores do, through cover and the film. Dollars
 earned while you watch show as a small "+N" over the water.
 
@@ -214,6 +218,7 @@ goes wherever the algae is.
 ![Unlocking the snail](docs/media/sim-shop-modal.png)
 ![The sword plant and the snail on the glass, a +5 just earned](docs/media/sim-tank-shop.png)
 ![The snail walking the floor](docs/media/sim-tank-snail.png)
+![The snail's card](docs/media/sim-snail-card.png)
 ![Placing the sword plant: dragged to the right, IN FRONT of the fish](docs/media/sim-place.png)
 
 **The light.** Two quick taps on the glass turn the tank light off and on;

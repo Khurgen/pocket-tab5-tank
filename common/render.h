@@ -44,7 +44,13 @@ void render_fb_primed(const uint16_t *fb, unsigned epoch);
  * visual bars (drives + personality) and stage pips. No text, no digits —
  * the progression design's "simple and visual" stats view. Personality bars
  * are revealed only after the fish has shown that side of itself (milestone
- * bits): you learn your fish by watching. */
+ * bits): you learn your fish by watching.
+ * fish_idx == RENDER_CARD_SNAIL (2026-09-16): the SNAIL's card instead - a
+ * ring on the snail and a small centred card: the upright sprite at 2x and
+ * how much algae it has grazed so far (tank_t.snail_grazed). The platforms
+ * keep it in the same selection slot as a fish (a tap on the snail opens it,
+ * a tap anywhere else dismisses it, no card cache). */
+#define RENDER_CARD_SNAIL 99
 void render_stats_card(const tank_t *t, int fish_idx, uint16_t *fb, int stride);
 /* Optional card cache (RENDER_CARD_W x RENDER_CARD_H uint16): with the scene
  * cache live, the card is redrawn at most 4x/s and blitted otherwise (~7 ms
