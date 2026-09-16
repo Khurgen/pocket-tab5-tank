@@ -1240,6 +1240,10 @@ static int snapshot(const char *prefix, int seconds) {
     progression_sd_grant(&tank, 5);
     render_tank(&tank, fb, TANK_W); render_sd_toast(&tank, fb, TANK_W);
     snprintf(path, sizeof path, "%s_tank_shop.ppm", prefix); write_ppm(path, fb);   /* the snail on the glass, after film */
+    { tank_decor_set(&tank, 0, 300, DECOR_Z_FRONT); setup_begin_place(&tank, 0);   /* the placement page: the plant dragged right, in FRONT */
+      render_tank(&tank, fb, TANK_W); render_setup(&tank, fb, TANK_W, 1.0f);
+      snprintf(path, sizeof path, "%s_place.ppm", prefix); write_ppm(path, fb);
+      setup_cancel(&tank); tank_decor_set(&tank, 0, PLANT_X_DEFAULT, DECOR_Z_MIDDLE); }
     uint8_t film[ALGAE_CELLS]; memcpy(film, tank.algae, sizeof film);
     { memset(tank.algae, 0, sizeof tank.algae);
       tank.snail_cell = -1; tank.snail_x = 300; tank.snail_y = SNAIL_FLOOR_Y; tank.snail_heading = 3.14159f;
@@ -1500,6 +1504,62 @@ static int selftest_shop(void) {
         if (r != SHOP_TAP_BUY + 0) { printf("FAIL: UNLOCK in the modal returned %d\n", r); return 1; }
         if (!progression_buy(&tank, 0)) { printf("FAIL: the page's UNLOCK did not buy\n"); return 1; }
         want -= SD_PRICE_PLANT; SHOP_WANT("bought from the page");
+        /* the placement page (2026-09-16): the plant lands at the default spot,
+           MIDDLE; a drag on the water takes it along (clamped inside the
+           window), a layer button sets the depth, DONE saves both; the render
+           honours the layer (a fish on the leaf shows through only from BEHIND) */
+        if (fabsf(tank_decor_x(&tank, 0) - PLANT_X_DEFAULT) > 0.01f || tank_decor_z(&tank, 0) != DECOR_Z_MIDDLE) { printf("FAIL: the plant did not land at the default spot\n"); return 1; }
+        setup_begin_place(&tank, 0);
+        if (!setup_active() || !setup_is_place() || setup_item() != 0 || setup_page() != SETUP_PG_PLACE || setup_fish() != -1) { printf("FAIL: the placement page did not open\n"); return 1; }
+        setup_touch(&tank, 120, 250, true);
+        for (int k = 1; k <= 20; k++) setup_touch(&tank, 120 + k * 9, 250, true);
+        setup_touch(&tank, 300, 250, false);
+        if (fabsf(tank_decor_x(&tank, 0) - 300) > 0.01f || !setup_active()) { printf("FAIL: the drag did not carry the plant (x %.0f)\n", tank_decor_x(&tank, 0)); return 1; }
+        { float l0, l3; tank_veg_frond(&tank, 3, 0, &l0); tank_veg_frond(&tank, 3, 3, &l3);
+          if (fabsf((l0 + l3) * 0.5f - 300) > 0.01f) { printf("FAIL: bed 3 did not follow the plant (leaves %.0f..%.0f)\n", l0, l3); return 1; } }
+        setup_touch(&tank, 2, 250, true); setup_touch(&tank, 2, 250, false);
+        if (tank_decor_x(&tank, 0) != DECOR_MARGIN + PLANT_HALF_W) { printf("FAIL: the plant was not kept inside the window (x %.0f)\n", tank_decor_x(&tank, 0)); return 1; }
+        setup_touch(&tank, 440, 250, true); setup_touch(&tank, 440, 250, false);
+        if (tank_decor_x(&tank, 0) != TANK_W - DECOR_MARGIN - PLANT_HALF_W) { printf("FAIL: the plant went through the right glass (x %.0f)\n", tank_decor_x(&tank, 0)); return 1; }
+        setup_touch(&tank, 300, 250, true); setup_touch(&tank, 300, 250, false);
+        if (setup_hit(SETUP_DEPTH_X + 10, SETUP_DEPTH_Y + 10) != SETUP_HIT_Z0 + DECOR_Z_BACK || setup_hit(SETUP_DEPTH_X + 2 * SETUP_DEPTH_SEG_W + 100, SETUP_DEPTH_Y + SETUP_DEPTH_H + 4) != SETUP_HIT_Z0 + DECOR_Z_FRONT
+            || setup_hit(SETUP_TOP_NEXT_X + 20, SETUP_TOP_BTN_Y + 20) != SETUP_HIT_NEXT || setup_hit(SETUP_TOP_BACK_X + 20, SETUP_TOP_BTN_Y + 20) != 0) { printf("FAIL: the placement page's buttons moved\n"); return 1; }
+        setup_touch(&tank, SETUP_DEPTH_X + 2 * SETUP_DEPTH_SEG_W + 50, SETUP_DEPTH_Y + 18, true);
+        setup_touch(&tank, SETUP_DEPTH_X + 2 * SETUP_DEPTH_SEG_W + 52, SETUP_DEPTH_Y + 20, false);
+        if (tank_decor_z(&tank, 0) != DECOR_Z_FRONT || fabsf(tank_decor_x(&tank, 0) - 300) > 0.01f) { printf("FAIL: FRONT did not set the layer (z %d, x %.0f)\n", tank_decor_z(&tank, 0), tank_decor_x(&tank, 0)); return 1; }
+        /* the render: a fish sitting on a leaf's spine, mid-height - leaf 0
+           (even: the back half of a MIDDLE weave) and leaf 1 (odd: the front
+           half); FRONT hides the fish behind both, BACK shows it over both */
+        { tank_veg_set(&tank, 3, 0.5f);
+          float top; tank_veg_bed(&tank, 3, NULL, NULL, &top, NULL);
+          int sy = (int)((top + TANK_H - 16) * 0.5f);
+          fish_t *f = &tank.fish[0]; float fx0 = f->x, fy0 = f->y;
+          const int zs[3] = { DECOR_Z_FRONT, DECOR_Z_MIDDLE, DECOR_Z_BACK }; bool shows[3][2];
+          for (int k = 0; k < 3; k++) for (int leaf = 0; leaf < 2; leaf++) {
+              float lx; tank_veg_frond(&tank, 3, leaf, &lx); int sx = (int)lx;
+              tank_decor_set(&tank, 0, 300, zs[k]);
+              f->x = 60; f->y = 60; render_tank(&tank, fb, TANK_W); uint16_t bare = fb[sy * TANK_W + sx];
+              f->x = (float)sx; f->y = (float)sy; render_tank(&tank, fb, TANK_W); uint16_t over = fb[sy * TANK_W + sx];
+              shows[k][leaf] = over != bare;               /* the fish shows on the leaf's pixel */
+          }
+          f->x = fx0; f->y = fy0;
+          printf("selftest-shop: placement: dragged to x 300 (clamped %d..%d), FRONT; a fish on leaves 0/1 shows through FRONT %d/%d, MIDDLE %d/%d, BACK %d/%d\n",
+                 DECOR_MARGIN + PLANT_HALF_W, TANK_W - DECOR_MARGIN - PLANT_HALF_W, shows[0][0], shows[0][1], shows[1][0], shows[1][1], shows[2][0], shows[2][1]);
+          if (shows[0][0] || shows[0][1] || !shows[1][0] || shows[1][1] || !shows[2][0] || !shows[2][1]) { printf("FAIL: the layer did not order the leaves and the fish\n"); return 1; }
+          tank_decor_set(&tank, 0, 300, DECOR_Z_FRONT); }
+        setup_touch(&tank, SETUP_TOP_NEXT_X + 20, SETUP_TOP_BTN_Y + 20, true);
+        setup_touch(&tank, SETUP_TOP_NEXT_X + 22, SETUP_TOP_BTN_Y + 24, false);
+        if (setup_active()) { printf("FAIL: DONE did not close the placement page\n"); return 1; }
+        { int nf = tank.n_fish; tank_init(&tank, 4242); progression_boot(&tank); tank.trickle_off = true;
+          if (tank.n_fish != nf) { printf("FAIL: the save did not come back after the placement\n"); return 1; }
+          if (fabsf(tank_decor_x(&tank, 0) - 300) > 0.01f || tank_decor_z(&tank, 0) != DECOR_Z_FRONT) { printf("FAIL: the placement was not saved (x %.0f, z %d)\n", tank_decor_x(&tank, 0), tank_decor_z(&tank, 0)); return 1; }
+          printf("selftest-shop: DONE saved the placement; the reload put the plant back at x 300, FRONT\n"); }
+        /* the shop's MOVE: the owned plant's modal re-opens the page */
+        render_shop(&tank, fb, TANK_W);
+        if (render_shop_tap(&tank, 100, 98 + 20) != SHOP_TAP_KEPT) { printf("FAIL: the owned plant's row did not open its modal\n"); return 1; }
+        render_shop(&tank, fb, TANK_W);
+        if (render_shop_tap(&tank, 56 + 336 / 2, 48 + 244 - 12 - 16) != SHOP_TAP_MOVE + 0) { printf("FAIL: MOVE in the owned modal\n"); return 1; }
+        tank.sd_balance = 5; want = tank.sd_balance;
         render_shop(&tank, fb, TANK_W);
         if (render_shop_tap(&tank, 100, 98 + 56 + 20) != SHOP_TAP_KEPT) { printf("FAIL: the snail's row did not open its modal\n"); return 1; }
         r = render_shop_tap(&tank, 56 + 336 / 2, 48 + 244 - 12 - 16);     /* short by 75: the dim button buys nothing */
@@ -1752,9 +1812,13 @@ int main(int argc, char **argv) {
         }
         bool setup_up = setup_active();          /* before the touch: BEGIN's release must not become a tank tap */
         if (setup_up) {
-            bool birth = setup_is_birth(); int who = setup_fish();
+            bool birth = setup_is_birth(); int who = setup_fish(), place = setup_item();
             setup_touch(&tank, (float)mx, (float)my, mpress);   /* taps and the letter wheel, classified in setup.c */
-            if (!setup_active()) { printf(birth ? "birth flow done: %s named and saved\n" : "setup done\n", who >= 0 ? tank.fish[who].name : "?"); print_roster(&tank); }
+            if (!setup_active()) {
+                if (place >= 0) printf("placed: %s at x %.0f, %s layer, saved\n", SD_ITEMS[place].name, tank_decor_x(&tank, place),
+                                       tank_decor_z(&tank, place) == DECOR_Z_BACK ? "BEHIND" : tank_decor_z(&tank, place) == DECOR_Z_FRONT ? "IN FRONT" : "AMONG");
+                else { printf(birth ? "birth flow done: %s named and saved\n" : "setup done\n", who >= 0 ? tank.fish[who].name : "?"); print_roster(&tank); }
+            }
         } else if (settings_view && !confirm_view) {             /* the settings page: segments, the seconds wheel, CLOSE */
             int v = 0, r = render_settings_touch(&tank, (float)mx, (float)my, mpress, &v);
             if (r == SET_TAP_CLOSE) settings_view = false;
@@ -1784,9 +1848,16 @@ int main(int argc, char **argv) {
             else if (shop_view) {                       /* the shop: a row's modal, UNLOCK, HOW TO EARN, CLOSE */
                 int r = render_shop_tap(&tank, (float)press_x, (float)press_y);
                 if (r == SHOP_TAP_CLOSE) { shop_view = false; render_shop_leave(); }
+                else if (r >= SHOP_TAP_MOVE) {              /* a piece already in the tank: place it again */
+                    int item = r - SHOP_TAP_MOVE;
+                    shop_view = false; render_shop_leave(); setup_begin_place(&tank, item);
+                    printf("shop: MOVE %s - placement page up (drag, DEPTH, DONE)\n", SD_ITEMS[item].name);
+                }
                 else if (r >= SHOP_TAP_BUY) {
                     int item = r - SHOP_TAP_BUY;
-                    if (progression_buy(&tank, item)) { snd(SND_CONFIRM, AUDIO_PITCH_ONE); printf("shop: %s unlocked, %d sand dollars left\n", SD_ITEMS[item].name, tank.sd_balance); }
+                    if (progression_buy(&tank, item)) { snd(SND_CONFIRM, AUDIO_PITCH_ONE); printf("shop: %s unlocked, %d sand dollars left\n", SD_ITEMS[item].name, tank.sd_balance);
+                        if (tank_decor_placeable(item)) { shop_view = false; render_shop_leave(); setup_begin_place(&tank, item);
+                                                          printf("shop: placement page up for the %s\n", SD_ITEMS[item].name); } }
                     else printf("shop: %s refused (balance %d, price %d)\n", SD_ITEMS[item].name, tank.sd_balance, SD_ITEMS[item].price);
                 }
             }

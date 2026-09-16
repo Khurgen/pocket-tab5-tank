@@ -31,11 +31,12 @@ bool touch_port_pressed_since(int64_t us);     /* a finger is down and landed af
 bool touch_port_settings(void);
 void touch_port_show_settings(bool on);
 int  touch_port_take_setting(int *value);       /* SET_TAP_* or 0 */
-/* the shop page (2026-09-15): up / show it; an UNLOCK tapped hands the item
- * index to main once (-1 = none), which buys it (progression_buy) */
+/* the shop page (2026-09-15): up / show it; an UNLOCK or MOVE tapped hands
+ * the raw tap code (SHOP_TAP_BUY / SHOP_TAP_MOVE + item; 0 = none) to main
+ * once, which buys (progression_buy) or opens the placement page */
 bool touch_port_shop(void);
 void touch_port_show_shop(bool on);
-int  touch_port_take_buy(void);
+int  touch_port_take_shop(void);
 void touch_port_set_bias(int px);              /* finger-landing correction: reported y moves up by px */
 int  touch_port_bias(void);
 #endif

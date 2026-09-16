@@ -141,6 +141,9 @@ static void show_state(const tank_t *t) {
         for (int i = 0; i < n && len < (int)sizeof row - 5; i++) len += snprintf(row + len, sizeof row - len, " %.2f", t->veg_h[b][i]);
         ESP_LOGI(TAG, "bed %d %s (x from %.0f, pitch %.0f):%s", b, b == 3 ? "leaves" : "fronds", x0 + 6, f1 - f0, row);
     }
+    if (t->sd_unlocks & SD_ITEM_PLANT)
+        ESP_LOGI(TAG, "plant placed: centre x %.0f (%s), depth %s", tank_decor_x(t, 0), t->plant_x > 0 ? "the keeper's" : "the default",
+                 t->plant_z == DECOR_Z_BACK ? "BEHIND the fish" : t->plant_z == DECOR_Z_FRONT ? "IN FRONT of the fish" : "AMONG the fish");
     ESP_LOGI(TAG, "nursery bed %d (a bed >= %.2f) | parked real tank: %s", tank_nursery_bed(t), (double)VEG_NURSERY,
              nvs_has("bk") ? "YES (restore)" : "no (this IS the real tank)");
     float bf; bool chg;
@@ -157,7 +160,7 @@ static void help(void) {
     ESP_LOGI(TAG, "STAGED TANKS (the real one is parked first): fresh (new tank, two fry) | stages (fry juv adult elder) | stage <fish|all> <fry|juv|adult|elder>");
     ESP_LOGI(TAG, "stash (park the real tank now) | restore (bring it back) | age <fish> <hours>");
     ESP_LOGI(TAG, "milestones [off] (the page, on cue; on the device: tap the open stats card)");
-    ESP_LOGI(TAG, "shop [off] (the sand dollar page) | dollars [n] (grant n; the balance and the chore counts) | buy plant|snail (at the price)");
+    ESP_LOGI(TAG, "shop [off] (the sand dollar page) | dollars [n] (grant n; the balance and the chore counts) | buy plant|snail (at the price) | place [x [behind|among|front]] (the plant's spot; no args = the page)");
     ESP_LOGI(TAG, "reset (the keeper's confirm prompt, as BOOT + tap opens it) | reset yes|no (answer it here) - YES WIPES EVERY SAVE, a parked tank too");
     ESP_LOGI(TAG, "setup [off] (the first-run flow: welcome, names, colours; off drops the panel - the birth flow too) | name <fish|idx> <newname> (up to %d letters, saved)", FISH_NAME_MAX);
     ESP_LOGI(TAG, "touch [bias <px>] (finger-landing correction: reported touches move up by px; not saved)");
@@ -253,8 +256,16 @@ static void run(tank_t *t, char *line) {
     } else if (!strcmp(c, "buy") && argc > 1) {      /* buy plant|snail: the shop's sale, at the price */
         int item = !strcmp(argv[1], "plant") ? 0 : !strcmp(argv[1], "snail") ? 1 : -1;
         if (item < 0) ESP_LOGW(TAG, "buy plant|snail");
-        else if (progression_buy(t, item)) ESP_LOGI(TAG, "%s unlocked, %d sand dollars left", SD_ITEMS[item].name, (int)t->sd_balance);
+        else if (progression_buy(t, item)) ESP_LOGI(TAG, "%s unlocked, %d sand dollars left%s", SD_ITEMS[item].name, (int)t->sd_balance,
+                                                    tank_decor_placeable(item) ? " (`place` opens the placement page)" : "");
         else ESP_LOGW(TAG, "%s refused: owned, or %d < %d", SD_ITEMS[item].name, (int)t->sd_balance, SD_ITEMS[item].price);
+    } else if (!strcmp(c, "place")) {                /* place [x [behind|among|front]]: the plant's spot; no args = the page */
+        if (!(t->sd_unlocks & SD_ITEM_PLANT)) { ESP_LOGW(TAG, "no plant in the tank (`buy plant`)"); return; }
+        if (argc < 2) { touch_port_show_shop(false); setup_begin_place(t, 0); ESP_LOGI(TAG, "placement page up (drag on the glass, DEPTH, DONE)"); return; }
+        int z = t->plant_z;
+        if (argc > 2) z = !strcmp(argv[2], "behind") || !strcmp(argv[2], "back") ? DECOR_Z_BACK : !strcmp(argv[2], "front") ? DECOR_Z_FRONT : DECOR_Z_MIDDLE;
+        tank_decor_set(t, 0, (float)atof(argv[1]), z); progression_save(t);
+        ESP_LOGI(TAG, "plant at x %.0f, %s, saved", tank_decor_x(t, 0), z == DECOR_Z_BACK ? "BEHIND the fish" : z == DECOR_Z_FRONT ? "IN FRONT of the fish" : "AMONG the fish");
     } else if (!strcmp(c, "pmic")) {
         if (argc > 2 && (!strcmp(argv[1], "on") || !strcmp(argv[1], "off")))
             ESP_LOGI(TAG, "rail %s %s: %s", argv[2], argv[1], battery_port_set_rail(argv[2], !strcmp(argv[1], "on")) ? "ok" : "REFUSED");
@@ -324,6 +335,8 @@ static void run(tank_t *t, char *line) {
         stash(t);
     } else if (!strcmp(c, "restore")) {
         if (!nvs_has("bk")) { ESP_LOGW(TAG, "nothing stashed"); return; }
+        if (setup_active()) setup_cancel(t);         /* a page left up (the placement page) would outlive the tank it was about */
+        touch_port_show_shop(false); touch_port_show_milestones(false); touch_port_show_settings(false);
         if (!nvs_copy("bk", "save")) { ESP_LOGW(TAG, "restore copy failed"); return; }
         nvs_drop("bk");
         tank_init(t, (uint32_t)esp_timer_get_time() ^ 0xC0FFEEu);

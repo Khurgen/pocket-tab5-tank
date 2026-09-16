@@ -39,6 +39,16 @@
  * fry's look is its family's (tank_add_fish). DONE clears the debt and
  * saves the name; a cancel (director `setup off`, sim S) leaves it owed, so
  * it returns at the next boot. */
+/* PLACE A PIECE (2026-09-16, Strato: a bought plant or decoration "should
+ * allow the player to place the piece wherever they like ... similar to the
+ * bubble column placement experience", plus a z-layer): one page over the
+ * live tank, opened by the platform right after a purchase (and by the
+ * shop's MOVE button for a piece already in the tank). A finger on the
+ * water drags the piece to that x (tank_decor_set clamps it inside the
+ * window); a BACK / MIDDLE / FRONT row under the title picks its depth -
+ * the tank redraws live, so the fish and the grass show the choice at
+ * once; DONE saves. A translucent stripe marks the piece's footprint, a
+ * chevron at its foot. */
 #ifndef POCKET_TANK_SETUP_H
 #define POCKET_TANK_SETUP_H
 #include "tank.h"
@@ -51,8 +61,11 @@ void setup_begin_birth(tank_t *t, int slot);   /* the birth flow for the fry in 
  * flow once per arrival owed (never over a flow already up); returns the
  * slot it opened for, or -1 */
 int  setup_poll_birth(tank_t *t);
+void setup_begin_place(tank_t *t, int item);   /* the placement page for SD item `item` (placeable ones only) */
 bool setup_active(void);
 bool setup_is_birth(void);               /* the birth flow, not the first run */
+bool setup_is_place(void);               /* the placement page */
+int  setup_item(void);                   /* the placement page's SD item (-1 = none) */
 int  setup_fish(void);                   /* the fish the current page is about (-1 = none) */
 void setup_cancel(tank_t *t);            /* drop the pages; the save still says pending */
 int  setup_page(void);                   /* SETUP_PG_* while active */
@@ -73,6 +86,8 @@ enum { SETUP_PG_WELCOME, SETUP_PG_BUBBLES, SETUP_PG_NAME_A, SETUP_PG_LOOK_A, SET
 /* the birth flow's pages, in order (numbered past the first run's) */
 enum { SETUP_PG_BORN = SETUP_PG_N, SETUP_PG_NAME_NEW, SETUP_PG_FAMILY, SETUP_PG_BIRTH_END };
 #define SETUP_BIRTH_PAGES (SETUP_PG_BIRTH_END - SETUP_PG_BORN)
+/* the placement page (its own one-page flow, numbered past the birth flow's) */
+enum { SETUP_PG_PLACE = SETUP_PG_BIRTH_END };
 /* element ids (setup_hit / setup_activate) */
 #define SETUP_HIT_NEXT  1
 #define SETUP_HIT_BACK  2
@@ -80,6 +95,7 @@ enum { SETUP_PG_BORN = SETUP_PG_N, SETUP_PG_NAME_NEW, SETUP_PG_FAMILY, SETUP_PG_
 #define SETUP_HIT_DOWN  4                /* ... previous */
 #define SETUP_HIT_SLOT0 10               /* + 0..FISH_NAME_MAX-1: pick that slot */
 #define SETUP_HIT_BODY0 40               /* + swatch 0..LOOK_N-1 */
+#define SETUP_HIT_Z0    60               /* + DECOR_Z_BACK..FRONT: the placement page's layer row */
 
 /* geometry (tank coordinates), shared by the drawing, the hit test and the
  * sim's selftest. The panelled pages (welcome, colours, care) sit inside the
@@ -133,6 +149,25 @@ enum { SETUP_PG_BORN = SETUP_PG_N, SETUP_PG_NAME_NEW, SETUP_PG_FAMILY, SETUP_PG_
 #define SETUP_FAM_VALUE_X    (SETUP_X + 150)
 #define SETUP_FAM_BAR_W      200
 #define SETUP_FAM_BAR_H      8
+/* the placement page's DEPTH control (second design, 2026-09-16 - Strato:
+ * "initially i thought 'back' button referred to menu navigation .. the
+ * z-layer targeting and buttons are a bit ambiguous"): ONE outlined bar of
+ * three joined segments under a DEPTH caption - the settings page's idiom,
+ * a setting with three values, not three buttons - each segment a picture
+ * tile (two small leaves and the keeper's first fish, drawn in that order:
+ * the fish over the leaves, woven between them, behind them) with BEHIND /
+ * AMONG / IN FRONT under it; a hint line under the bar says what to watch
+ * for ("THE FISH SWIM THROUGH IT"). DONE stays alone top right in the go
+ * teal, the bar in the calm ink, so "choose" and "finish" read apart. The
+ * water below SETUP_PLACE_Y is the drag zone. */
+#define SETUP_DEPTH_SEG_W  110
+#define SETUP_DEPTH_W      (DECOR_Z_N * SETUP_DEPTH_SEG_W)
+#define SETUP_DEPTH_X      ((TANK_W - SETUP_DEPTH_W) / 2)
+#define SETUP_DEPTH_Y      (SETUP_TOP_BTN_Y + SETUP_BTN_H + 24)
+#define SETUP_DEPTH_H      70
+#define SETUP_DEPTH_TILE_H 40
+#define SETUP_DEPTH_HINT_Y (SETUP_DEPTH_Y + SETUP_DEPTH_H + 8)
+#define SETUP_PLACE_Y      (SETUP_DEPTH_HINT_Y + 20)
 /* the stage: the clear spot each page leaves for the fish being edited
  * (tank_t.stage_*), top centre between the buttons */
 #define SETUP_STAGE_X   (TANK_W / 2)

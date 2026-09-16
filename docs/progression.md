@@ -138,6 +138,19 @@ was before.
   cell, awake and through a night of drowse. Both are in the tank for good.
   The model sees neither (schema v4 is frozen); they reach the fish through
   cover and the film, as the keeper's own chores do.
+- **Placing a piece (2026-09-16).** A bought decoration is the keeper's to
+  place: right after the purchase the shop closes and the PLACE THE SWORD
+  PLANT page comes up over the live tank (`setup_begin_place`, the bubble
+  column's page reworked) - a finger on the water drags the plant to that x
+  (`tank_decor_set`, clamped inside the visible window), a DEPTH bar of
+  three picture tiles - the keeper's first fish drawn over two leaves,
+  between them, behind them - picks BEHIND / AMONG / IN FRONT (behind the
+  fish and the grass / woven with them like the grass beds / over everything;
+  the tank redraws live and a hint line says what to watch for), DONE saves.
+  The owned plant's shop modal carries MOVE, which opens the same page again.
+  The spot and the layer ride in the save (`plant_x`, `plant_z`); older saves
+  read the default spot, AMONG. The snail is not placeable - it goes where
+  the film is.
 - Dollars earned during play show as a small "+N" toast over the live tank.
 
 ## IMU (motion)

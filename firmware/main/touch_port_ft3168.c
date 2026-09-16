@@ -35,7 +35,7 @@ static bool s_ms;                                 /* milestones page up (its CLO
 static bool s_cf; static int64_t s_cf_us; static int s_cf_ans;   /* reset confirm prompt */
 static bool s_set;                                /* settings page up (CLOSE ends it) */
 static bool s_shop;                               /* the shop page up (CLOSE ends it) */
-static int  s_shop_buy = -1;                      /* an UNLOCK tapped: the item, for main (one-shot) */
+static int  s_shop_act;                           /* an UNLOCK / MOVE tapped: the raw tap code, for main (one-shot) */
 static int  s_set_what, s_set_val;                /* a segment tapped: SET_TAP_* + value, for main */
 #define CONFIRM_TIMEOUT_US (20LL * 1000000)
 static bool s_inverted;                           /* screen 180-flipped: mirror into tank space */
@@ -97,10 +97,12 @@ void touch_port_poll(tank_t *t) {
         else if (r == SET_TAP_BRIGHT || r == SET_TAP_VOLUME || r == SET_TAP_LIGHT || r == SET_TAP_IDLE) { s_set_what = r; s_set_val = v; }
     }
     if (su && !s_cf) {
-        bool birth = setup_is_birth(); int who = setup_fish();
+        bool birth = setup_is_birth(); int who = setup_fish(), place = setup_item();
         setup_touch(t, tx, ty, touched);                     /* taps and the letter wheel, classified in setup.c */
         if (!setup_active()) {
             if (birth) ESP_LOGI(TAG, "birth flow done: %s named and saved", who >= 0 && who < t->n_fish ? t->fish[who].name : "?");
+            else if (place >= 0) ESP_LOGI(TAG, "placed: %s at x %.0f, %s layer, saved", SD_ITEMS[place].name, tank_decor_x(t, place),
+                                          tank_decor_z(t, place) == DECOR_Z_BACK ? "BEHIND" : tank_decor_z(t, place) == DECOR_Z_FRONT ? "IN FRONT" : "AMONG");
             else ESP_LOGI(TAG, "setup done: %s + %s", t->fish[0].name, t->fish[1].name);
         }
     }
@@ -131,9 +133,9 @@ void touch_port_poll(tank_t *t) {
             if (s_set) goto released;                               /* the settings page had the glass (render_settings_touch above) */
             if (s_shop) {                                           /* the shop: a row's modal, UNLOCK, HOW TO EARN, CLOSE */
                 int r = render_shop_tap(t, s_px, s_py);
-                ESP_LOGI(TAG, "shop tap at %.0f,%.0f -> %s", s_px, s_py, r == SHOP_TAP_CLOSE ? "CLOSE" : r >= SHOP_TAP_BUY ? "UNLOCK" : r == SHOP_TAP_KEPT ? "modal" : "nothing");
+                ESP_LOGI(TAG, "shop tap at %.0f,%.0f -> %s", s_px, s_py, r == SHOP_TAP_CLOSE ? "CLOSE" : r >= SHOP_TAP_MOVE ? "MOVE" : r >= SHOP_TAP_BUY ? "UNLOCK" : r == SHOP_TAP_KEPT ? "modal" : "nothing");
                 if (r == SHOP_TAP_CLOSE) { s_shop = false; render_shop_leave(); }
-                else if (r >= SHOP_TAP_BUY) s_shop_buy = r - SHOP_TAP_BUY;   /* main.c buys (and plays the cue) */
+                else if (r >= SHOP_TAP_BUY) s_shop_act = r;   /* main.c buys (and plays the cue) or opens the placement page */
                 goto released;
             }
             if (s_ms) {                                             /* the page: badges open a modal, the CLOSE
@@ -205,4 +207,4 @@ void touch_port_show_settings(bool on) { s_set = on; if (on) { s_ms = false; s_s
 int  touch_port_take_setting(int *value) { int w = s_set_what; *value = s_set_val; s_set_what = 0; return w; }
 bool touch_port_shop(void) { return s_shop; }
 void touch_port_show_shop(bool on) { if (s_shop && !on) render_shop_leave(); s_shop = on; if (on) { s_ms = false; s_set = false; s_sel = -1; } }
-int  touch_port_take_buy(void) { int i = s_shop_buy; s_shop_buy = -1; return i; }
+int  touch_port_take_shop(void) { int r = s_shop_act; s_shop_act = 0; return r; }

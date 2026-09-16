@@ -264,6 +264,7 @@ void tank_init(tank_t *t, uint32_t seed) {
     for (int i = 0; i < N_FISH_MAX; i++) t->sd_paid_fish[i] = 0;
     t->sd_colonies_paid = t->sd_inches_paid = 0;
     t->snail_x = -1; t->snail_y = -1; t->snail_heading = 0; t->snail_cell = -1; t->snail_graze = 0;
+    t->plant_x = 0; t->plant_z = DECOR_Z_MIDDLE;
     t->tank_ms_bits = 0; t->tank_ms_seen = 0; t->ask_rr = 0; t->advisor_asks = 0;
     tank_scatter_food(t, 2);
 }
@@ -366,9 +367,11 @@ static void veg_bed_base(const tank_t *t, int b, float *bx0, int *n) {
     if (b == 0)      { *bx0 = t->reef_x - 24 - lush * 6; base_n = 5 + lush; }
     else if (b == 1) { *bx0 = TANK_W * 0.84f; base_n = 4; }
     else if (b == 2) { *bx0 = TANK_W * 0.62f; base_n = 2; }
-    else             { *bx0 = 208; *n = 4; return; }        /* the sword plant (2026-09-15): four broad
-                                                              leaves on the open floor between the reef
-                                                              bed's widest reach (~199) and bed 2 (272) */
+    else             { *bx0 = tank_decor_x(t, 0) - PLANT_HALF_W; *n = 4; return; }   /* the sword plant
+                                                              (2026-09-15): four broad leaves, by default on
+                                                              the open floor between the reef bed's widest
+                                                              reach (~199) and bed 2 (272) - the keeper's
+                                                              to move (tank_decor_set) */
     /* the frond count is fixed per bed now (it used to widen with growth):
        with fronds cut one at a time, a bed's outer fronds can't be allowed
        to vanish because its MEAN height dropped */
@@ -661,6 +664,23 @@ void tank_snail_place(tank_t *t) {
 }
 void tank_plant_place(tank_t *t) {
     tank_veg_set(t, 3, VEG_START);                          /* a young plant; it grows from here */
+}
+/* the decor's spot and layer (see tank.h): item 0 is the plant */
+bool  tank_decor_placeable(int item) { return item == 0; }
+float tank_decor_half_w(int item) { return item == 0 ? PLANT_HALF_W : 0; }
+float tank_decor_x(const tank_t *t, int item) {
+    if (item != 0) return 0;
+    return t->plant_x > 0 ? t->plant_x : PLANT_X_DEFAULT;
+}
+int tank_decor_z(const tank_t *t, int item) { return item == 0 ? t->plant_z : DECOR_Z_MIDDLE; }
+void tank_decor_set(tank_t *t, int item, float x, int z) {
+    if (!tank_decor_placeable(item)) return;
+    float half = tank_decor_half_w(item), lo = DECOR_MARGIN + half, hi = TANK_W - DECOR_MARGIN - half;
+    if (x < lo) x = lo;
+    if (x > hi) x = hi;
+    if (z < 0) z = 0;
+    if (z >= DECOR_Z_N) z = DECOR_Z_N - 1;
+    t->plant_x = x; t->plant_z = (uint8_t)z;
 }
 
 void tank_touch_hold(tank_t *t, float x, float y) {

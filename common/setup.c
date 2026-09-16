@@ -21,6 +21,8 @@
 
 static bool s_active;
 static bool s_birth;           /* the birth flow (three pages about s_fish), not the first run */
+static bool s_place;           /* the placement page (one page about s_item) */
+static int  s_item;            /* placement: the SD item being placed */
 static int  s_fish;            /* birth flow: the newborn's slot */
 static int  s_birth_offered = -1;   /* setup_poll_birth: the arrival already opened for (-1 = none since boot) */
 static int  s_page;
@@ -32,23 +34,29 @@ static float s_ly;             /* last y, for the wheel */
 static float s_acc;            /* vertical travel toward the next step */
 static bool  s_spun;           /* this press has turned the wheel (or moved the column): no tap on release */
 
-static int page_fish(void) { return s_birth ? s_fish : (s_page == SETUP_PG_NAME_A || s_page == SETUP_PG_LOOK_A) ? 0 : 1; }
+static int page_fish(void) { return s_birth ? s_fish : s_place ? 0 : (s_page == SETUP_PG_NAME_A || s_page == SETUP_PG_LOOK_A) ? 0 : 1; }
 static bool page_is_name(void) { return s_page == SETUP_PG_NAME_A || s_page == SETUP_PG_NAME_B || s_page == SETUP_PG_NAME_NEW; }
 static bool page_is_look(void) { return s_page == SETUP_PG_LOOK_A || s_page == SETUP_PG_LOOK_B; }
 static bool page_is_last(void) { return s_page == SETUP_PG_CARE || s_page == SETUP_PG_FAMILY; }
 static bool page_one_button(void) { return s_page == SETUP_PG_WELCOME || s_page == SETUP_PG_BORN; }   /* a lone NEXT at the foot */
-static int  first_page(void) { return s_birth ? SETUP_PG_BORN : SETUP_PG_WELCOME; }
-static bool nav_on_top(void) { return page_is_name() || page_is_look() || s_page == SETUP_PG_BUBBLES; }
+static int  first_page(void) { return s_place ? SETUP_PG_PLACE : s_birth ? SETUP_PG_BORN : SETUP_PG_WELCOME; }
+static bool nav_on_top(void) { return page_is_name() || page_is_look() || s_page == SETUP_PG_BUBBLES || s_page == SETUP_PG_PLACE; }
 static const char *fish_name(const tank_t *t, int i) { return i >= 0 && i < t->n_fish ? t->fish[i].name : "?"; }
+static void stage(tank_t *t);
 
 void setup_begin(tank_t *t) {
     if (t->n_fish < 2) { progression_setup_done(t); s_active = false; return; }   /* nothing to name */
-    s_active = true; s_birth = false; s_fish = -1; s_page = SETUP_PG_WELCOME; s_slot = 0; s_down = false;
+    s_active = true; s_birth = false; s_place = false; s_fish = -1; s_page = SETUP_PG_WELCOME; s_slot = 0; s_down = false;
     tank_emit(TEV_WELCOME, -1);
 }
 void setup_begin_birth(tank_t *t, int slot) {
     if (slot < 0 || slot >= t->n_fish) { s_active = false; return; }
-    s_active = true; s_birth = true; s_fish = slot; s_page = SETUP_PG_BORN; s_slot = 0; s_down = false;
+    s_active = true; s_birth = true; s_place = false; s_fish = slot; s_page = SETUP_PG_BORN; s_slot = 0; s_down = false;
+}
+void setup_begin_place(tank_t *t, int item) {
+    if (!tank_decor_placeable(item)) return;
+    s_active = true; s_birth = false; s_place = true; s_item = item; s_fish = -1; s_page = SETUP_PG_PLACE; s_slot = 0; s_down = false;
+    stage(t);
 }
 int setup_poll_birth(tank_t *t) {
     int nb = progression_newborn();
@@ -61,6 +69,8 @@ int setup_poll_birth(tank_t *t) {
 }
 bool setup_active(void) { return s_active; }
 bool setup_is_birth(void) { return s_active && s_birth; }
+bool setup_is_place(void) { return s_active && s_place; }
+int  setup_item(void)     { return s_active && s_place ? s_item : -1; }
 int  setup_fish(void) { return s_active && (page_is_name() || page_is_look() || s_birth) ? page_fish() : -1; }
 static void stage(tank_t *t) {                          /* who is on stage, and where */
     if (s_active && (page_is_name() || page_is_look())) {
@@ -68,7 +78,10 @@ static void stage(tank_t *t) {                          /* who is on stage, and 
         t->stage_y = page_is_name() ? SETUP_STAGE_NAME_Y : SETUP_STAGE_LOOK_Y;
     } else t->stage_fish = -1;
 }
-void setup_cancel(tank_t *t) { s_active = false; stage(t); }
+void setup_cancel(tank_t *t) {
+    if (s_active && s_place) progression_save(t);       /* the piece stays where it was dragged */
+    s_active = false; stage(t);
+}
 int  setup_page(void)   { return s_page; }
 int  setup_slot(void)   { return s_slot; }
 
@@ -80,6 +93,7 @@ const char *setup_hit_name(int id) {
     if (id == SETUP_HIT_DOWN) return "down";
     if (id >= SETUP_HIT_SLOT0 && id < SETUP_HIT_SLOT0 + FISH_NAME_MAX) { snprintf(buf, sizeof buf, "slot %d", id - SETUP_HIT_SLOT0); return buf; }
     if (id >= SETUP_HIT_BODY0 && id < SETUP_HIT_BODY0 + LOOK_N) { snprintf(buf, sizeof buf, "body %d", id - SETUP_HIT_BODY0); return buf; }
+    if (id >= SETUP_HIT_Z0 && id < SETUP_HIT_Z0 + DECOR_Z_N) return id == SETUP_HIT_Z0 ? "BEHIND" : id == SETUP_HIT_Z0 + 1 ? "AMONG" : "IN FRONT";
     return "nothing";
 }
 
@@ -141,7 +155,7 @@ int setup_hit(float x, float y) {
         return in_box(x, y, SETUP_MID_X, SETUP_BTN_Y, SETUP_BTN_W, SETUP_BTN_H, m) ? SETUP_HIT_NEXT : 0;
     if (nav_on_top()) {
         if (in_box(x, y, SETUP_TOP_NEXT_X, SETUP_TOP_BTN_Y, SETUP_TOP_BTN_W, SETUP_BTN_H, m)) return SETUP_HIT_NEXT;
-        if (in_box(x, y, SETUP_TOP_BACK_X, SETUP_TOP_BTN_Y, SETUP_TOP_BTN_W, SETUP_BTN_H, m)) return SETUP_HIT_BACK;
+        if (!s_place && in_box(x, y, SETUP_TOP_BACK_X, SETUP_TOP_BTN_Y, SETUP_TOP_BTN_W, SETUP_BTN_H, m)) return SETUP_HIT_BACK;
     } else {
         if (in_box(x, y, SETUP_NEXT_X, SETUP_BTN_Y, SETUP_BTN_W, SETUP_BTN_H, m)) return SETUP_HIT_NEXT;
         if (in_box(x, y, SETUP_BACK_X, SETUP_BTN_Y, SETUP_BTN_W, SETUP_BTN_H, m)) return SETUP_HIT_BACK;
@@ -157,6 +171,14 @@ int setup_hit(float x, float y) {
         if (y >= SETUP_SLOT_Y - 16 - 70 && y < SETUP_SLOT_Y - 16) return SETUP_HIT_UP;
         if (y >= SETUP_SLOT_Y + SETUP_SLOT_H + 20 && y < SETUP_SLOT_Y + SETUP_SLOT_H + 20 + 70) return SETUP_HIT_DOWN;
         return 0;
+    }
+    if (s_page == SETUP_PG_PLACE) {
+        /* the DEPTH bar: a band 8 px around it, the segment under the finger */
+        if (!in_box(x, y, SETUP_DEPTH_X, SETUP_DEPTH_Y, SETUP_DEPTH_W, SETUP_DEPTH_H, 8)) return 0;
+        int i = (int)((x - SETUP_DEPTH_X) / SETUP_DEPTH_SEG_W);
+        if (i < 0) i = 0;
+        if (i >= DECOR_Z_N) i = DECOR_Z_N - 1;
+        return SETUP_HIT_Z0 + i;
     }
     if (page_is_look()) {
         /* the swatch row, a tall band (40 px above, 40 below - fingers land
@@ -174,6 +196,12 @@ int setup_hit(float x, float y) {
 void setup_activate(tank_t *t, int id) {
     if (!s_active || !id) return;
     fish_t *f = &t->fish[page_fish()];
+    if (s_place) {                                      /* DONE saves the spot; a layer button sets the depth */
+        if (id == SETUP_HIT_NEXT) { s_active = false; tank_emit(TEV_CONFIRM, -1); progression_save(t); }
+        else if (id >= SETUP_HIT_Z0 && id < SETUP_HIT_Z0 + DECOR_Z_N)
+            tank_decor_set(t, s_item, tank_decor_x(t, s_item), id - SETUP_HIT_Z0);
+        return;
+    }
     if (id == SETUP_HIT_NEXT) {
         if (page_is_name()) tidy_name(t, page_fish());
         if (page_is_last()) {                           /* BEGIN / DONE: the debt is paid, the names saved */
@@ -212,8 +240,13 @@ void setup_touch(tank_t *t, float x, float y, bool down) {
         if (s_page == SETUP_PG_BUBBLES && !h && y > SETUP_TOP_BTN_Y + SETUP_BTN_H + 8) {
             tank_set_bubble_x(t, x); s_spun = true;         /* the column comes to the finger */
         }
+        if (s_page == SETUP_PG_PLACE && !h && y > SETUP_PLACE_Y) {
+            tank_decor_set(t, s_item, x, tank_decor_z(t, s_item)); s_spun = true;   /* the piece comes to the finger */
+        }
     } else if (down && s_page == SETUP_PG_BUBBLES && s_spun) {
         tank_set_bubble_x(t, x);                            /* ... and follows it */
+    } else if (down && s_page == SETUP_PG_PLACE && s_spun) {
+        tank_decor_set(t, s_item, x, tank_decor_z(t, s_item));
     } else if (down && page_is_name()) {                /* the wheel: vertical travel spins the letter */
         int h0 = setup_hit(s_px, s_py);
         if (h0 >= SETUP_HIT_SLOT0 && h0 < SETUP_HIT_SLOT0 + FISH_NAME_MAX) {
@@ -246,6 +279,7 @@ static void nav(uint16_t *fb, int stride, bool top, const char *next_label, bool
 }
 /* page dots along the foot: where the keeper is in the flow */
 static void dots(uint16_t *fb, int stride, int y) {
+    if (s_place) return;                                /* one page: nothing to count */
     int n = s_birth ? SETUP_BIRTH_PAGES : SETUP_PG_N, cur = s_page - first_page();
     int w = n * 10 - 4, x0 = (TANK_W - w) / 2;
     for (int i = 0; i < n; i++) render_rect(fb, stride, x0 + i * 10, y, 6, 3, i == cur ? C_EDGE : C_DIM);
@@ -266,6 +300,30 @@ static void chevron(uint16_t *fb, int stride, int cx, int y, bool up, uint32_t r
         render_rect(fb, stride, cx - 4 - i * 4, yy, 4, 4, rgb);
         render_rect(fb, stride, cx + i * 4, yy, 4, 4, rgb);
     }
+}
+/* a small sword leaf for the depth tiles: `h` px tall on the spine x, the
+ * plant's own lanceolate taper (widest at 40% up) in its yellow-green */
+static void leaf_glyph(uint16_t *fb, int stride, int cx, int y_bot, int h, uint32_t rgb) {
+    for (int i = 0; i < h; i++) {
+        float u = i / (float)(h - 1);
+        float half = 0.6f + 4.4f * (u < 0.4f ? u / 0.4f : (1 - u) / 0.6f);
+        int w = (int)(half * 2 + 0.5f); if (w < 1) w = 1;
+        render_rect(fb, stride, cx - w / 2, y_bot - i, w, 1, rgb);
+    }
+}
+/* a depth tile: two leaves and the keeper's first fish, in the order the
+ * choice means - BEHIND (the plant behind the fish): leaves, then the fish
+ * over them; AMONG: one leaf, the fish, the other leaf; IN FRONT: the fish,
+ * then both leaves over it */
+static void depth_tile(const tank_t *t, uint16_t *fb, int stride, int x, int y, int w, int h, int z, float clock) {
+    const int cx = x + w / 2, cy = y + h / 2, lh = h - 6, yb = y + h - 3;
+    const uint32_t la = 0x8dbb48, lb = 0x6c9d38;
+    const fish_t *who = t->n_fish > 0 ? &t->fish[0] : NULL;
+    if (z == DECOR_Z_BACK)  { leaf_glyph(fb, stride, cx - 8, yb, lh, la); leaf_glyph(fb, stride, cx + 8, yb, lh, lb); }
+    if (z == DECOR_Z_MIDDLE)  leaf_glyph(fb, stride, cx - 8, yb, lh, la);
+    if (who) render_fish_portrait(fb, stride, (float)cx, (float)cy, 0.62f, who, clock);
+    if (z == DECOR_Z_MIDDLE)  leaf_glyph(fb, stride, cx + 8, yb, lh, lb);
+    if (z == DECOR_Z_FRONT) { leaf_glyph(fb, stride, cx - 8, yb, lh, la); leaf_glyph(fb, stride, cx + 8, yb, lh, lb); }
 }
 static void panel(uint16_t *fb, int stride) {
     render_rect(fb, stride, SETUP_X, SETUP_Y, SETUP_W, SETUP_H, C_PANEL);
@@ -298,6 +356,36 @@ void render_setup(const tank_t *t, uint16_t *fb, int stride, float clock) {
         chevron(fb, stride, bx, TANK_H - 16 - 34, true, C_EDGE);
         text_c(fb, stride, CX, 296, 2, C_CAPT, "DRAG THEM LEFT OR RIGHT");
         dots(fb, stride, TANK_H - 14);
+    } else if (s_page == SETUP_PG_PLACE) {
+        /* the live tank with a stripe over the piece's footprint: drag it
+           anywhere on the water; the layer row picks its depth (the tank
+           under the page redraws with it, so the fish and grass show the choice) */
+        char title[40]; snprintf(title, sizeof title, "PLACE THE %s", SD_ITEMS[s_item].name);
+        text_c(fb, stride, CX, SETUP_Y + 7, 2, C_CAPT, title);
+        render_button(fb, stride, SETUP_TOP_NEXT_X, SETUP_TOP_BTN_Y, SETUP_TOP_BTN_W, SETUP_BTN_H, C_GO, C_GO_E, "DONE", 2);
+        /* the DEPTH bar: one outlined box, three joined segments, the chosen
+           one lit; a picture tile on each and the word under it */
+        static const char *const zl[DECOR_Z_N] = { "BEHIND", "AMONG", "IN FRONT" };
+        static const char *const hint[DECOR_Z_N] = { "THE FISH SWIM IN FRONT OF IT", "THE FISH SWIM THROUGH IT", "THE FISH SWIM BEHIND IT" };
+        int z = tank_decor_z(t, s_item);
+        text_c(fb, stride, CX, SETUP_DEPTH_Y - 18, 2, C_CAPT, "DEPTH");
+        render_rect(fb, stride, SETUP_DEPTH_X, SETUP_DEPTH_Y, SETUP_DEPTH_W, SETUP_DEPTH_H, C_KEY);
+        for (int i = 0; i < DECOR_Z_N; i++) {
+            int sx = SETUP_DEPTH_X + i * SETUP_DEPTH_SEG_W;
+            if (i == z) { render_rect(fb, stride, sx, SETUP_DEPTH_Y, SETUP_DEPTH_SEG_W, SETUP_DEPTH_H, C_INNER);
+                          render_rect_edge(fb, stride, sx + 1, SETUP_DEPTH_Y + 1, SETUP_DEPTH_SEG_W - 2, SETUP_DEPTH_H - 2, C_EDGE); }
+            else if (i > 0) render_rect(fb, stride, sx, SETUP_DEPTH_Y + 6, 1, SETUP_DEPTH_H - 12, C_DIM);   /* a divider */
+            depth_tile(t, fb, stride, sx, SETUP_DEPTH_Y + 4, SETUP_DEPTH_SEG_W, SETUP_DEPTH_TILE_H, i, clock);
+            text_c(fb, stride, sx + SETUP_DEPTH_SEG_W / 2, SETUP_DEPTH_Y + SETUP_DEPTH_TILE_H + 10, 2, i == z ? C_TEXT : dim(C_CAPT, 45), zl[i]);
+        }
+        render_rect_edge(fb, stride, SETUP_DEPTH_X, SETUP_DEPTH_Y, SETUP_DEPTH_W, SETUP_DEPTH_H, C_EDGE);
+        text_c(fb, stride, CX, SETUP_DEPTH_HINT_Y, 2, C_CAPT, hint[z]);
+        float x0 = tank_decor_x(t, s_item) - tank_decor_half_w(s_item) - 10, x1 = tank_decor_x(t, s_item) + tank_decor_half_w(s_item) + 10, top = TANK_H - 16 - 40;
+        if (s_item == 0) tank_veg_bed(t, 3, NULL, NULL, &top, NULL);   /* the leaves' reach */
+        int sy = (int)top - 8; if (sy < SETUP_PLACE_Y) sy = SETUP_PLACE_Y;
+        render_rect_blend(fb, stride, (int)x0, sy, (int)(x1 - x0), TANK_H - 16 - sy + 4, C_EDGE, 46);
+        chevron(fb, stride, (int)((x0 + x1) * 0.5f), TANK_H - 16 - 34, true, C_EDGE);
+        text_c(fb, stride, CX, 296, 2, C_CAPT, "DRAG IT LEFT OR RIGHT");
     } else if (page_is_name()) {
         /* straight on the tank: the fish being named wears a ring in its own
            colour, its name spans the middle in that colour, the active slot

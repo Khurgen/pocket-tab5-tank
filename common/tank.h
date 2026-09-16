@@ -265,6 +265,11 @@ typedef struct tank {
     float    snail_x, snail_y, snail_heading;
     int16_t  snail_cell;           /* the algae cell it is heading for, -1 = wandering */
     float    snail_graze;          /* seconds on the current cell */
+    /* where the keeper put the decor (2026-09-16, the placement page): the
+     * sword plant's centre x along the floor (<= 0 = the default spot) and
+     * its depth layer (DECOR_Z_*). Both saved. */
+    float    plant_x;
+    uint8_t  plant_z;
     /* keeper habits the tank remembers (persisted by progression.c) */
     float    feed_spot_x;          /* where the keeper usually feeds (EMA); <0 = unknown */
     int      player_feedings;      /* MEALS: feedings the fish ate from (2026-09-14, Strato: a tap
@@ -470,6 +475,23 @@ veg_kind_t tank_veg_kind(const tank_t *t, int b);
  * snail on the glass, bottom left */
 void  tank_plant_place(tank_t *t);
 void  tank_snail_place(tank_t *t);
+/* placing the decor (2026-09-16, Strato: a bought piece "should allow the
+ * player to place the piece wherever they like", with a depth choice): a
+ * placeable item has a centre x along the floor - clamped inside the
+ * visible window, DECOR_MARGIN from the glass - and a depth layer: BACK =
+ * behind the fish and the grass, MIDDLE = woven with them (alternate fronds
+ * in front, the beds' own look), FRONT = over everything. The plant is the
+ * one placeable item so far; the snail goes where it likes. setup.c's
+ * placement page and the shop's MOVE button drive these; the save keeps them. */
+enum { DECOR_Z_BACK = 0, DECOR_Z_MIDDLE = 1, DECOR_Z_FRONT = 2, DECOR_Z_N = 3 };
+#define DECOR_MARGIN    30                 /* the snail's margin: inside the panel's rounded bezel */
+#define PLANT_HALF_W    21                 /* four leaves at a 14 px pitch: centre to the outer leaf */
+#define PLANT_X_DEFAULT (208.0f + PLANT_HALF_W)   /* the open floor between the reef bed and bed 2 */
+bool  tank_decor_placeable(int item);      /* SD item index: has an x and a layer */
+void  tank_decor_set(tank_t *t, int item, float x, int z);
+float tank_decor_x(const tank_t *t, int item);   /* the centre, default when unplaced */
+int   tank_decor_z(const tank_t *t, int item);
+float tank_decor_half_w(int item);         /* half the footprint, for the page's clamp / highlight */
 /* the snail has two poses (Strato's sprites, 2026-09-15): UPRIGHT, walking
  * the tank floor (nothing to graze: it comes down and ambles along the
  * bottom, turning at the ends), and flat ON THE GLASS (crawling to film and

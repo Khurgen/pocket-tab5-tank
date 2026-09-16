@@ -84,6 +84,10 @@ typedef struct {
     float    trim_px;
     float    snail_x, snail_y;           /* 0 = not placed yet */
     float    veg_h3[VEG_FRONDS_MAX];     /* bed 3: zeros = VEG_START when it is bought */
+    /* placement tail (2026-09-16, the placement page): the plant's centre x
+     * (0 = the default spot) and its layer + 1 (0 = MIDDLE, an older save) */
+    float    plant_x;
+    uint8_t  plant_z1, pad_place[3];
 } save_t;
 /* the smallest PTK2 save (pre-upkeep, 2026-08-30): anything shorter is not
  * ours. Every later build wrote sizeof(save_t) of its day - 448, 1112, 1304,
@@ -468,6 +472,7 @@ static bool load_save(tank_t *t, int64_t *saved_unix) {
         else tank_plant_place(t);
         tank_veg_sync(t);
     }
+    if (sv.plant_x > 0) tank_decor_set(t, 0, sv.plant_x, sv.plant_z1 ? sv.plant_z1 - 1 : DECOR_Z_MIDDLE);
     s_sd_prev_feedings = t->player_feedings;         /* meals before this boot are not back-paid */
     s_sd_pending = 0;
     s_arrival_pending = sv.arrival_pending;
@@ -643,6 +648,7 @@ void progression_save(tank_t *t) {
     sv.algae_colonies = t->algae_colonies; sv.trim_px = t->trim_px;
     sv.snail_x = t->snail_x > 0 ? t->snail_x : 0; sv.snail_y = t->snail_y > 0 ? t->snail_y : 0;
     for (int i = 0; i < VEG_FRONDS_MAX; i++) sv.veg_h3[i] = (t->sd_unlocks & SD_ITEM_PLANT) ? t->veg_h[3][i] : 0;
+    sv.plant_x = t->plant_x > 0 ? t->plant_x : 0; sv.plant_z1 = (uint8_t)(t->plant_z + 1);
     sv.setup_pending = s_setup_pending;
     sv.newborn_p1 = (uint8_t)(s_newborn >= 0 && s_newborn < t->n_fish ? s_newborn + 1 : 0);
     sv.bubble_x = t->bubble_x;

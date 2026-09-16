@@ -416,6 +416,11 @@ static void veg_tint_fill(float dim) {
 /* final: the scene cache is live, so each frond span applies its own vignette
  * (see span_final) and needs no re-apply rect - a full canopy used to hand
  * the sweep three bed-sized boxes, the largest PSRAM traffic in the frame. */
+/* a bed's depth (2026-09-16): the grass beds are woven with the fish
+ * (alternate fronds behind and in front); the plant is wherever the keeper
+ * put it - all behind, woven, or all in front (tank_decor_z) */
+static int bed_z(const tank_t *t, int b) { return b == 3 ? tank_decor_z(t, 0) : DECOR_Z_MIDDLE; }
+/* layer: 0 = the even fronds, 1 = the odd ones, -1 = every frond */
 static void draw_veg(ctx_t *c, const tank_t *t, int b, int seed, int layer, bool final) {
     veg_tint_fill(c->dim);
     int n; tank_veg_bed(t, b, NULL, NULL, NULL, &n);
@@ -425,7 +430,7 @@ static void draw_veg(ctx_t *c, const tank_t *t, int b, int seed, int layer, bool
     bool sword = tank_veg_kind(t, b) == VEG_KIND_SWORD;
     float root = 2.4f, tip = 0.4f, amp = sword ? 2.5f : 4.0f;
     for (int i = 0; i < n; i++) {
-        if ((i & 1) != layer) continue;
+        if (layer >= 0 && (i & 1) != layer) continue;
         float bx;
         /* each frond's own height (tank_t.veg_h): what the keeper cut is
            exactly what shows - no render-side variation on top */
@@ -584,8 +589,10 @@ void render_tank(const tank_t *t, uint16_t *fb, int stride) {
        canopy). Geometry comes from tank_veg_bed so physics and pixels agree.
        The alternating FRONT fronds draw after the fish, below. */
     static const int veg_seed[VEG_BEDS_MAX] = { 0, 7, 3, 5 };
+    for (int b = 0; b < tank_veg_beds(t); b++)          /* a BACK-layer piece first: behind the grass too */
+        if (bed_z(t, b) == DECOR_Z_BACK) draw_veg(&c, t, b, veg_seed[b], -1, cached);
     for (int b = 0; b < tank_veg_beds(t); b++)
-        draw_veg(&c, t, b, veg_seed[b], 0, cached);
+        if (bed_z(t, b) == DECOR_Z_MIDDLE) draw_veg(&c, t, b, veg_seed[b], 0, cached);
         /* no DYN_RECT: with the scene cache each frond span vignettes itself */
     PROF_ADD(2, p0);
     /* the airstone the column rises from, on the floor where the keeper put
@@ -630,7 +637,9 @@ void render_tank(const tank_t *t, uint16_t *fb, int stride) {
        so a fish inside a canopy is woven through it (each span applies its
        own vignette and untags itself, so the fish rects below skip it) */
     for (int b = 0; b < tank_veg_beds(t); b++)
-        draw_veg(&c, t, b, veg_seed[b], 1, cached);
+        if (bed_z(t, b) == DECOR_Z_MIDDLE) draw_veg(&c, t, b, veg_seed[b], 1, cached);
+    for (int b = 0; b < tank_veg_beds(t); b++)          /* a FRONT-layer piece last: over the grass and the fish */
+        if (bed_z(t, b) == DECOR_Z_FRONT) draw_veg(&c, t, b, veg_seed[b], -1, cached);
     PROF_ADD(4, p0);
     /* porthole vignette: darken corners toward AMOLED black. With a scene
        cache the full-frame pass is baked into the scene and only the dynamic
@@ -1508,7 +1517,10 @@ void render_shop(const tank_t *t, uint16_t *fb, int stride) {
     draw_text(&c, X + (W - text_w(it->words, 2)) / 2, Y + 118, 2, MSP_TEAL, it->words);
     draw_text(&c, X + (W - text_w(it->words2, 2)) / 2, Y + 138, 2, MSP_TEAL, it->words2);
     const int bx = X + (W - MSP_HOW_W) / 2, by = Y + H - 12 - MSP_HOW_H;
-    if (owned) draw_text(&c, X + (W - text_w("IN THE TANK", 2)) / 2, by + 8, 2, MSP_TEAL, "IN THE TANK");
+    if (owned && tank_decor_placeable(g_shp_modal)) {         /* a placeable piece: MOVE re-opens the placement page */
+        draw_text(&c, X + (W - text_w("IN THE TANK", 2)) / 2, Y + 164, 2, MSP_TEAL, "IN THE TANK");
+        button(&c, bx, by, MSP_HOW_W, MSP_HOW_H, 0x1c2f36, MSP_TEAL, "MOVE", 2);
+    } else if (owned) draw_text(&c, X + (W - text_w("IN THE TANK", 2)) / 2, by + 8, 2, MSP_TEAL, "IN THE TANK");
     else {
         char line[32]; snprintf(line, sizeof line, "%d", it->price);
         int pw = 20 + text_w(line, 2);
@@ -1529,6 +1541,7 @@ int render_shop_tap(const tank_t *t, float x, float y) {
         bool on_btn = x >= bx - MSP_HOW_SLOP_X && x < bx + MSP_HOW_W + MSP_HOW_SLOP_X && y >= by - MSP_HOW_SLOP_UP && y < by + MSP_HOW_H + MSP_HOW_SLOP_DN;
         g_shp_modal = -1;
         if (on_btn && !owned && can) return SHOP_TAP_BUY + item;
+        if (on_btn && owned && tank_decor_placeable(item)) return SHOP_TAP_MOVE + item;
         return SHOP_TAP_KEPT;
     }
     if (x >= MSP_CLOSE_X - 8 && y >= MSP_CLOSE_Y - 4) return SHOP_TAP_CLOSE;
