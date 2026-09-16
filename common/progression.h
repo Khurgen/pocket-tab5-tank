@@ -32,6 +32,8 @@ bool    persist_port_load(void *buf, size_t max, size_t *got); /* the saved blob
 bool    persist_port_save(const void *buf, size_t len);
 bool    persist_port_erase(void);                          /* EVERY saved tank, parked copies included */
 int64_t clock_port_now_unix(void);                         /* 0 if unknown */
+const char *version_port_string(void);                     /* the build's git describe (device: the app
+                                                            * descriptor; sim: PT_VERSION) - the settings page */
 
 /* call after tank_init: restores the saved tank (or creates a new population)
  * and lives through the time since the save was written - since 2026-09-16

@@ -35,6 +35,7 @@
 #include "setup.h"
 #include "setup.h"
 #include "nvs_flash.h"
+#include "esp_app_desc.h"
 #include "rtc_port.h"
 #include "driver/i2c_master.h"
 #include "esp_async_memcpy.h"
@@ -506,6 +507,12 @@ static void tank_task(void *arg) {
         vTaskDelay(pdMS_TO_TICKS(rest < 1 ? 1 : rest));
     }
 }
+
+/* the settings page's dim version line: ESP-IDF stamps the app descriptor
+   with `git describe --always --tags --dirty` of the checkout at build (the
+   installer's Actions job checks out with the full history), the same words
+   the installer page shows for what it would write */
+const char *version_port_string(void) { return esp_app_get_description()->version; }
 
 void app_main(void) {
     ESP_LOGI(TAG, "pocket-tank boot%s",

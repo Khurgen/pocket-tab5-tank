@@ -375,9 +375,18 @@ The easy way onto a board: **https://stratobuilds.com/pocket-tank-installer/**.
 Plug the Waveshare board into your computer, open the page in Chrome or Edge,
 click *Install Pocket Tank*, pick the port, and watch the bar fill. About
 8 MB goes over in a minute or two, the board reboots on its own, and two fry
-are waiting. The dialog offers to erase first: say yes for a brand-new tank,
-or leave it off to update a tank you already keep and your fish, their trust
-and their history survive. It is the same mechanism ESPHome and Home
+are waiting.
+
+**Updating is the same click.** The installer never erases the board: it
+rewrites the app and the model, and the tank's save lives in a part of the
+flash (NVS at `0x9000`) that none of the four parts cover, so your fish,
+their names, trust, history, badges, sand dollars and decorations carry on.
+Every version loads the saves of every earlier one (the save only ever grows
+at the tail, and the one field that went in mid-struct is slid into place on
+load). To start over, hold BOOT and tap the glass for the *Reset tank?*
+prompt; the page also has an "erase and install fresh" button for a board
+that won't get that far. The settings page shows the firmware version at
+its foot, small and dim, so you can tell what you run. It is the same mechanism ESPHome and Home
 Assistant use ([ESP Web Tools](https://esphome.github.io/esp-web-tools/)),
 running entirely in the browser over Web Serial.
 
@@ -493,7 +502,7 @@ seven-minute prompt check before an overnight run is always worth it.
   where along the floor and whether it stands behind, among or in front
   of the fish
 - ✅ Browser installer: one click from Chrome or Edge, hosted at
-  stratobuilds.com
+  stratobuilds.com; updating is the same click and never erases a tank
 - 🔋 In progress: battery life. The first night on the board's power-off
   and the awake draw with a full tank are being measured with the tank's
   own log; what is in flight and how to pick it up is in

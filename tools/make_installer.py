@@ -7,10 +7,17 @@ bundle into ONE static folder that any HTTPS host can serve as-is:
 
     installer/dist/
         index.html          the page (version stamped in)
-        manifest.json       what to flash where (ESP Web Tools format)
+        manifest.json       what to flash where (ESP Web Tools format); the
+                            Install button: NEVER erases, so a tank already
+                            on the board (its save lives in NVS at 0x9000,
+                            which no part touches) carries on after an update
+        manifest-erase.json the same parts behind the "start over" button:
+                            ESP Web Tools' erase question first
         firmware/*.bin      bootloader, partition table, app, model
         vendor/esp-web-tools/*.js   the flasher (Apache-2.0, vendored so the
-                                    page has no third-party runtime deps)
+                                    page has no third-party runtime deps;
+                                    the install dialog gets the one-line
+                                    never_erase patch below at assembly)
 
 Offsets come from the build's flasher_args.json (bootloader / partition
 table / app) and from firmware/partitions.csv (the model partition), so a
@@ -26,6 +33,33 @@ import argparse, datetime, json, os, shutil, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_BUILD = os.path.expanduser("~/.cache/pocket-tank/fw-build")
+
+# ESP Web Tools (10.4.0) has no manifest option for "install without erasing"
+# on a device that does not speak Improv: with new_install_prompt_erase the
+# dialog asks (checkbox off by default), without it the dialog ERASES first,
+# unconditionally. The tank's save would go with it. So the vendored dialog
+# gets one edit at assembly: a manifest with "never_erase": true skips the
+# question and starts a plain install (bootloader / partition table / app /
+# model written at their offsets, NVS untouched). The edit is a literal
+# replace of the two click handlers; a vendor upgrade that changes the text
+# fails the build here instead of quietly shipping an erasing page.
+DIALOG_ERASE_CLICK = 'this._manifest.new_install_prompt_erase?this._state="ASK_ERASE":this._startInstall(!0)'
+DIALOG_NEVER_ERASE = 'this._manifest.new_install_prompt_erase?this._state="ASK_ERASE":this._startInstall(!this._manifest.never_erase)'
+
+
+def patch_dialog(vendor_dir):
+    """apply the never_erase edit to the copied install dialog bundle"""
+    names = [n for n in os.listdir(vendor_dir) if n.startswith("install-dialog") and n.endswith(".js")]
+    if len(names) != 1:
+        sys.exit(f"{vendor_dir}: expected one install-dialog*.js, found {names}")
+    path = os.path.join(vendor_dir, names[0])
+    js = open(path).read()
+    n = js.count(DIALOG_ERASE_CLICK)
+    if n != 2:
+        sys.exit(f"{path}: the erase click handler occurs {n} times, expected 2 - ESP Web Tools "
+                 "changed; re-check the never_erase patch before shipping the installer")
+    open(path, "w").write(js.replace(DIALOG_ERASE_CLICK, DIALOG_NEVER_ERASE))
+    return names[0]
 
 
 def model_offset():
@@ -86,18 +120,23 @@ def main():
         shutil.copyfile(src, os.path.join(out, "firmware", pub))
         total += os.path.getsize(src)
     shutil.copytree(os.path.join(ROOT, "installer", "vendor"), os.path.join(out, "vendor"))
+    dialog = patch_dialog(os.path.join(out, "vendor", "esp-web-tools"))
 
+    build = {"chipFamily": "ESP32-S3",
+             "parts": [{"path": f"firmware/{pub}", "offset": off} for off, _, pub in parts]}
     manifest = {
         "name": "Pocket Tank",
         "version": version,
         "built": date,                       # read by the page (ESP Web Tools ignores extra keys)
-        "new_install_prompt_erase": True,   # the dialog offers "erase": a factory-fresh tank
-        "builds": [{
-            "chipFamily": "ESP32-S3",
-            "parts": [{"path": f"firmware/{pub}", "offset": off} for off, _, pub in parts],
-        }],
+        "new_install_prompt_erase": False,
+        "never_erase": True,                 # the patched dialog: no erase question, no erase - the
+                                             # tank on the board (NVS) survives; a blank board boots fresh
+        "builds": [build],
     }
     json.dump(manifest, open(os.path.join(out, "manifest.json"), "w"), indent=2)
+    erase = dict(manifest, name="Pocket Tank (fresh)", new_install_prompt_erase=True)
+    del erase["never_erase"]                 # the "start over" button: the dialog asks, checkbox off by default
+    json.dump(erase, open(os.path.join(out, "manifest-erase.json"), "w"), indent=2)
     # Apache / LiteSpeed hosts sometimes refuse .bin or serve .json as text;
     # harmless elsewhere
     open(os.path.join(out, ".htaccess"), "w").write(
@@ -108,10 +147,12 @@ def main():
     page = page.replace("{{VERSION}}", version).replace("{{DATE}}", date)
     page = page.replace("{{TOTAL_MB}}", f"{total / 1e6:.1f}")
     page = page.replace("{{MANIFEST}}", a.manifest_url)
+    page = page.replace("{{MANIFEST_ERASE}}", a.manifest_url.replace("manifest.json", "manifest-erase.json"))
     open(os.path.join(out, "index.html"), "w").write(page)
     open(os.path.join(out, ".nojekyll"), "w").close()   # GitHub Pages: serve the folder as-is
 
-    print(f"installer -> {out}  (version {version}, {date}; manifest {a.manifest_url})")
+    print(f"installer -> {out}  (version {version}, {date}; manifest {a.manifest_url}; "
+          f"never_erase patch in {dialog})")
     for off, src, pub in parts:
         print(f"  0x{off:06x}  {os.path.getsize(src):>9,} B  {pub}")
     print(f"  {total:,} B to flash")

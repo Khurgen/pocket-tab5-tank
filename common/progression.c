@@ -104,6 +104,17 @@ typedef struct {
  * 1436 padded to the int64's alignment, no offset matched, and the birth-flow
  * flash replaced a live tank with two fry.) */
 #define SAVE_CORE_SIZE   offsetof(save_t, veg_growth)
+/* the one field ever added MID-struct: bubble_x (2026-09-14) went in ahead of
+ * the seen masks, and the browser installer's first builds (public 09-13 ..
+ * 09-14) had already written saves without it - 1432 bytes, the masks
+ * starting where bubble_x now sits. load_save slides them into place, so a
+ * tank kept since the first install updates clean (its badges stay seen and
+ * the bubble column stays put). Never add a field mid-struct again. */
+#define SAVE_PRE_BUBBLE_SIZE 1432
+_Static_assert(offsetof(save_t, ms_seen) == offsetof(save_t, bubble_x) + sizeof(float),
+               "the pre-bubble migration expects the seen masks right after bubble_x");
+_Static_assert(offsetof(save_t, bubble_x) + sizeof(((save_t *)0)->ms_seen) + sizeof(uint32_t) == SAVE_PRE_BUBBLE_SIZE,
+               "the pre-bubble migration expects the 1432-byte layout's masks to end at 1432");
 
 float progression_time_scale = 1.0f;
 
@@ -460,6 +471,10 @@ static bool load_save(tank_t *t, int64_t *saved_unix) {
     size_t got = 0;
     bool loaded = persist_port_load(&sv, sizeof sv, &got) && got >= SAVE_CORE_SIZE && got <= sizeof sv;
     if (!loaded || sv.magic != SAVE_MAGIC || sv.n_fish < 2 || sv.n_fish > N_FISH_MAX) return false;
+    if (got == SAVE_PRE_BUBBLE_SIZE) {         /* the first public installer's layout: see SAVE_PRE_BUBBLE_SIZE */
+        memmove(&sv.ms_seen, &sv.bubble_x, sizeof sv.ms_seen + sizeof sv.tank_ms_seen);
+        sv.bubble_x = 0;                       /* = the default column */
+    }
     *saved_unix = sv.saved_unix;
     t->n_fish = 0;
     for (int i = 0; i < sv.n_fish; i++) {

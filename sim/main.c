@@ -688,6 +688,32 @@ static int selftest_sleep(void) {
         tank_init(&tank, 8); progression_boot(&tank);
         if (!progression_setup_pending()) { printf("FAIL: a 100-byte save is not ours\n"); return 1; }
         printf("selftest-sleep: older saves (1480 .. 448 bytes) load; a 100-byte one starts fresh\n");
+        /* the browser installer's first builds (public 2026-09-13 .. 09-14) wrote
+           1432 bytes with the seen masks at 1404, where bubble_x was inserted the
+           next day: such a save must come back with its badges still seen and the
+           bubble column at the default, not at "mask bits as a float" (= the left edge) */
+        tank_init(&tank, 8); progression_boot(&tank);    /* a fresh pair (setup pending) */
+        tank_set_name(&tank, 0, "Fez");
+        tank.fish[0].ms_bits |= MS_ARRIVED | MS_FIRST_MEAL_FROM_YOU; tank.fish[0].ms_seen = tank.fish[0].ms_bits;
+        tank.tank_ms_bits |= TMS_FIRST_FULL_NIGHT; tank.tank_ms_seen = tank.tank_ms_bits;
+        uint32_t want_seen = tank.fish[0].ms_seen, want_tseen = tank.tank_ms_seen;
+        float bx_default = tank.bubble_x;
+        progression_save(&tank);
+        {
+            unsigned char buf[4096]; FILE *f = fopen(sav, "rb"); if (!f) return 1;
+            size_t n = fread(buf, 1, sizeof buf, f); fclose(f);
+            if (n < 1436) { printf("FAIL: the save is only %zu bytes\n", n); return 1; }
+            memmove(buf + 1404, buf + 1408, 28);         /* drop bubble_x: masks back to the old spot */
+            f = fopen(sav, "wb"); if (!f) return 1;
+            fwrite(buf, 1, 1432, f); fclose(f);
+        }
+        tank_init(&tank, 8); progression_boot(&tank);
+        if (tank.n_fish != 2 || strcmp(tank.fish[0].name, "fez") || tank.fish[0].ms_seen != want_seen ||
+            tank.tank_ms_seen != want_tseen || tank.bubble_x != bx_default) {
+            printf("FAIL: the 1432-byte pre-bubble save came back as %d fish, %s, seen %08x/%08x (want %08x/%08x), bubble %.0f (want %.0f)\n",
+                   tank.n_fish, tank.n_fish ? tank.fish[0].name : "-", tank.fish[0].ms_seen, tank.tank_ms_seen,
+                   want_seen, want_tseen, tank.bubble_x, bx_default); return 1; }
+        printf("selftest-sleep: a 1432-byte save from the first public installer builds keeps its badges seen and its bubble column\n");
     }
     printf("selftest-sleep: dash %.0f px/s at the drop; fed and calmed %.1f s after pellets\n",
            dash_speed, fed_at / 60.0f);

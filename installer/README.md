@@ -20,10 +20,36 @@ Fonts, the red button). When only the page changed, re-uploading
 `index.html` is enough - the binaries and `vendor/` are untouched.
 
 `installer/dist/` is the whole thing: `index.html`, `manifest.json`,
-`firmware/*.bin` (bootloader, partition table, app, model), `vendor/`. The
-offsets in the manifest come from the build's `flasher_args.json` and from
-`firmware/partitions.csv`, and the page carries the git version. It is
-gitignored: rebuild it for every release.
+`manifest-erase.json`, `firmware/*.bin` (bootloader, partition table, app,
+model), `vendor/`. The offsets in the manifests come from the build's
+`flasher_args.json` and from `firmware/partitions.csv`, and the page carries
+the git version. It is gitignored: rebuild it for every release.
+
+## Updating never erases (the two manifests, and one patched line)
+
+The tank's save lives in NVS at `0x9000`; the four parts sit at `0x0`,
+`0x8000`, `0x10000` and `0x290000`, so a plain write of the four leaves it
+alone and the tank carries on after an update (`tools/flash.sh` does the same
+writes every day). The catch was in the dialog: ESP Web Tools 10.4.0 has no
+manifest option for "install, don't erase" on a device without Improv.
+`new_install_prompt_erase: true` asks (checkbox off by default), and without
+it the dialog erases the chip first, unconditionally. So:
+
+- `manifest.json` (the red button) carries `"never_erase": true` and
+  `make_installer.py` patches the copied `install-dialog-*.js` at assembly:
+  the two click handlers that read `_startInstall(!0)` (erase) become
+  `_startInstall(!this._manifest.never_erase)`. The build fails loudly if
+  the handler text is not found exactly twice, so a vendor upgrade can't
+  ship an erasing page by accident. `vendor/` itself stays pristine.
+- `manifest-erase.json` (the "Erase the board and install fresh" button)
+  is the same parts with the erase question, for a board that is stuck or
+  a keeper who wants a clean flash. The on-device reset (hold BOOT, tap the
+  glass) is the normal way to start over and needs no page.
+
+The firmware side of the promise: `common/progression.c` loads a save of any
+older length (the tail only ever appends) and slides the one mid-struct
+insertion (bubble_x, 2026-09-14) into place for saves from the first public
+builds; `sim/fishsim --selftest-sleep` covers both.
 
 ## It updates itself (GitHub Pages)
 
@@ -78,13 +104,15 @@ while the binaries stay on GitHub.
 
 ## What the user sees
 
-Click → the browser's port picker (`USB JTAG/serial debug unit`) → a dialog
-that asks whether to erase first (yes = a brand-new tank; no = keep an
-existing tank's fish and history) → a progress bar over the four parts →
-*Installation complete*, and the board resets into the tank. The page's
+Click → the browser's port picker (`USB JTAG/serial debug unit`) → *Install
+Pocket Tank* → "Do you want to install Pocket Tank <version>?" → a progress
+bar over the four parts → *Installation complete*, and the board resets into
+the tank: fresh on a blank board, the same tank on one that had it. The
+"start over" button adds the erase question (tick *Erase device*). The page's
 "If something's off" section covers the usual snags: a sleeping tank hides
 its USB port (press PWR), holding BOOT while plugging in forces download
-mode, Linux group permissions, charge-only cables.
+mode, Linux group permissions, charge-only cables, and an optional esptool
+backup of the save area for the cautious.
 
 ## Verified
 

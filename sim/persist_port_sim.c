@@ -27,4 +27,8 @@ bool persist_port_save(const void *buf, size_t len) {
     size_t n = fwrite(buf, 1, len, f); fclose(f); return n == len;
 }
 bool persist_port_erase(void) { return remove(path()) == 0 || errno == ENOENT; }
+#ifndef PT_VERSION
+#define PT_VERSION "sim"
+#endif
+const char *version_port_string(void) { return PT_VERSION; }   /* the Makefile's git describe */
 int64_t clock_port_now_unix(void) { return (int64_t)time(NULL); }

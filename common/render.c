@@ -1452,6 +1452,24 @@ static void draw_text(ctx_t *c, int x, int y, int scale, uint32_t rgb, const cha
     }
 }
 
+/* 8 px text (2026-09-16, the settings page's version line): the 5x7 font at
+ * scale 1 with its second row drawn twice. Row 1 is a vertical-stroke row in
+ * every glyph the line can hold (letters, digits, '-', '.'), so the doubling
+ * only lengthens strokes and never thickens a bar - Strato wanted the line
+ * smaller than the page's text (14 px) but not the font's 7 px. */
+static void draw_text_8px(ctx_t *c, int x, int y, uint32_t rgb, const char *s) {
+    src_t col = src_color(rgb, c->dim);
+    for (; *s; s++, x += 6) {
+        const uint8_t *g = glyph(*s);
+        if (!g) continue;
+        for (int r = 0, yy = y; r < 7; r++, yy++) {
+            for (int rep = r == 1 ? 2 : 1; rep; rep--, yy += rep ? 1 : 0)
+                for (int k = 0; k < 5; k++)
+                    if (g[r] & (0x10 >> k)) span(c, x + k, x + k, yy, &col, 255);
+        }
+    }
+}
+
 /* ---- reset confirm (2026-09-11) ----
  * The keeper's "start over" (device: hold BOOT, tap the glass; sim: X). A
  * modal panel over the live tank - the fish keep swimming behind it - that
@@ -2208,6 +2226,15 @@ void render_settings(const tank_t *t, uint16_t *fb, int stride, int bright_pct, 
         draw_text(&c, SET_LABEL_X, SET_NUM_Y - 8, 2, MSP_TEAL, "DOUBLE-TAP THE GLASS TO");
         draw_text(&c, SET_LABEL_X, SET_NUM_Y + 14, 2, MSP_TEAL, "TURN THE LIGHT ON OR OFF");
     }
+    /* the firmware version, hugging the bottom left of the frame (6 px up,
+       on the labels' x; the bezel's curve is clear there), small (8 px) and
+       dim: it is for the keeper who asks "how do I update?", not for
+       reading - Strato: "FISH ARE QUIET AT NIGHT is meant to be read; the
+       fw version is something most people should not care about. minimize
+       it", "make it 8px tall", "hug the bottom of the frame" (2026-09-16).
+       The installer page shows the version it would write in the same words. */
+    char ver[40]; snprintf(ver, sizeof ver, "FW %s", version_port_string());
+    draw_text_8px(&c, SET_LABEL_X, TANK_H - 8 - 6, MSP_DIM, ver);
     button(&c, MSP_CLOSE_X, MSP_CLOSE_Y, MSP_CLOSE_W, MSP_CLOSE_H, 0x1c2f36, MSP_TEAL, "CLOSE", 2);
 }
 static int set_segment(float x, int n) {

@@ -74,6 +74,8 @@
     border: 0; border-radius: 10px; padding: 20px 30px; cursor: pointer; transition: filter .15s;
   }
   esp-web-install-button button:hover { filter: brightness(.9); }
+  /* the "start over" trigger: the same slot, the dark card's colour, smaller */
+  esp-web-install-button.fresh button { background: var(--dark); padding: 14px 20px; }
   esp-web-install-button [slot="unsupported"], esp-web-install-button [slot="not-allowed"] {
     display: inline-block; font-size: 14px; font-weight: 500; color: var(--ink); background: rgba(255, 0, 0, .08);
     border-radius: 10px; padding: 14px 16px; max-width: 420px;
@@ -108,7 +110,7 @@
 
   <section class="card dark">
     <h1>Install Pocket Tank</h1>
-    <p class="lede">A tiny language model governs fish decisions on an ESP32-S3. Put it on your board from this page.</p>
+    <p class="lede">A tiny language model governs fish decisions on an ESP32-S3. Put it on your board from this page, and bring a tank you already keep up to date the same way.</p>
   </section>
 
   <section class="card">
@@ -116,7 +118,7 @@
     <ol>
       <li><b>Plug the board into this computer</b> with a USB-C cable that carries data (some charge-only cables don't). The board's own USB-C port goes straight to the chip, no adapter needed.</li>
       <li><b>Click the button.</b> Your browser asks which port to use: pick <code>USB JTAG/serial debug unit</code> (on Linux it may just say <code>ttyACM0</code>).</li>
-      <li><b>Wait for the bar to fill.</b> About {{TOTAL_MB}} MB goes over, which takes a minute or two. When it says <em>Installation complete</em>, the board reboots into the tank on its own, with two fry waiting for you.</li>
+      <li><b>Wait for the bar to fill.</b> About {{TOTAL_MB}} MB goes over, which takes a minute or two. When it says <em>Installation complete</em>, the board reboots on its own: a new board into a fresh tank with two fry, a tank you already keep into the same tank, carrying on.</li>
     </ol>
     <div class="install">
       <esp-web-install-button manifest="{{MANIFEST}}">
@@ -126,7 +128,22 @@
       </esp-web-install-button>
       <span class="meta">Chrome or Edge, desktop &middot; firmware <code data-version>{{VERSION}}</code></span>
     </div>
-    <p class="fine">The dialog offers to <b>erase the device first</b>. Say yes for a brand-new tank. If you're updating a tank you already keep, leave it off and your fish, their trust and their history stay exactly as they were.</p>
+    <p><b>Updating a tank you already keep?</b> Same button, nothing else to do. The installer never erases the board: it rewrites the app and the model, and the tank's save lives in a part of the flash it does not touch. Your fish, their names and colors, their trust and history, the badges, the sand dollars and everything you placed all stay. Every version since the first one loads the saves of every earlier one.</p>
+    <p class="fine">The dialog says <em>Install</em> either way, and shows the version it is about to write. If your tank is asleep (dark screen), press <kbd>PWR</kbd> first so the port shows up.</p>
+  </section>
+
+  <section class="card">
+    <h2>Start over</h2>
+    <p>You don't need this page for that: hold <kbd>BOOT</kbd> and tap the glass, and the tank asks <em>Reset tank?</em>. Answer YES for two new fry.</p>
+    <p>If the board won't get that far, or you want the flash wiped clean before installing, this button asks first, then erases everything and installs fresh:</p>
+    <div class="install">
+      <esp-web-install-button class="fresh" manifest="{{MANIFEST_ERASE}}">
+        <button slot="activate">Erase the board and install fresh</button>
+        <span slot="unsupported">This browser can't talk to USB devices. Use Chrome or Edge on a desktop or laptop.</span>
+        <span slot="not-allowed">Browser flashing only works on an HTTPS page (or localhost).</span>
+      </esp-web-install-button>
+    </div>
+    <p class="fine">It shows an <em>Erase device</em> checkbox: tick it. Left unticked it installs like the button above.</p>
   </section>
 
   <section class="card">
@@ -146,11 +163,15 @@
     </details>
     <details>
       <summary>"Failed to initialize" or the install stops partway</summary>
-      <p>Close anything else that may hold the port (a serial monitor, another tab with this page), unplug, replug, and click Install again. If it fails at the same place twice, hold <kbd>BOOT</kbd> while plugging in and retry with <em>erase</em> on.</p>
+      <p>Close anything else that may hold the port (a serial monitor, another tab with this page), unplug, replug, and click Install again. If it fails at the same place twice, hold <kbd>BOOT</kbd> while plugging in and retry; a tank you keep is still on the board, the install only ever rewrites the app and the model.</p>
     </details>
     <details>
       <summary>Linux: permission denied on the port</summary>
       <p>Add yourself to the group that owns <code>/dev/ttyACM0</code> (usually <code>dialout</code> or <code>uucp</code>), then log out and back in: <code>sudo usermod -aG dialout $USER</code></p>
+    </details>
+    <details>
+      <summary>A backup of the tank before updating (optional, needs a terminal)</summary>
+      <p>The update keeps the tank on its own, but if you like a copy first: with <code>esptool</code> installed (<code>pip install esptool</code>) and the board awake, <code>esptool.py --chip esp32s3 read_flash 0x9000 0x6000 my-tank.bin</code> saves the whole save area to a file, and <code>esptool.py --chip esp32s3 write_flash 0x9000 my-tank.bin</code> puts it back.</p>
     </details>
     <details>
       <summary>Windows: the port shows but the install fails to connect</summary>
@@ -158,7 +179,7 @@
     </details>
     <details>
       <summary>What exactly gets written</summary>
-      <p>Four pieces at fixed places in the chip's 16 MB flash: the bootloader, the partition table, the app, and the 7.5 MB four-bit model. The <code>manifest.json</code> next to this page lists them. Everything runs on the chip; nothing is sent anywhere.</p>
+      <p>Four pieces at fixed places in the chip's 16 MB flash: the bootloader, the partition table, the app, and the 7.5 MB four-bit model. The <code>manifest.json</code> next to this page lists them. The tank's save (the fish, the settings) sits in a separate 24 KB area at <code>0x9000</code> that none of the four cover, which is why an update keeps it; only the erase button above clears it. Everything runs on the chip; nothing is sent anywhere.</p>
     </details>
   </section>
 
