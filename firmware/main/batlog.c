@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stddef.h>
 #include "esp_attr.h"
+#include "nvs.h"
 
 /* RTC slow memory, NO-INIT section (2026-09-15): the ring lives through
    deep sleep AND every other reset - a reflash, a software reset, a
@@ -34,8 +35,36 @@ static bool valid(void) {
 static void seal(void) { s_log.magic = BATLOG_MAGIC; s_log.crc = crc_of(&s_log); }
 
 void batlog_clear(void) { s_n = s_head = 0; seal(); }
+
+/* The bedtime row also goes to NVS (2026-09-16): the RTC ring is lost to a
+   power-off, and a cell that dies in the night IS a power-off - the morning
+   of 09-16 found a wiped ring and no idea what SoC the tank went to bed at.
+   An empty ring at boot is seeded from it, once ("bed"), so the printout
+   still derives the night's mA between bedtime and the boot row. */
+static void bed_store(const sample_t *s) {
+    nvs_handle_t h; if (nvs_open("tank", NVS_READWRITE, &h) != ESP_OK) return;
+    if (nvs_set_blob(h, "bed", s, sizeof *s) == ESP_OK) nvs_commit(h);
+    nvs_close(h);
+}
+static bool bed_take(sample_t *s) {
+    nvs_handle_t h; if (nvs_open("tank", NVS_READWRITE, &h) != ESP_OK) return false;
+    size_t len = sizeof *s;
+    bool ok = nvs_get_blob(h, "bed", s, &len) == ESP_OK && len == sizeof *s;
+    if (ok) { nvs_erase_key(h, "bed"); nvs_commit(h); }
+    nvs_close(h);
+    return ok;
+}
 int batlog_init(void) {
-    if (!valid()) { batlog_clear(); return 0; }
+    if (!valid()) {
+        batlog_clear();
+        sample_t bed;
+        if (bed_take(&bed)) {
+            strncpy(bed.why, "bed", sizeof bed.why - 1); bed.why[sizeof bed.why - 1] = 0; bed.asleep = 1;
+            s_ring[0] = bed; s_n = 1; s_head = 1; seal();
+            ESP_LOGI("batlog", "ring lost to a power-off; bedtime row restored from NVS (%d%%, %d mV)", bed.pct, bed.mv);
+        }
+        return 0;
+    }
     return s_n;
 }
 void batlog_add(int pct, int mv, int bright, bool asleep, const char *why) {
@@ -51,6 +80,7 @@ void batlog_add(int pct, int mv, int bright, bool asleep, const char *why) {
     strncpy(s->why, why ? why : "", sizeof s->why - 1); s->why[sizeof s->why - 1] = 0;
     s_head = (s_head + 1) % N; if (s_n < N) s_n++;
     seal();
+    if (asleep && why && (!strcmp(why, "sleep") || !strcmp(why, "off"))) bed_store(s);   /* survives the cell dying */
 }
 void batlog_print(void) {
     if (!s_n) { ESP_LOGI("batlog", "no samples yet"); return; }

@@ -5,7 +5,6 @@
 #include <stdio.h>
 
 #define SAVE_MAGIC 0x50544b32u   /* "PTK2" (PTK1 saves are 4-fish, pre-population: start fresh) */
-#define RAVENOUS_AFTER_S (60 * 60)
 #define RAVENOUS_GIVE_UP_S 150.0f  /* begging window before the fish give up */
 #define SAVE_HEARTBEAT_S 600.0f
 #define SAVE_MIN_GAP_S   30.0f
@@ -476,17 +475,18 @@ static bool load_save(tank_t *t, int64_t *saved_unix) {
     return true;
 }
 
-void progression_boot(tank_t *t) {
-    int64_t saved_unix;
-    s_booted = true;
-    if (!load_save(t, &saved_unix)) { progression_fresh(t); return; }
-    int64_t now = clock_port_now_unix();
-    if (now > 0 && saved_unix > 0 && now - saved_unix >= RAVENOUS_AFTER_S) {
-        s_ravenous = true; s_ravenous_t = 0;                 /* the one offline rule */
-        s_rav_feedings0 = t->player_feedings;
-        for (int i = 0; i < t->n_fish; i++) t->fish[i].hunger = 9.6f;
-    }
-    if (s_arrival_pending && !t->night && tank_nursery_bed(t) >= 0) do_arrival(t);   /* earned while you were away: here it is */
+/* A cold boot lives the absence exactly as a deep-sleep wake does
+   (2026-09-16). It used to restore the save and pin everyone at hunger 9.6
+   after an hour away - "the one offline rule" - while only the deep-sleep
+   wake simulated the span; so the morning after a cell died in the night
+   (a PMIC power-off, hence a cold boot) came up with no algae, no growth
+   and no night credited. Now every boot with a clock and a save is a wake;
+   a long night ends in ravenous begging by itself (hunger +0.8/h crosses
+   the begging line in progression_tick). Without a clock nothing can be
+   simulated and the tank simply resumes. Returns the hours lived through,
+   -1 for none (no save, no clock). */
+float progression_boot(tank_t *t) {
+    return progression_wake(t, clock_port_now_unix());
 }
 
 void progression_settings_changed(void) { mark_dirty(); }

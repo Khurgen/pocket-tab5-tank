@@ -34,15 +34,18 @@ bool    persist_port_erase(void);                          /* EVERY saved tank, 
 int64_t clock_port_now_unix(void);                         /* 0 if unknown */
 
 /* call after tank_init: restores the saved tank (or creates a new population)
- * and applies the boot rule */
-void progression_boot(tank_t *t);
+ * and lives through the time since the save was written - since 2026-09-16
+ * the same as progression_wake with the port's clock (the cold-boot ravenous
+ * rule is gone: a cell that dies in the night is a power-off, and that
+ * morning deserves its night too). Returns the hours lived through, -1 for
+ * none. */
+float progression_boot(tank_t *t);
 /* the device waking from DEEP sleep (2026-09-14): restore the save, then live
  * through the dark stretch since it was written - tank_tick_sleep for
- * (now_unix - saved_unix), capped at PROGRESSION_SLEEP_CAP_S - instead of the
- * cold-boot ravenous rule. Hunger, energy, grass and algae land where a night
- * of drowse would have put them; a long enough night ends in ravenous begging
- * by itself. Returns the hours simulated, or -1 when no clock was available
- * (then it behaved like progression_boot without the ravenous rule). */
+ * (now_unix - saved_unix), capped at PROGRESSION_SLEEP_CAP_S. Hunger, energy,
+ * grass and algae land where a night of drowse would have put them; a long
+ * enough night ends in ravenous begging by itself. Returns the hours
+ * simulated, or -1 when no clock was available (restore only). */
 #define PROGRESSION_SLEEP_CAP_S (7 * 24 * 3600)
 /* how much of a slept span the fish grow through (2026-09-14, Strato: "an
  * eight-hour sleep should be worth 2 hours of growth") */

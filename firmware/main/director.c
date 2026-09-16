@@ -163,7 +163,7 @@ static void help(void) {
     ESP_LOGI(TAG, "touch [bias <px>] (finger-landing correction: reported touches move up by px; not saved)");
     ESP_LOGI(TAG, "pmic (AXP2101 dump) | pmic on|off <aldo1|aldo2..4|bldo1|bldo2|cpusldo|dcdc2..5|dldo1|dldo2> (experiments; boot trims the unused ones) | pmic trim");
     ESP_LOGI(TAG, "bright <0-255> (panel now; not saved) | level 100|60|30 (the keeper's setting, saved)");
-    ESP_LOGI(TAG, "batlog [clear] (the tank's own battery log: SoC/VBAT every 5 min awake, 30 min asleep, mA derived - read it after a night on battery) | codec (ES8311 registers) | deepsleep [N] (sleep now: N s grace then deep sleep with an N s timer wake; BOOT wakes either)");
+    ESP_LOGI(TAG, "batlog [clear] (the tank's own battery log: SoC/VBAT every 5 min awake, 30 min asleep, mA derived - read it after a night on battery) | codec (ES8311 registers) | deepsleep [N] (N: 5 s grace then deep sleep with an N s timer wake - one batlog window per N, BOOT wakes it; no N: the keeper's sleep, grace then power-off) | poweroff (save + PMIC cut now)");
     ESP_LOGI(TAG, "overgrown (grass to the ceiling + fouled glass; fish stress climbs) | court (pair circles the reef now and every ~minute; fry at the next light-on) | arrive (the fry, now)");
 }
 
@@ -266,9 +266,13 @@ static void run(tank_t *t, char *line) {
         ESP_LOGI(TAG, "brightness %d/255", v);
     } else if (!strcmp(c, "deepsleep")) {
         int n = argc > 1 ? atoi(argv[1]) : 0;
-        ESP_LOGI(TAG, "deep sleep now%s - the USB port vanishes until the wake", n > 0 ? " (timer wake)" : " (BOOT wakes)");
+        ESP_LOGI(TAG, "%s - the USB port vanishes until the wake", n > 0 ? "5 s grace, then deep sleep with the timer" : "the keeper's sleep: the grace, then power-off (the PWR key boots it)");
         vTaskDelay(pdMS_TO_TICKS(50));
         device_sleep(n);
+    } else if (!strcmp(c, "poweroff")) {
+        ESP_LOGI(TAG, "power-off now (the PWR key or USB boots it) - the USB port vanishes");
+        vTaskDelay(pdMS_TO_TICKS(50));
+        device_poweroff();
     } else if (!strcmp(c, "snd")) {
         /* snd <cue> [pitch_q8] | snd off|quiet|normal | snd stop <cue> | snd list | snd settle <codec ms> <amp ms> | snd idle <s> */
         if (argc < 2 || !strcmp(argv[1], "list")) {

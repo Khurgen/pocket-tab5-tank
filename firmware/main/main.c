@@ -43,10 +43,14 @@
 #include "esp_sleep.h"
 #include "driver/rtc_io.h"
 
-/* sleep button: BOOT (GPIO0, active low, RTC-wake capable). A press saves the
- * tank, powers the panel down and deep-sleeps; the next press wakes through a
- * normal boot, so progression's absence rules (RTC ravenous etc.) just apply. */
+/* BOOT (GPIO0, active low, RTC-wake capable): the reset chord (held + a tap
+ * on the glass), the director's deep-sleep wake, and the sleep key only on a
+ * board with no PMIC. Since 2026-09-16 the sleep key is the PWR key (the
+ * AXP2101's PWRON, polled over I2C): the night mode is a PMIC power-off,
+ * from which ONLY that key (or USB) can bring the board back, so it has to
+ * be the one key the keeper ever presses - press to sleep, press to wake. */
 #define BTN_SLEEP GPIO_NUM_0
+static bool s_pmic;                        /* an AXP2101 answered: the PWR key exists, power-off is real */
 #ifdef CONFIG_POCKET_TANK_DISPLAY_SH8601
 extern i2c_master_bus_handle_t board_i2c_bus(void);
 #else
@@ -91,6 +95,7 @@ static void assert_plan(void) {
 }
 
 static void enter_poweroff(void);
+static void deep_sleep_now(int wake_after_s);
 static bool s_btn_armed; static int64_t s_btn_low_since;   /* sleep_button_poll state */
 static bool s_btn_used;   /* this press opened the reset prompt: no drowse, no power-off from it */
 
@@ -108,9 +113,19 @@ static bool s_btn_used;   /* this press opened the reset prompt: no drowse, no p
  *     was written (the grace included; nothing ticked during it) - and then
  *     puts every fish back where it fell asleep, on the goal it had, from a
  *     snapshot kept in RTC slow memory (survives deep sleep, not power-off:
- *     after a cold boot the fish may scatter, and that is fine). A wake
- *     press still held ~1.5 s into the boot goes to power-off. */
-#define SLEEP_GRACE_US (90LL * 1000000)
+ *     after a cold boot the fish may scatter, and that is fine).
+ *  Since 2026-09-16 (the night the cell died; Strato: one key, no modes to
+ *  remember, "an extended sleep is exactly that, night or noon"): stage 2 is
+ *  the AXP2101 soft POWER-OFF - < 40 uA with the RTC clock alive - and the
+ *  PWR key (or USB) boots the tank, where progression_boot lives the whole
+ *  stretch through. Deep sleep is now only the director's timed measurement
+ *  window and the no-PMIC fallback; there the digital pads are HELD (the
+ *  I2S + amp lines driven low, gpio_deep_sleep_hold_en), which is also what
+ *  makes esp-idf isolate every other digital pad: un-isolated, deep sleep
+ *  drew ~15 mA by the batlog, three times the light-sleep drowse it replaced. */
+#define SLEEP_GRACE_US    (90LL * 1000000)
+#define DIRECTOR_GRACE_US (5LL * 1000000)     /* `deepsleep N`: straight to stage 2 */
+#define KEY_POLL_US       (1000000LL)         /* the grace wakes once a second to ask the PMIC about the PWR key */
 static int battery_pct(void) { float f; bool c; return battery_port_read(&f, &c) ? (int)(f * 100 + 0.5f) : -1; }
 typedef struct { float x, y, heading; uint8_t goal, valid; } fish_snap_t;
 RTC_DATA_ATTR static fish_snap_t s_snap[N_FISH_MAX]; RTC_DATA_ATTR static int s_snap_n;
@@ -145,8 +160,10 @@ static int restore_fish(void) {
 }
 static void enter_sleep_for(int wake_after_s) {
     int pct0 = battery_pct(), mv0 = battery_port_vbat_mv();
-    ESP_LOGI(TAG, "sleep: save, panel off, %d s grace then deep sleep (BOOT wakes%s) | battery %d%% %d mV",
-             wake_after_s > 0 ? wake_after_s : (int)(SLEEP_GRACE_US / 1000000), wake_after_s > 0 ? ", or the timer" : "", pct0, mv0);
+    int64_t grace_us = wake_after_s > 0 ? DIRECTOR_GRACE_US : SLEEP_GRACE_US;
+    ESP_LOGI(TAG, "sleep: save, panel off, %d s grace then %s | battery %d%% %d mV",
+             (int)(grace_us / 1000000),
+             wake_after_s > 0 ? "deep sleep with the timer" : s_pmic ? "PMIC power-off (the PWR key boots it)" : "deep sleep (BOOT wakes)", pct0, mv0);
     touch_port_confirm_answer(-1);              /* an open reset prompt is a NO */
     progression_save(&tank);
     snapshot_fish();
@@ -156,26 +173,31 @@ static void enter_sleep_for(int wake_after_s) {
     display_port_sleep();
     while (!gpio_get_level(BTN_SLEEP)) vTaskDelay(pdMS_TO_TICKS(10));   /* wake triggers are level-low: never arm them held */
     vTaskDelay(pdMS_TO_TICKS(30));
-    /* stage 1: the grace, RAM alive */
-    gpio_wakeup_enable(BTN_SLEEP, GPIO_INTR_LOW_LEVEL);
-    esp_sleep_enable_gpio_wakeup();
-    esp_sleep_enable_timer_wakeup(wake_after_s > 0 ? (int64_t)wake_after_s * 1000000 : SLEEP_GRACE_US);
+    /* stage 1: the grace, RAM alive - light sleep in 1 s slices, each wake a
+       one-byte I2C read of the PMIC's IRQ status for the PWR key (no IRQ line
+       to the chip is needed); BOOT (gpio, level low) wakes it too for the
+       director's bench and a board with no PMIC */
     int64_t t0 = esp_timer_get_time();
-    esp_light_sleep_start();
-    esp_sleep_wakeup_cause_t why = esp_sleep_get_wakeup_cause();
-    gpio_wakeup_disable(BTN_SLEEP);
-    /* wake sources are STICKY in ESP-IDF (s_config.wakeup_triggers): the
-     * grace's 90 s timer would otherwise follow us into deep sleep and boot
-     * the tank 90 s later - which it did (2026-09-14: every sleep since the
-     * two-stage change lasted exactly 3 minutes; the batlog showed sleep ->
-     * wake pairs 0:03 apart). Drop everything, then arm stage 2's own. */
-    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-    if (why == ESP_SLEEP_WAKEUP_GPIO) {         /* a quick wake: resume in place */
-        int64_t held0 = esp_timer_get_time();
-        while (!gpio_get_level(BTN_SLEEP)) {    /* the wake press, still down */
-            if (esp_timer_get_time() - held0 >= 1500000) { enter_poweroff(); break; }
-            vTaskDelay(pdMS_TO_TICKS(10));
-        }
+    bool pressed = false;
+    for (;;) {
+        int64_t left = grace_us - (esp_timer_get_time() - t0);
+        if (left <= 0) break;
+        gpio_wakeup_enable(BTN_SLEEP, GPIO_INTR_LOW_LEVEL);
+        esp_sleep_enable_gpio_wakeup();
+        esp_sleep_enable_timer_wakeup(left < KEY_POLL_US ? left : KEY_POLL_US);
+        esp_light_sleep_start();
+        esp_sleep_wakeup_cause_t why = esp_sleep_get_wakeup_cause();
+        gpio_wakeup_disable(BTN_SLEEP);
+        /* wake sources are STICKY in ESP-IDF (s_config.wakeup_triggers): the
+         * grace's timer would otherwise follow us into stage 2 and boot the
+         * tank 90 s later - which it did (2026-09-14: every sleep since the
+         * two-stage change lasted exactly 3 minutes). Drop everything each
+         * slice, then arm stage 2's own. */
+        esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+        if (why == ESP_SLEEP_WAKEUP_GPIO || battery_port_key_poll()) { pressed = true; break; }
+    }
+    if (pressed) {                              /* a quick wake: resume in place */
+        while (!gpio_get_level(BTN_SLEEP)) vTaskDelay(pdMS_TO_TICKS(10));   /* a BOOT wake press, still down */
         float napped = (esp_timer_get_time() - t0) / 1e6f;
         tank_tick_sleep(&tank, napped);         /* the nap counts, tiny as it is */
         display_port_wake();
@@ -185,42 +207,75 @@ static void enter_sleep_for(int wake_after_s) {
         ESP_LOGI(TAG, "wake within the grace: resumed in place after %.0f s", napped);
         return;
     }
-    /* stage 2: the grace passed - deep sleep. The save (written before the
-       grace) plus the RTC clock cover the whole dark stretch at the wake. */
-    ESP_LOGI(TAG, "grace over: deep sleep (BOOT only%s)", wake_after_s > 0 ? ", or the timer" : "");
-    rtc_gpio_pullup_en(BTN_SLEEP); rtc_gpio_pulldown_dis(BTN_SLEEP);
-    esp_sleep_enable_ext0_wakeup(BTN_SLEEP, 0);
-    if (wake_after_s > 0) esp_sleep_enable_timer_wakeup((int64_t)wake_after_s * 1000000);   /* director test: the same span again */
-    esp_deep_sleep_start();
+    /* stage 2: the grace passed. The save (written before the grace) plus the
+       RTC clock cover the whole dark stretch at the next boot. */
+    if (wake_after_s <= 0 && s_pmic) {
+        batlog_add(battery_pct(), battery_port_vbat_mv(), 0, true, "off");   /* mirrored to NVS: the morning reads it back */
+        ESP_LOGI(TAG, "grace over: PMIC power-off (the PWR key or USB boots the tank; the night is lived through at that boot)");
+        vTaskDelay(pdMS_TO_TICKS(20));
+        if (battery_port_poweroff()) vTaskDelay(pdMS_TO_TICKS(1000));      /* the rails drop here */
+        ESP_LOGW(TAG, "still powered after the soft cut: deep sleep instead");
+    }
+    deep_sleep_now(wake_after_s);
 }
 static void enter_sleep(void) { enter_sleep_for(0); }
+/* deep sleep: BOOT as ext0 (and the director's timer). The pads: I2S + amp
+   CTRL low and held; with digital hold on, esp_deep_sleep_start isolates every
+   other digital pad (input, output and pulls off) - the light-sleep drowse
+   kept them driven, the first deep-sleep build left them neither, and the
+   board around the chip drew ~15 mA all night (2026-09-15/16). */
+static void deep_sleep_now(int wake_after_s) {
+    ESP_LOGI(TAG, "deep sleep (BOOT wakes%s)", wake_after_s > 0 ? ", or the timer" : "");
+    rtc_gpio_pullup_en(BTN_SLEEP); rtc_gpio_pulldown_dis(BTN_SLEEP);
+    esp_sleep_enable_ext0_wakeup(BTN_SLEEP, 0);
+    if (wake_after_s > 0) esp_sleep_enable_timer_wakeup((int64_t)wake_after_s * 1000000);
+    audio_port_deep_sleep_pins();
+    gpio_deep_sleep_hold_en();
+    ESP_LOGI(TAG, "digital pads held + isolated");
+    esp_deep_sleep_start();
+}
 void device_sleep(int wake_after_s) { enter_sleep_for(wake_after_s); }   /* director `deepsleep N` */
 
-/* full power-down: save, then the AXP2101 cuts every rail (~ its own quiescent
- * uA until the PWR button boots it). Deep sleep keeps the module + touch +
- * codec rails up, so this is the mode for shelving the tank for weeks. */
+/* the PWR key held 1.5 s: save and cut NOW, no grace (the same power-off the
+ * grace ends in). No PMIC: deep sleep. */
 static void enter_poweroff(void) {
-    ESP_LOGI(TAG, "power-off: saving tank, PMIC soft cut (PWR button boots)");
+    ESP_LOGI(TAG, "power-off now: saving tank, PMIC soft cut (the PWR key boots)");
+    touch_port_confirm_answer(-1);
     progression_save(&tank);
+    audio_port_sleep();
+    batlog_add(battery_pct(), battery_port_vbat_mv(), display_port_brightness(), true, "off");   /* to NVS too: the shelf time is measurable at the next boot */
+    imu_port_sleep();
     display_port_sleep();
     vTaskDelay(pdMS_TO_TICKS(50));
-    if (battery_port_poweroff()) vTaskDelay(pdMS_TO_TICKS(500));  /* rails drop here */
-    enter_sleep();   /* no PMIC (QEMU / bring-up) or write failed: deep sleep anyway */
+    if (battery_port_poweroff()) vTaskDelay(pdMS_TO_TICKS(1000));  /* rails drop here */
+    deep_sleep_now(0);   /* no PMIC (QEMU / bring-up) or write failed */
+}
+void device_poweroff(void) { enter_poweroff(); }   /* director `poweroff` */
+
+/* the PWR key, asked of the PMIC ten times a second: a short press sleeps
+ * (the grace, then power-off), 1.5 s powers off at once. The boot's first
+ * seconds are deaf to it - the press that powered the board on can still be
+ * landing in the status register. */
+#define KEY_BOOT_DEAF_US 3000000
+static void pwr_key_poll(int64_t now) {
+    static int64_t last;
+    if (now - last < 100000) return;
+    last = now;
+    int k = battery_port_key_poll();
+    if (!k) return;
+    if (now < KEY_BOOT_DEAF_US) { ESP_LOGI(TAG, "PWR key %s press in the boot's first seconds: the power-on press, ignored", k == 2 ? "long" : "short"); return; }
+    ESP_LOGI(TAG, "PWR key: %s press", k == 2 ? "long" : "short");
+    if (k == 2) enter_poweroff(); else enter_sleep();
 }
 
-/* armed only after the button has been seen released, so the press that ended
- * a drowse doesn't immediately start the next one. Short press = drowse, acted
- * on at RELEASE (enter_sleep returns after the eventual wake); held >= 1.5 s =
- * full power-off. The RESET chord (2026-09-11): while BOOT is held, a finger
- * landing on the glass opens the confirm prompt instead - that press then
- * neither drowses at release nor powers off, however long it is held; a
- * finger that was already resting on the glass doesn't count (hold-attract
- * then BOOT still just sleeps the tank). */
+/* BOOT: the RESET chord (2026-09-11) - while it is held, a finger landing on
+ * the glass opens the confirm prompt; a finger already resting there doesn't
+ * count. With no PMIC (so no PWR key) a short press, at RELEASE, is the sleep
+ * key as it was until 2026-09-16; a chord press never is. */
 #define BTN_DEBOUNCE_US 50000
-#define BTN_LONG_US     1500000
 static void sleep_button_poll(int64_t now) {
     if (gpio_get_level(BTN_SLEEP)) {
-        if (s_btn_armed && s_btn_low_since && !s_btn_used && now - s_btn_low_since >= BTN_DEBOUNCE_US)
+        if (!s_pmic && s_btn_armed && s_btn_low_since && !s_btn_used && now - s_btn_low_since >= BTN_DEBOUNCE_US)
             enter_sleep();
         s_btn_armed = true; s_btn_low_since = 0; s_btn_used = false;
     } else if (s_btn_armed) {
@@ -230,7 +285,6 @@ static void sleep_button_poll(int64_t now) {
             ESP_LOGI(TAG, "BOOT + tap: reset prompt");
             touch_port_confirm_open();
         }
-        else if (!s_btn_used && now - s_btn_low_since >= BTN_LONG_US) enter_poweroff();
     }
 }
 
@@ -306,6 +360,7 @@ static void tank_task(void *arg) {
         int64_t now = esp_timer_get_time();
         float dt = (now - last) / 1e6f; last = now; if (dt > 0.25f) dt = 0.25f;
         sleep_button_poll(now);
+        pwr_key_poll(now);
         imu_port_poll(now);
         if (imu_port_moving()) audio_port_prewarm();   /* in a hand: the codec stays warm (docs/AUDIO.md) */
         if (imu_port_handled()) tank_handled(&tank);   /* ... and the light stays on (two polls of motion: a bump on the desk is not a pick-up) */
@@ -444,6 +499,7 @@ void app_main(void) {
     gpio_config_t btn = { .pin_bit_mask = 1ULL << BTN_SLEEP, .mode = GPIO_MODE_INPUT,
                           .pull_up_en = GPIO_PULLUP_ENABLE };
     gpio_config(&btn);
+    gpio_deep_sleep_hold_dis();              /* a deep-sleep wake is a boot: the night's pad holds end here */
     if (nvs_flash_init() != ESP_OK) { nvs_flash_erase(); nvs_flash_init(); }
     { int carried = batlog_init();       /* the battery log survives every reset but a power-on */
       if (carried) ESP_LOGI(TAG, "batlog: %d samples carried through the reset (director `batlog` reads them)", carried); }
@@ -486,8 +542,9 @@ void app_main(void) {
     render_clock_us = esp_timer_get_time;    /* per-stage frame profiling in the display log */
     display_port_init();
     touch_port_init();
-    battery_port_init(board_i2c_bus());
+    s_pmic = battery_port_init(board_i2c_bus());
     battery_port_trim_rails();        /* the schematic's unused outputs off (docs/HANDOFF.md, the battery pass) */
+    battery_port_key_init();          /* the PWR key: sleep / power-off IRQs on, the power-on press cleared */
     codec_port_init(board_i2c_bus());  /* the ES8311 fully down until a cue needs it (its digital side shares VCC3V3) */
     audio_port_init(board_i2c_bus());  /* the sound bank + player task (docs/AUDIO.md); silent without the codec */
     tank_events_set(on_tank_event, NULL);
@@ -516,13 +573,12 @@ void app_main(void) {
         batlog_add(battery_pct(), battery_port_vbat_mv(), 0, true, "wake");
         int put_back = restore_fish();       /* where they fell asleep, on the goal they had */
         ESP_LOGI(TAG, "wake: %d of %d fish put back where they were", put_back, tank.n_fish);
-        /* the wake press still held ~1.5 s into the boot = power-off (as the drowse wake did) */
-        int64_t held0 = esp_timer_get_time();
-        while (cause == ESP_SLEEP_WAKEUP_EXT0 && !gpio_get_level(BTN_SLEEP)) {
-            if (esp_timer_get_time() - held0 >= 1500000) { enter_poweroff(); break; }
-            vTaskDelay(pdMS_TO_TICKS(10));
-        }
-    } else progression_boot(&tank);          /* restore (or a new random pair) + ravenous rule */
+    } else {                                 /* a cold boot - power-on, a flash, a PMIC power-off, a cell that died: the absence is lived through just the same (2026-09-16) */
+        float h = progression_boot(&tank);
+        ESP_LOGI(TAG, "cold boot: %s%.1f h lived through since the save | hunger[0] %.1f | battery %d%% %d mV",
+                 h < 0 ? "no save or no clock, " : "", h < 0 ? 0.0f : h,
+                 tank.n_fish ? tank.fish[0].hunger : 0.0f, battery_pct(), battery_port_vbat_mv());
+    }
     notice_sync(&tank);                      /* what is already earned stays unannounced */
     ESP_LOGI(TAG, "population %d (cap %d): %s + %s ...", tank.n_fish, POP_CAP,
              tank.fish[0].name, tank.n_fish > 1 ? tank.fish[1].name : "-");

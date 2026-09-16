@@ -127,7 +127,7 @@ Tiers are build order. Tier 1 alone is a shippable feature.
 | `arrival` | a fry arrives / birth flow announce | the one "big" sound, ~1.5 s |
 | `milestone` | a milestone or checklist line earned | plays with the milestone modal (section 4a) |
 | `stage_up` | fry -> juv -> adult -> elder | |
-| `sleep`, `wake` | BOOT press to drowse / wake | DEFERRED by Strato 2026-09-15, no cue yet; wake would play after the codec is up, so ~100 ms into the boot |
+| `sleep`, `wake` | PWR key press to sleep / wake | DEFERRED by Strato 2026-09-15, no cue yet; wake would play after the codec is up, so ~100 ms into the boot |
 | `coin` | sand dollars earned (the "+N" toast, render_sd_toast) | not yet: no cue in the bank; the toast is silent. A purchase plays `confirm` |
 | `low_battery` | gauge falls to 10% | once per discharge, with the low-battery modal and the persistent pill (section 4a) |
 | `error` | save failed, reset prompt | |

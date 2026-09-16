@@ -213,13 +213,16 @@ stretch earns the tank its first full night's sleep.
 
 **Habits and continuity.** The tank remembers where you feed it and greets
 the light coming on. A real-time clock tells it how long it was off, so a
-tank left dark for a day wakes hungry. A short press on BOOT puts the
-device into deep sleep: the tank saves, the screen goes dark and the chip
-draws microamps. Press again within a minute and a half and the tank simply
-resumes where it was; later, another press wakes it with a three-second
-boot, and the fish have lived through the time away: hunger up, energy back, the grass and the
-algae grown, a long night ending in begging at the surface. Holding BOOT
-powers the tank off entirely. Flip the device and the screen follows.
+tank left dark for a day wakes hungry. One key does all of it: a short
+press on PWR puts the tank to sleep - it saves and the screen goes dark -
+and a press wakes it. Press again within a minute and a half and the tank
+simply resumes where it was; after that it powers itself down to the
+board's deepest state (tens of microamps, months on the shelf), and the
+next press wakes it with a three-second boot, the fish having lived
+through the time away: hunger up, energy back, the grass and the algae
+grown, a long night ending in begging at the surface. The tank decides how
+deep it sleeps; you never do. Holding PWR powers it off at once. Hold BOOT
+and tap the glass to reset the tank. Flip the device and the screen follows.
 
 **First run.** A new tank, whether a fresh install or a reset, opens with a
 short setup over the live water. A welcome page; then you place the bubble
@@ -417,11 +420,11 @@ seven-minute prompt check before an overnight run is always worth it.
 - ✅ Simulator: the full tank with progression, self-tests, snapshots
 - ✅ Firmware: running on the real board at 25 to 30 fps and 3.7 s per
   decision, with touch, auto-rotation, a battery gauge and log, two-stage
-  sleep (resume in place within 90 s, deep sleep after) and power-off
+  sleep (resume in place within 90 s, sleep after) and power-off
 - ✅ The living tank: growth, arrivals with courtship, trust, the hunger
   economy, upkeep chores, milestones, the reset prompt, the first-run setup
   (place the bubbles, a letter wheel to name each fry, a body color to pick),
-  births announced and named with a family page, deep sleep that lives
+  births announced and named with a family page, sleep that lives
   through the night at wake, fish that get bored and go exploring
 - ✅ Sound: the board's own little speaker plays cues for what you do (a
   feed, the light, a trim, a card) and for the fish (eating, a spook, a

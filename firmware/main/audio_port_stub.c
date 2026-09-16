@@ -13,6 +13,7 @@ void audio_port_set_volume(int level) { s_volume = level < 0 ? 0 : level > 2 ? 2
 int  audio_port_volume(void) { return s_volume; }
 void audio_port_set_night(bool night) { (void)night; }
 void audio_port_sleep(void) {}
+void audio_port_deep_sleep_pins(void) {}
 void audio_port_tune(int codec_ms, int amp_ms, int idle_s) { (void)codec_ms; (void)amp_ms; (void)idle_s; }
 bool audio_port_up(void) { return false; }
 const char *audio_port_state(void) { return "stub"; }

@@ -51,6 +51,31 @@ static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
 static void amp(bool on) { gpio_set_level(PIN_AMP_EN, on); }
 
+/* Deep sleep (2026-09-16, the night the tank died): the I2S lines and the
+ * amp's CTRL are the ESP's outputs into ICs that stay powered on VCC3V3 all
+ * night (the codec's DVDD/PVDD, the NS4150B). In deep sleep an un-held
+ * digital pad is neither driven nor pulled - and esp-idf isolates the REST
+ * of the digital pads only once digital hold is on (sleep_gpio.c: without
+ * it "the bottom current of deep sleep will be higher than light sleep",
+ * which is exactly what the batlog measured: ~15 mA vs the drowse's 4.7).
+ * So before esp_deep_sleep_start: each of these a plain GPIO, driven low,
+ * held. The codec is already down (audio_port_sleep) and the wake is a
+ * reboot; audio_port_init releases the holds before the drivers claim the
+ * pins again. */
+static const gpio_num_t QUIET_PINS[] = { PIN_I2S_MCLK, PIN_I2S_BCLK, PIN_I2S_WS, PIN_I2S_DOUT, PIN_AMP_EN };
+void audio_port_deep_sleep_pins(void) {
+    for (size_t i = 0; i < sizeof QUIET_PINS / sizeof QUIET_PINS[0]; i++) {
+        gpio_num_t p = QUIET_PINS[i];
+        gpio_reset_pin(p);                        /* off the I2S matrix routing, a GPIO again */
+        gpio_set_direction(p, GPIO_MODE_OUTPUT);
+        gpio_set_level(p, 0);
+        gpio_hold_en(p);
+    }
+}
+static void release_pins(void) {
+    for (size_t i = 0; i < sizeof QUIET_PINS / sizeof QUIET_PINS[0]; i++) gpio_hold_dis(QUIET_PINS[i]);
+}
+
 static void write_silence(int ms) {
     memset(s_buf, 0, sizeof s_buf);
     size_t w;
@@ -121,6 +146,7 @@ static void load_volume(void) {
 
 bool audio_port_init(i2c_master_bus_handle_t bus) {
     (void)bus;                                 /* the codec's I2C device lives in codec_port (initialised before us) */
+    release_pins();                            /* a deep-sleep wake is a boot: drop the holds first */
     size_t bank_bytes = (size_t)(_binary_sounds_bin_end - _binary_sounds_bin_start);
     if (bank_bytes != SND_BANK_BYTES) { ESP_LOGW(TAG, "bank is %u bytes, sounds.h says %u: rebuild (tools/make_sounds.py build) - silent", (unsigned)bank_bytes, (unsigned)SND_BANK_BYTES); return false; }
     if (!codec_port_present()) { ESP_LOGW(TAG, "no ES8311: silent"); return false; }

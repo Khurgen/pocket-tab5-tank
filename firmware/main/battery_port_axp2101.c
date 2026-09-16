@@ -56,6 +56,29 @@ bool battery_port_poweroff(void) {
     return i2c_master_transmit(s_dev, wr, 2, 100) == ESP_OK;
 }
 
+/* ---- the PWR key (2026-09-16): REG 41 IRQ enables, REG 49 IRQ status 1
+ * (RW1C; bit 3 short press, bit 2 long press), REG 27 IRQLEVEL 5:4 /
+ * OFFLEVEL 3:2 / ONLEVEL 1:0. Polled from the tank task; no IRQ line needed. */
+static bool wr(uint8_t reg, uint8_t val) {
+    uint8_t b[2] = { reg, val };
+    return s_dev && i2c_master_transmit(s_dev, b, 2, 100) == ESP_OK;
+}
+void battery_port_key_init(void) {
+    if (!s_dev) return;
+    uint8_t v;
+    bool ok = rd(0x27, &v) && wr(0x27, (uint8_t)((v & ~0x0C) | 0x0C));   /* OFFLEVEL 10 s: the firmware's 1.5 s long press saves + cuts first */
+    ok = rd(0x41, &v) && wr(0x41, (uint8_t)(v | 0x0C)) && ok;           /* short + long press IRQs on (the defaults, made sure of) */
+    ok = wr(0x48, 0xFF) && wr(0x49, 0xFF) && wr(0x4A, 0xFF) && ok;       /* the power-on press itself: cleared */
+    ESP_LOGI("battery", "PWR key%s: short press = sleep, 1.5 s = power-off, 10 s = the PMIC's own cut", ok ? "" : " (a register write FAILED)");
+}
+int battery_port_key_poll(void) {
+    if (!s_dev) return 0;
+    uint8_t st;
+    if (!rd(0x49, &st) || !(st & 0x0C)) return 0;
+    wr(0x49, (uint8_t)(st & 0x0C));                                     /* clear what was taken */
+    return (st & 0x04) ? 2 : 1;
+}
+
 /* ---- diagnostics (2026-09-11, the battery-life pass) ----
  * AXP2101 register map (as XPowersLib reads it): 0x80 DCDC1-5 enables
  * (bits 0-4); 0x82-0x86 DCDC1-5 voltage codes; 0x90 LDO enables (bit0 ALDO1,

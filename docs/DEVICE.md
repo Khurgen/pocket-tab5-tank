@@ -27,7 +27,8 @@ reset the chip before anyone read the log.
 
 | started | what | spoiled by | status |
 |---|---|---|---|
-| 2026-09-15 | Deep-sleep current, first full night on battery (BOOT sleep, unplugged, read `batlog` at wake) | any reset before the read (now survives), a mid-night charge, waking it | **TO RUN** - 09-14/15's night was lost to the flash; needs another night |
+| 2026-09-15 | Deep-sleep current, first full night on battery (BOOT sleep, unplugged, read `batlog` at wake) | any reset before the read (now survives), a mid-night charge, waking it | **CLOSED 2026-09-16: the cell died overnight.** Morning archive docs/batlog/2026-09-16_0710.txt: the RTC log was wiped (a true power-off = the PMIC cut at the empty cell), first row 0% / 3232 mV. The 09-15 daytime windows had already put deep sleep at ~15 gauge-mA (2:22-2:37 15.2, 3:48-4:10 15.9) vs 4.7 for the old light-sleep drowse - deep sleep is WORSE than drowse. Cause (ESP-IDF sleep_gpio.c): digital pads are only isolated in deep sleep when `gpio_deep_sleep_hold_en()` was called, and the firmware never calls it; Espressif's own comment there: un-isolated, "the bottom current of deep sleep will be higher than light sleep". Fix + a fresh night: see HANDOFF 2026-09-16. Bedtime SoC unknown (the log died with the cell) - the sleep row should also go to NVS. |
+| 2026-09-16 | **First night on POWER-OFF** (PWR key short press, unplugged, PWR key in the morning, then `tools/preflight.py`: the `bed` row from NVS + the boot row give the night's mA; expect the gauge not to move) | a USB plug-in (it powers the PMIC on), a press | **TO RUN** |
 | 2026-09-15 | Awake draw with 4 fish + the boredom re-asks (09-14 batlog: 72-120 mA awake at 60% brightness, 96% -> 52% in an hour) | brightness changes, charging mid-window | open - measure a clean hour on battery, then look at ask cadence with 4-5 fish |
 
 ## How to resume the battery work (everything needed is committed)
@@ -51,12 +52,11 @@ reset the chip before anyone read the log.
 
 ## Firmware on the tank right now
 
-- App: boredom reflex + explore-as-destination + v4 tokenizer + sleep timer
-  fix + batlog no-init + per-fish hold-approach milestone that needs a real
-  approach (60 px out when the draw begins -> within 30) + `ms` column in the
-  director's `state` + lowercase fish names + the v6 first-bubbles icon +
-  the 4th-fish checklist split (MEALS 40 / CHANGE = the fry's drift
-  pressure) (flashed 2026-09-15 ~09:03; archives docs/batlog/2026-09-15_0752
-  .txt, _0756.txt, _0804.txt, _0820.txt, _0858.txt, _0902.txt).
+- App: everything through the 09-15 night (sand dollars, the shop, the
+  snail, audio, settings, the light) PLUS 2026-09-16: the PWR key is the one
+  sleep/wake key, sleep = 90 s grace then PMIC power-off, cold boot lives
+  the absence, deep sleep (bench / no-PMIC) holds + isolates its pads,
+  bedtime batlog row in NVS, director `poweroff` (flashed 2026-09-16
+  morning; archive docs/batlog/2026-09-16_*.txt).
 - Model partition: v4m (model_q4_v4m.bin, flashed 2026-09-15 ~06:00).
-- Save: FeZ, mira, LArRY, pip (4 adults).
+- Save: navi + pebble (fry; Strato's reset of 2026-09-15 night).
