@@ -2047,7 +2047,11 @@ int main(int argc, char **argv) {
                     float d2 = d2a < d2b ? d2a : d2b;
                     if (d2 < bd) { bd = d2; best = i; }
                 }
-                if (best >= 0) selected_fish = (best == selected_fish) ? -1 : best;
+                /* a click ON the open card (its MORE button, or any of it): the
+                   milestones page, as the device's touch port does (2026-09-16) */
+                if (selected_fish >= 0 && selected_fish != RENDER_CARD_SNAIL && RENDER_CARD_HIT(press_x, press_y))
+                    milestones_view = true;
+                else if (best >= 0) selected_fish = (best == selected_fish) ? -1 : best;
                 else if (tank_snail_hit(&tank, (float)press_x, (float)press_y))   /* the snail: its card (2026-09-16) */
                     selected_fish = selected_fish == RENDER_CARD_SNAIL ? -1 : RENDER_CARD_SNAIL;
                 else if (selected_fish >= 0) selected_fish = -1;   /* card up: empty-glass tap dismisses, nothing else */

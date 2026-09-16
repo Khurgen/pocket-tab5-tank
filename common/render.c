@@ -1235,6 +1235,8 @@ static void slider(ctx_t *c, int x, int y, int w, float frac, uint32_t rgb,
         blit_icon(c, lx + lw / 2 - 8, y, &icon_unknown_16, 220);
 }
 
+static void button(ctx_t *c, int x, int y, int W, int H, uint32_t fill, uint32_t edge, const char *label, int scale);   /* below */
+#define CARD_MORE_H 22
 static void card_draw(ctx_t c, const tank_t *t, int fish_idx) {
     const fish_t *f = &t->fish[fish_idx];
     /* card: top-left, bordered in the fish's own color (that's its "name").
@@ -1300,6 +1302,13 @@ static void card_draw(ctx_t c, const tank_t *t, int fish_idx) {
     slider(&c, X + 8, Y + 152, W - 16, f->bold,             0xffffff, &icon_shy,      &icon_bold,    saw_bold);
     slider(&c, X + 8, Y + 178, W - 16, f->sociable,         0x38dcc7, &icon_solo,     &icon_social,  saw_social);
     slider(&c, X + 8, Y + 204, W - 16, f->curiosity / 10.0f, 0x6db9ff, &icon_cautious, &icon_curious, saw_curious);
+
+    /* the way onward (2026-09-16): a MORE button in the pages' dress at the
+       foot of the card. The whole card was already the tap that opens the
+       milestones page (and from there SETTINGS / UPGRADES), but nothing said
+       so - a keeper asked Strato how to get there. The button is the sign;
+       the hit box is still the card (touch ports, RENDER_CARD_H). */
+    button(&c, X + 8, Y + H - 8 - CARD_MORE_H, W - 16, CARD_MORE_H, 0x1c2f36, 0x9fd8e2, "MORE", 2);
 }
 
 /* ---- stats card cache (2026-09-01) ----

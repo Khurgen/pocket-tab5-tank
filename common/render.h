@@ -44,7 +44,10 @@ void render_fb_primed(const uint16_t *fb, unsigned epoch);
  * visual bars (drives + personality) and stage pips. No text, no digits —
  * the progression design's "simple and visual" stats view. Personality bars
  * are revealed only after the fish has shown that side of itself (milestone
- * bits): you learn your fish by watching.
+ * bits): you learn your fish by watching. A MORE button sits at the foot
+ * of the card (2026-09-16, Strato: "how do I get to the milestones and
+ * settings screen? it's not very obvious") - the label is the only text on
+ * it; a tap anywhere on the card, button or not, opens the milestones page.
  * fish_idx == RENDER_CARD_SNAIL (2026-09-16): the SNAIL's card instead - a
  * ring on the snail and a small centred card: the upright sprite at 2x and
  * how much algae it has grazed so far (tank_t.snail_grazed). The platforms
@@ -58,7 +61,15 @@ void render_stats_card(const tank_t *t, int fish_idx, uint16_t *fb, int stride);
 #define RENDER_CARD_X 14
 #define RENDER_CARD_Y 8
 #define RENDER_CARD_W 124
-#define RENDER_CARD_H 228
+#define RENDER_CARD_H 258       /* 228 + the MORE button strip (2026-09-16) */
+/* the card's tap hit box (touch ports): the card itself plus slop, most of
+ * it BELOW the MORE button - fingers aiming at a button by the foot land
+ * low and wide (Strato, 2026-09-16: "I'm not tapping it reliably"), and the
+ * water under the card is nothing a tap needs. RENDER_CARD_HIT(x, y) is the test. */
+#define RENDER_CARD_HIT_BELOW 56
+#define RENDER_CARD_HIT_SIDE  12
+#define RENDER_CARD_HIT(x, y) ((x) >= RENDER_CARD_X - RENDER_CARD_HIT_SIDE && (x) < RENDER_CARD_X + RENDER_CARD_W + RENDER_CARD_HIT_SIDE && \
+                               (y) >= RENDER_CARD_Y && (y) < RENDER_CARD_Y + RENDER_CARD_H + RENDER_CARD_HIT_BELOW)
 void render_set_card_cache(uint16_t *buf);
 
 /* Device battery pill (top-right), drawn with the stats card on hardware:

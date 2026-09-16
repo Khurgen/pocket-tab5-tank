@@ -113,7 +113,9 @@ moment before committing.
 ![The stats card](docs/media/sim-stats-card.png)
 
 Tap a fish for its stats card. Needs, traits, and trust are revealed as the
-fish shows that side of itself, so a new fish's card is mostly blank.
+fish shows that side of itself, so a new fish's card is mostly blank. The
+MORE button at its foot (or a tap anywhere on the card) opens the milestones
+page, where the SETTINGS and UPGRADES buttons live.
 
 ## The living tank
 
@@ -154,7 +156,7 @@ a bed down to nubs. Algae films the glass over hours and a drag across it
 squeegees it clean. Fish like cover: grass calms them, and only a tank truly
 smothered by two beds at the ceiling stresses them.
 
-**Milestones.** Tap the open stats card for the milestones page: a row per
+**Milestones.** Tap MORE on the open stats card for the milestones page: a row per
 fish with its sprite at its real size, its name and a growth strip, then a
 badge for each first it has chosen to do: first meal from you, first
 hold-approach, first reef, first bubbles, first follow, first dart. The
@@ -328,7 +330,7 @@ brain works out of the box.
 
 In the window, the mouse is your finger: tap the water surface or drag down
 from the top edge to feed, click a fish for its stats card, click the card
-for milestones, hold the button to rest a finger on the glass, three quick
+(or its MORE button) for milestones, hold the button to rest a finger on the glass, three quick
 clicks to startle, two to toggle the light, drag across the glass to wipe
 algae, and stroke sideways through a bed to trim it. Keys: **F** feed at the
 mouse, **N** light, **A** auto light, **H** handle the tank (moving the
