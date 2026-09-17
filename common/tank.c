@@ -320,6 +320,8 @@ void tank_init(tank_t *t, uint32_t seed) {
  * dark tank is where the garden gets away from you). */
 #define VEG_GROW_AWAKE_S    108000.0f /* nubs -> full canopy in ~30 h awake */
 #define VEG_GROW_SLEEP_S    36000.0f  /* ~10 h of drowse */
+#define VEG_SWORD_GROW      1.25f     /* the sword plant grows a bit faster than the
+                                       * grass (nubs -> full in ~24 h awake / ~8 h asleep) */
 #define VEG_SEG_PX          3.2f      /* render.c VEG_SEG_DY: px of height per segment */
 #define VEG_SLOW            0.60f     /* cruise speed factor inside a canopy */
 #define ALGAE_STEP_AWAKE_S  240.0f    /* one film growth step per 4 min awake */
@@ -426,9 +428,11 @@ static void veg_sync(tank_t *t) {
     }
 }
 static void veg_grow(tank_t *t, float dg) {
-    for (int b = 0; b < tank_veg_beds(t); b++)
+    for (int b = 0; b < tank_veg_beds(t); b++) {
+        float dgb = tank_veg_kind(t, b) == VEG_KIND_SWORD ? dg * VEG_SWORD_GROW : dg;
         for (int i = 0; i < VEG_FRONDS_MAX; i++)
-            t->veg_h[b][i] = fminf(1, t->veg_h[b][i] + dg);
+            t->veg_h[b][i] = fminf(1, t->veg_h[b][i] + dgb);
+    }
     veg_sync(t);
 }
 void tank_veg_sync(tank_t *t) { veg_sync(t); }
