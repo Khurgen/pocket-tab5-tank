@@ -419,6 +419,14 @@ explains where every kilobyte goes. The boot log prints a per-stage frame
 profile and per-decision inference timings, so performance work is
 measurable without instruments.
 
+**Other boards.** [knoopx](https://github.com/knoopx) ported the tank to the
+Waveshare **ESP32-P4-WIFI6-Touch-LCD-4B** (4-inch 720×720 MIPI-DSI panel,
+GT911 touch, ES8311 audio) in
+[their fork](https://github.com/knoopx/pocket-tank). It is a community port:
+it needs ESP-IDF 5.5, it is not built or tested here, and it may lag behind
+this repo. [Pull request #5](https://github.com/mediacutlet/pocket-tank/pull/5)
+has the details.
+
 ## Train your own
 
 The whole distillation pipeline is here. `model/gen_traces.py` runs the
