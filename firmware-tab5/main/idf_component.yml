@@ -1,0 +1,5 @@
+description: Pocket Tank M5Stack Tab5 bring-up target
+
+dependencies:
+  idf: ">=5.4"
+  espressif/m5stack_tab5: "^1.3.1"
