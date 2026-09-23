@@ -1,0 +1,12 @@
+# Pocket Tank Tab5 smoke-test defaults
+CONFIG_IDF_TARGET="esp32p4"
+
+# Tab5 hardware
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+# Keep logging useful during bring-up
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# LVGL/BSP smoke test only. Pocket Tank memory tuning comes after first boot.
+CONFIG_COMPILER_OPTIMIZATION_DEFAULT=y
